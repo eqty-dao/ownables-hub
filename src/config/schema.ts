@@ -70,6 +70,10 @@ export default {
         default: '',
         env: 'ETH_ALCHEMY_API_KEY',
       },
+      base_alchemy_api_key: {
+        default: '',
+        env: 'BASE_ALCHEMY_API_KEY',
+      },
     },
     contracts: {
       ethereum: {
@@ -83,6 +87,14 @@ export default {
       polygon: {
         default: '',
         env: 'POLYGON_NFT_CONTRACT_ADDR',
+      },
+      base: {
+        default: '',
+        env: 'BASE_NFT_CONTRACT_ADDR',
+      },
+      base_sepolia: {
+        default: '',
+        env: 'BASE_SEPOLIA_NFT_CONTRACT_ADDR',
       },
     },
     providers: {
@@ -110,8 +122,8 @@ export default {
     networks: {
       default: [
         {
-          id: 421614,
-          name: 'arbitrumSepolia',
+          id: 84532,
+          name: 'baseSepolia',
           provider: 'jsonrpc' as 'jsonrpc' | 'etherscan' | 'infura' | 'alchemy' | 'cloudflare' | 'pocket' | 'ankr',
           url: '',
         },

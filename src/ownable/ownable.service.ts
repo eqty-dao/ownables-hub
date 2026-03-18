@@ -204,9 +204,12 @@ export class OwnableService implements OnModuleInit {
     const nftOwnableMapping = {
       OwnableCid: cid,
       OwnableLastOwner: cidOwner,
-      network: 'eip155:arbitrum',
+      network: 'eip155:base',
       id: nftInfo.id.toString(),
-      smartContractAddress: this.config.get('eth.contracts.arbitrum'),
+      smartContractAddress:
+        this.config.get('lto.networkId') === 'T'
+          ? this.config.get('eth.contracts.base_sepolia')
+          : this.config.get('eth.contracts.base'),
       nftOwner: nftOwner,
     };
 
@@ -220,10 +223,13 @@ export class OwnableService implements OnModuleInit {
       address: this.config.get('eth.contracts.ethereum'),
     };
 
-    const nftInfoARB: NFTInfo = {
-      network: 'eip155:arbitrum',
+    const nftInfoBase: NFTInfo = {
+      network: 'eip155:base',
       id: '0',
-      address: this.config.get('eth.contracts.arbitrum'),
+      address:
+        this.config.get('lto.networkId') === 'T'
+          ? this.config.get('eth.contracts.base_sepolia')
+          : this.config.get('eth.contracts.base'),
     };
 
     // const nftInfoPOL: NFTInfo = {
@@ -233,18 +239,21 @@ export class OwnableService implements OnModuleInit {
     // };
 
     const nftCountETH = await this.nft.getNFTcount(nftInfoETH);
-    const nftCountARB = await this.nft.getNFTcount(nftInfoARB);
+    const nftCountBase = await this.nft.getNFTcount(nftInfoBase);
     // const nftCountPOL = await this.nft.getNFTcount(nftInfoPOL);
 
     const availableChains = {
       ethereum: 'eip155:ethereum',
-      arbitrum: 'eip155:arbitrum',
+      base: 'eip155:base',
       // polygon: 'eip155:polygon',
       ethereumContractAddress: this.config.get('eth.contracts.ethereum'),
-      arbitrumContractAddress: this.config.get('eth.contracts.arbitrum'),
+      baseContractAddress:
+        this.config.get('lto.networkId') === 'T'
+          ? this.config.get('eth.contracts.base_sepolia')
+          : this.config.get('eth.contracts.base'),
       // polygonContractAddress: this.config.get('eth.contracts.polygon'),
       totalAmountethereumNFTs: nftCountETH.toString(),
-      totalAmountarbitrumNFTs: nftCountARB.toString(),
+      totalAmountBaseNFTs: nftCountBase.toString(),
       // polygonNFTcount: nftCountPOL,
     };
 
@@ -378,8 +387,7 @@ export class OwnableService implements OnModuleInit {
 
     const lastEventSigner = this.lto.account(chain.events[lastEntryIndex].signKey);
     if (verbose) console.log('Signer of last event Entry in event Chain:', lastEventSigner.address);
-    // TODO: '3N5vwNey9aFkyrQ5KUzMt3qfuwg5jKKzrLB' must be replaced by signer.address
-    if (lastEventSigner.address !== '3N5vwNey9aFkyrQ5KUzMt3qfuwg5jKKzrLB') {
+    if (signer?.address?.startsWith('3') && lastEventSigner.address !== signer.address) {
       throw new AuthError(
         `Signer of last event ${lastEventSigner.address} does not match HTTP Request Signer ${signer.address}`,
       );
@@ -394,8 +402,7 @@ export class OwnableService implements OnModuleInit {
     } else {
       if (verbose) console.log('transfer context exists');
     }
-    // TODO: 3NCfghPcoym62MrXj6To5uRkiFp4xNDi5LK MUST BE BRIDGE LTO Wallet
-    if (!(lastEventChainEntry.transfer.to === '3NCfghPcoym62MrXj6To5uRkiFp4xNDi5LK')) {
+    if (!(lastEventChainEntry.transfer.to === this.getLTOAccountAddress())) {
       throw new UserError('Bridge is not the Owner of Ownable');
     } else {
       if (verbose) console.log('Current owner of Ownable is Bridge');
@@ -439,8 +446,8 @@ export class OwnableService implements OnModuleInit {
 
     console.log('cidInfo', cidInfo);
 
-    if (signer !== undefined && !(signer.address === cidInfo.prevOwner)) {
-      throw new UserError('Signer ${signer.address} is not Ownable sender ${cidInfo.prevOwner}');
+    if (!(await this.existsPkg(cid))) {
+      throw new UserError('Ownable package with CID is not available on server.');
     }
     try {
       const locked = await this.nft.isNFTlocked({
@@ -452,6 +459,16 @@ export class OwnableService implements OnModuleInit {
         throw new UserError(
           `NFT ${cidInfo.NftId} is NOT LOCKED ! Network ${cidInfo.network} and NFT smart contract ${cidInfo.smartContractAddress}`,
         );
+      }
+      if (signer?.address) {
+        const nftOwner = await this.nft.getOwnerOfNFT({
+          network: cidInfo.network,
+          address: cidInfo.smartContractAddress,
+          id: cidInfo.NftId,
+        });
+        if (nftOwner.toLowerCase() !== signer.address.toLowerCase()) {
+          throw new UserError(`Signer ${signer.address} is not current NFT owner ${nftOwner}`);
+        }
       }
     } catch (err) {
       throw new UserError(`function call isNFTlocked to smart contract failed with Error: ${err}`);
@@ -503,7 +520,7 @@ export class OwnableService implements OnModuleInit {
 
     const nftInfo: NFTInfo = JSON.parse(chain.events[0].data.toString()).nft;
 
-    // nftInfo.network = "eip155:arbitrum"; // DONE! TODO Ownable-generator needs to produce correct input here
+    // nftInfo.network is provided by the ownable package metadata.
     // console.log('nftInfo', nftInfo);
     const proof = await this.nft.getUnlockProof(nftInfo);
     // console.log('proof', proof);
@@ -516,7 +533,7 @@ export class OwnableService implements OnModuleInit {
       NftId: nftInfo.id.toString(),
     };
 
-    const signerAddress = '3N5vwNey9aFkyrQ5KUzMt3qfuwg5jKKzrLB'; // TODO must be replaced by signer.address
+    const signerAddress = signer?.address || lastEventChainEntrySigner.toString();
 
     const bridgedOwnableFile = `${this.pathToUsers}/${cid}_${signerAddress}_bridged`;
     writeFileSync(bridgedOwnableFile, JSON.stringify(bridgedOwnablesInfo));

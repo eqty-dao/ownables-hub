@@ -23,10 +23,10 @@ export class EthersService implements OnModuleInit {
   constructor(private config: ConfigService) { }
 
   onModuleInit(): void {
-    this.network = { name: 'arbitrum-sepolia', chainId: 421614 };
+    this.network = { name: 'base-sepolia', chainId: 84532 };
     this.alchemyProvider = new ethers.AlchemyProvider(
       this.network,
-      this.config.get('eth.account.arbitrum_alchemy_api_key'),
+      this.config.get('eth.account.base_alchemy_api_key'),
     );
     this.signer = ethers.Wallet.fromPhrase(this.config.get('eth.account.mnemonic'), this.alchemyProvider);
   }
@@ -78,11 +78,14 @@ export class EthersService implements OnModuleInit {
         if (networkId === 'T')
           return ['matic-amoy', 80002, this.config.get('eth.account.polygon_alchemy_api_key')]; // Polygon Amoy Testnet
         else return ['matic', 137, this.config.get('eth.account.polygon_alchemy_api_key')]; // Polygon mainnet
-      // case 'base':
-      //   if (networkId === 'T') return ['base-sepolia', 84532,this.config.get('eth.account.base_alchemy_api_key')]; // Base Sepolia Testnet
-      //   else return ['base', 8453,this.config.get('eth.account.base_alchemy_api_key')]; // Base mainnet
+      case 'eip155:base':
+        if (networkId === 'T')
+          return ['base-sepolia', 84532, this.config.get('eth.account.base_alchemy_api_key')];
+        else return ['base', 8453, this.config.get('eth.account.base_alchemy_api_key')];
     }
-    throw new Error(`Incorrect network name. Supported network names: eip155:ethereum eip155:arbitrum eip155:polygon`);
+    throw new Error(
+      `Incorrect network name. Supported network names: eip155:ethereum eip155:arbitrum eip155:polygon eip155:base`,
+    );
   }
 
   public getContract(type: keyof typeof abis, networkName: string, address: string): ethers.Contract {

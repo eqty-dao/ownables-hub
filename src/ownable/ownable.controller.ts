@@ -144,15 +144,13 @@ export class OwnableController {
   async GetServerInfo() {
     try {
       const ethBalance = await this.ownableService.GetServerETHBalance('eip155:ethereum');
-      const arbBalance = await this.ownableService.GetServerETHBalance('eip155:arbitrum');
-      const polBalance = await this.ownableService.GetServerETHBalance('eip155:polygon');
+      const baseBalance = await this.ownableService.GetServerETHBalance('eip155:base');
       const ltoBalance = await this.ownableService.getLTOAccountBalance();
       const serverLTOwallet = this.ownableService.getServerLTOwalletAddress();
       // console.log("balance", balance);
       return {
         ServerEthereumBalance: ethBalance,
-        ServerArbitrumBalance: arbBalance,
-        ServerPolygonBalance: polBalance,
+        ServerBaseBalance: baseBalance,
         ServerLTOBalance: ltoBalance,
         serverLTOwalletAddress: serverLTOwallet,
       };
