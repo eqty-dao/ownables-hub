@@ -39,3 +39,8 @@ $ npm run test:e2e
 $ npm run test:cov
 ```
 
+## Releasing
+
+Releases are created by GitHub Actions using semantic-release.
+
+- See [RELEASING.md](./RELEASING.md) for the release flow and commit conventions.
