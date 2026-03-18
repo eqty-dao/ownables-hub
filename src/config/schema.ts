@@ -24,6 +24,18 @@ export default {
       env: 'ACCEPT_WEBHOOK',
     },
   },
+  auth: {
+    disable: {
+      default: false,
+      env: 'AUTH_DISABLE',
+    },
+  },
+  siwe: {
+    domain: {
+      default: 'localhost',
+      env: 'SIWE_DOMAIN',
+    },
+  },
   lto: {
     node: {
       default: 'https://testnet.lto.network',
