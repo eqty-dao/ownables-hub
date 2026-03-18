@@ -428,7 +428,7 @@ export class OwnableService implements OnModuleInit {
     try {
       console.log(`Fetching available CID: ${cid}`);
       const files = readdirSync(`${this.pathToUsers}/`);
-      const myReg = new RegExp(`${cid}`, 'g');
+      const myReg = new RegExp(`^${cid}_.+_bridged$`, 'g');
       files.forEach((file) => {
         if (file.match(myReg)) {
           cidInfoFile = file;
@@ -438,8 +438,8 @@ export class OwnableService implements OnModuleInit {
       console.log(err);
     }
 
-    if (cidInfoFile === undefined) {
-      throw new UserError('CID not found. Ownable with CID does not exist on server.');
+    if (!cidInfoFile) {
+      throw new UserError('CID not found. Ownable copy is not registered on hub.');
     }
 
     const cidInfo = JSON.parse(readFileSync(`${this.pathToUsers}/${cidInfoFile}`).toString());
