@@ -1,8 +1,8 @@
 {
-  "name": "@ltonetwork/ownable-bridge",
+  "name": "@ownables/hub",
   "version": "0.0.0",
-  "description": "Swap LTO Ownable for NFT and visa-versa",
-  "author": "LTO Network",
+  "description": "Ownables Hub",
+  "author": "Ownables",
   "private": false,
   "license": "MIT",
   "scripts": {

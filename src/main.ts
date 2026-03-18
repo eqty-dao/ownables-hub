@@ -10,7 +10,7 @@ async function swagger(app: INestApplication, config: ConfigService) {
   const { description, version } = require('../package.json');
 
   const options = new DocumentBuilder()
-    .setTitle('LTO Ownable Bridge')
+    .setTitle('Ownables Hub')
     .setDescription(description)
     .setVersion(version !== '0.0.0' ? version : config.get('env'))
     .addBearerAuth()

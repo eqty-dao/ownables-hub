@@ -1,8 +1,8 @@
-![LTO github readme](https://user-images.githubusercontent.com/100821/196711741-96cd4ba5-932a-4e95-b420-42d4d61c21fd.png)
+![Ownables Hub](https://user-images.githubusercontent.com/100821/196711741-96cd4ba5-932a-4e95-b420-42d4d61c21fd.png)
 
-# LTO Ownables Bridge
+# Ownables Hub
 
-> Service to swap LTO Ownable for NFT and visa-versa
+> Hub service for Ownables and lockable NFTs
 
 ## Installation
 
