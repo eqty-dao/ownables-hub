@@ -36,23 +36,12 @@ export default {
       env: 'SIWE_DOMAIN',
     },
   },
-  lto: {
-    node: {
-      default: 'https://testnet.lto.network',
-      env: 'LTO_NODE',
-    },
-    networkId: {
-      default: 'T',
-      env: 'LTO_NETWORK_ID',
-    },
-    account: {
-      seed: {
-        default: '',
-        env: 'LTO_ACCOUNT_SEED',
-      },
-    },
-  },
   eth: {
+    mode: {
+      format: ['testnet', 'mainnet'],
+      default: 'testnet',
+      env: 'ETH_MODE',
+    },
     account: {
       mnemonic: {
         default: '',
@@ -128,14 +117,6 @@ export default {
           url: '',
         },
       ],
-      // default: [
-      //   {
-      //     id: 80001,
-      //     name: 'PolygonMumbai',
-      //     provider: 'alchemy' as 'jsonrpc' | 'etherscan' | 'infura' | 'alchemy' | 'cloudflare' | 'pocket' | 'ankr',
-      //     url: `https://polygon-mumbai.g.alchemy.com/v2/${process.env.POLYGON_MUMBAI_ALCHEMY_API_KEY}`,
-      //   },
-      // ],
       format: 'typed-array',
       children: {
         id: {

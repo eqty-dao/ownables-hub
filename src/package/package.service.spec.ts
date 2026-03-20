@@ -4,10 +4,12 @@ import { PackageService } from './package.service';
 import { ConfigModule } from '../common/config/config.module';
 import * as fsModule from 'fs/promises';
 import JSZip from 'jszip';
-import { Binary } from '@ltonetwork/lto';
+import { createHash } from 'crypto';
 
 const fs = jest.mocked(fsModule);
 jest.mock('fs/promises');
+
+const cidHash = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);
 
 describe('PackageService', () => {
   let service: PackageService;
@@ -15,13 +17,14 @@ describe('PackageService', () => {
     addAll: jest.fn(async function* (items: { content: string; path: string }[]) {
       for (const item of items) {
         yield {
-          cid: { toString: () => new Binary(item.content).hash().base58 },
+          cid: { toString: () => `cid-${cidHash(item.content)}` },
           path: item.path,
           mode: 0o755,
         };
       }
 
-      const dirCid = new Binary(items.map((item) => item.content).join('')).hash().base58;
+      const dirContent = items.map((item) => item.content).join('');
+      const dirCid = `cid-${cidHash(dirContent)}`;
       yield {
         cid: { toString: () => dirCid },
         path: dirCid,
@@ -78,7 +81,7 @@ describe('PackageService', () => {
 
   describe('store()', () => {
     const buffer = new Uint8Array([1, 2, 3]);
-    const cid = new Binary('{}_foo__bar_').hash().base58;
+    const cid = `cid-${cidHash('{}_foo__bar_')}`;
     const uploadPath = 'storage/packages';
 
     beforeEach(() => {

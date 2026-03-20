@@ -1,341 +1,125 @@
-import { Test, TestingModule } from '@nestjs/testing';
+import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { rm, mkdir } from 'fs/promises';
+import { tmpdir } from 'os';
+import path from 'path';
+import JSZip from 'jszip';
+import { ethers } from 'ethers';
+import { Binary, Event, EventChain } from 'eqty-core';
 import { OwnableService } from './ownable.service';
-import { ConfigModule } from '../common/config/config.module';
-import { PackageService } from '../package/package.service';
-import { CosmWasmService } from '../cosmwasm/cosmwasm.service';
-import { NFTService } from '../nft/nft.service';
-import { LtoIndexService } from '../common/lto-index/lto-index.service';
-import { LTO, EventChain, Binary, Event } from '@ltonetwork/lto';
-import { LtoModule } from '../common/lto/lto.module';
-import { NFTInfo } from '../interfaces/OwnableInfo';
-import { HttpService } from '@nestjs/axios';
-import { expect, jest } from '@jest/globals';
-import fsModule from 'fs/promises';
-
-const fs = jest.mocked(fsModule);
-jest.mock('fs/promises');
 
 describe('OwnableService', () => {
-  const lto = new LTO('T');
+  const ownerWallet = ethers.Wallet.createRandom();
 
-  let service: OwnableService;
-  let mockPackageService: any;
-  let mockCosmWasmService: any;
-  let mockNFTService: any;
-  let mockLtoIndexService: any;
-  let mockHttpService: any;
-
-  beforeEach(async () => {
-    mockPackageService = {
-      exists: jest.fn<(cid: string) => Promise<boolean>>(),
-      file: jest.fn<(cid: string, filename?: string) => string>(),
-      zipped: jest.fn<(cid: string) => any>(),
-    };
-    mockCosmWasmService = {
-      load: jest.fn<(moduleFile: string, wasmFile: string) => any>(),
-    };
-    mockNFTService = {
-      getUnlockProof: jest.fn<(nft: NFTInfo) => Promise<string>>(),
-    };
-    mockLtoIndexService = {
-      verifyAnchors: jest.fn<(anchors: Array<{ key: Binary; value: Binary; signer: string }>) => any>(),
-    };
-    mockHttpService = {
-      post: jest.fn(),
-    };
+  const buildConfig = (root: string) => ({
+    get: (key: string) => {
+      const values: Record<string, string> = {
+        'path.packages': path.join(root, 'packages'),
+        'path.chains': path.join(root, 'chains'),
+        'path.users': path.join(root, 'users'),
+        'path.nfts': path.join(root, 'nfts'),
+        'eth.account.mnemonic': ownerWallet.mnemonic?.phrase || '',
+        'eth.mode': 'testnet',
+        'eth.contracts.base': '0xbase',
+        'eth.contracts.base_sepolia': '0xbaseSepolia',
+      };
+      return values[key];
+    },
   });
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      imports: [ConfigModule, LtoModule],
-      providers: [
-        OwnableService,
-        { provide: PackageService, useValue: mockPackageService },
-        { provide: CosmWasmService, useValue: mockCosmWasmService },
-        { provide: NFTService, useValue: mockNFTService },
-        { provide: LtoIndexService, useValue: mockLtoIndexService },
-        { provide: LTO, useValue: lto },
-        { provide: HttpService, useValue: mockHttpService },
-      ],
-    }).compile();
-
-    service = module.get<OwnableService>(OwnableService);
-  });
-
-  it('should be defined', () => {
-    expect(service).toBeDefined();
-  });
-
-  describe('accept()', () => {
-    const issuer = lto.account({ seed: 'issuer' });
-    const owner = lto.account({ seed: 'owner' });
-
-    it('should accept a valid chain', async () => {
-      const nftInfo: NFTInfo = {
-        network: 'testNetwork',
-        address: '8bC9f9f4aAe458E268516558e3972c5F01BbC18e',
-        id: '1',
-      };
-
-      const nonce = Binary.concat(Binary.fromHex(nftInfo.address), Binary.fromInt32(Number(nftInfo.id)));
-
-      const mockContract = {
-        instantiate: jest.fn(),
-        execute: jest.fn(),
-        externalEvent: jest.fn(),
-        query: jest
-          .fn<() => any>()
-          .mockResolvedValueOnce({ owner: owner.address, issuer: issuer.address, nft: nftInfo }) // get_info
-          .mockResolvedValueOnce(true), // is_locked
-      };
-
-      mockPackageService.exists.mockResolvedValue(true);
-      mockPackageService.file.mockImplementation((packageCid, filename) => `${packageCid}/${filename}`);
-      mockCosmWasmService.load.mockResolvedValue(mockContract);
-      mockNFTService.getUnlockProof.mockResolvedValue('unlockProof');
-      mockLtoIndexService.verifyAnchors.mockResolvedValue({ verified: true });
-
-      const chain = new EventChain(issuer, nonce);
-      new Event({ '@context': 'instantiate_msg.json', package: 'packageCid' }).addTo(chain).signWith(issuer);
-      new Event({ '@context': 'execute_msg.json', transfer: { to: owner.address } }).addTo(chain).signWith(issuer);
-      new Event({ '@context': 'execute_msg.json', lock: {} }).addTo(chain).signWith(owner);
-
-      const result = await service.accept(chain, owner);
-
-      expect(mockPackageService.exists).toBeCalledWith('packageCid');
-      expect(mockCosmWasmService.load).toBeCalledWith('packageCid/ownable.js', 'packageCid/ownable_bg.wasm');
-      expect(mockContract.instantiate).toBeCalledWith(
-        { package: 'packageCid' },
-        {
-          sender: issuer.publicKey,
-          funds: [],
-        },
-      );
-      expect(mockContract.execute).toHaveBeenNthCalledWith(
-        1,
-        { transfer: { to: owner.address } },
-        { sender: issuer.publicKey, funds: [] },
-      );
-      expect(mockContract.execute).toHaveBeenNthCalledWith(2, { lock: {} }, { sender: owner.publicKey, funds: [] });
-      expect(mockContract.query).toHaveBeenNthCalledWith(1, { get_info: {} });
-      expect(mockContract.query).toHaveBeenNthCalledWith(2, { is_locked: {} });
-      expect(mockNFTService.getUnlockProof).toBeCalledWith(nftInfo);
-      expect(mockLtoIndexService.verifyAnchors).toBeCalledWith(chain.anchorMap);
-      expect(mockHttpService.post).toBeCalledWith('https://example.com/webhook', {
-        chain: chain.toJSON(),
-        ownable: { owner: owner.address, issuer: issuer.address, nft: nftInfo },
-        packageCid: 'packageCid',
-      });
-
-      expect(fs.writeFile).toBeCalledWith(`storage/chains/${chain.id}.json`, JSON.stringify(chain.toJSON()));
-
-      expect(result).toEqual({
-        owner: owner.address,
-        issuer: issuer.address,
-        nft: nftInfo,
-        proof: 'unlockProof',
-      });
-    });
-
-    it('should reject a chain with failed integrity verification', async () => {
-      const issuer = lto.account({ seed: 'issuer' });
-
-      const nftInfo: NFTInfo = {
-        network: 'testNetwork',
-        address: '8bC9f9f4aAe458E268516558e3972c5F01BbC18e',
-        id: '1',
-      };
-
-      const nonce = Binary.concat(Binary.fromHex(nftInfo.address), Binary.fromInt32(Number(nftInfo.id)));
-
-      const mockContract = {
-        instantiate: jest.fn(),
-        execute: jest.fn(),
-        externalEvent: jest.fn(),
-        query: jest
-          .fn<() => any>()
-          .mockResolvedValueOnce({ owner: issuer.address, issuer: issuer.address, nft: nftInfo }),
-      };
-
-      mockPackageService.exists.mockResolvedValue(true);
-      mockCosmWasmService.load.mockResolvedValue(mockContract);
-      mockLtoIndexService.verifyAnchors.mockResolvedValue({ verified: false });
-
-      const chain = new EventChain(issuer, nonce);
-      new Event({ '@context': 'instantiate_msg.json', package: 'packageCid' }).addTo(chain).signWith(issuer);
-
-      await expect(service.accept(chain, issuer)).rejects.toThrow(
-        'Chain integrity could not be verified: Mismatch in anchor map',
-      );
-
-      expect(mockLtoIndexService.verifyAnchors).toBeCalledWith(chain.anchorMap);
-    });
-
-    it('should reject if the ownable is not locked', async () => {
-      const issuer = lto.account({ seed: 'issuer' });
-
-      const nftInfo: NFTInfo = {
-        network: 'testNetwork',
-        address: '8bC9f9f4aAe458E268516558e3972c5F01BbC18e',
-        id: '1',
-      };
-
-      const nonce = Binary.concat(Binary.fromHex(nftInfo.address), Binary.fromInt32(Number(nftInfo.id)));
-
-      const mockContract = {
-        instantiate: jest.fn(),
-        execute: jest.fn(),
-        externalEvent: jest.fn(),
-        query: jest
-          .fn<() => any>()
-          .mockResolvedValueOnce({ owner: issuer.address, issuer: issuer.address, nft: nftInfo }) // get_info
-          .mockResolvedValueOnce(false), // is_locked
-      };
-
-      mockPackageService.exists.mockResolvedValue(true);
-      mockCosmWasmService.load.mockResolvedValue(mockContract);
-      mockLtoIndexService.verifyAnchors.mockResolvedValue({ verified: true });
-
-      const chain = new EventChain(issuer, nonce);
-      new Event({ '@context': 'instantiate_msg.json', package: 'packageCid' }).addTo(chain).signWith(issuer);
-
-      await expect(service.accept(chain, issuer)).rejects.toThrow('Ownable is not locked');
-
-      expect(mockContract.query).toBeCalledWith({ is_locked: {} });
-    });
-
-    it('should reject if the HTTP request is not signed', async () => {
-      const issuer = lto.account({ seed: 'issuer' });
-
-      const nftInfo: NFTInfo = {
-        network: 'testNetwork',
-        address: '8bC9f9f4aAe458E268516558e3972c5F01BbC18e',
-        id: '1',
-      };
-
-      const nonce = Binary.concat(Binary.fromHex(nftInfo.address), Binary.fromInt32(Number(nftInfo.id)));
-
-      const mockContract = {
-        instantiate: jest.fn(),
-        execute: jest.fn(),
-        externalEvent: jest.fn(),
-        query: jest
-          .fn<() => any>()
-          .mockResolvedValueOnce({ owner: issuer.address, issuer: issuer.address, nft: nftInfo }),
-      };
-
-      mockPackageService.exists.mockResolvedValue(true);
-      mockCosmWasmService.load.mockResolvedValue(mockContract);
-      mockLtoIndexService.verifyAnchors.mockResolvedValue({ verified: true });
-
-      const chain = new EventChain(issuer, nonce);
-      new Event({ '@context': 'instantiate_msg.json', package: 'packageCid' }).addTo(chain).signWith(issuer);
-
-      await expect(service.accept(chain, null)).rejects.toThrow(
-        'HTTP Request is not signed by the owner of the Ownable',
-      );
-    });
-
-    it('should reject if the HTTP request has an incorrect signature', async () => {
-      const issuer = lto.account({ seed: 'issuer' });
-      const wrongSigner = lto.account({ seed: 'wrongSigner' });
-
-      const nftInfo: NFTInfo = {
-        network: 'testNetwork',
-        address: '8bC9f9f4aAe458E268516558e3972c5F01BbC18e',
-        id: '1',
-      };
-
-      const nonce = Binary.concat(Binary.fromHex(nftInfo.address), Binary.fromInt32(Number(nftInfo.id)));
-
-      const mockContract = {
-        instantiate: jest.fn(),
-        execute: jest.fn(),
-        externalEvent: jest.fn(),
-        query: jest
-          .fn<() => any>()
-          .mockResolvedValueOnce({ owner: issuer.address, issuer: issuer.address, nft: nftInfo }),
-      };
-
-      mockPackageService.exists.mockResolvedValue(true);
-      mockCosmWasmService.load.mockResolvedValue(mockContract);
-      mockLtoIndexService.verifyAnchors.mockResolvedValue({ verified: true });
-
-      const chain = new EventChain(issuer, nonce);
-      new Event({ '@context': 'instantiate_msg.json', package: 'packageCid' }).addTo(chain).signWith(issuer);
-
-      await expect(service.accept(chain, wrongSigner)).rejects.toThrow(
-        'HTTP Request is not signed by the owner of the Ownable',
-      );
-    });
-
-    it('should reject if there is a mismatch between the chain id and nft info', async () => {
-      const issuer = lto.account({ seed: 'issuer' });
-
-      const nftInfo: NFTInfo = {
-        network: 'testNetwork',
-        address: '8bC9f9f4aAe458E268516558e3972c5F01BbC18e',
-        id: '1',
-      };
-
-      const nonce = Binary.concat(Binary.fromHex(nftInfo.address), Binary.fromInt32(999));
-
-      const mockContract = {
-        instantiate: jest.fn(),
-        execute: jest.fn(),
-        externalEvent: jest.fn(),
-        query: jest
-          .fn<() => any>()
-          .mockResolvedValueOnce({ owner: issuer.address, issuer: issuer.address, nft: nftInfo }) // get_info
-          .mockResolvedValueOnce(true), // is_locked
-      };
-
-      mockPackageService.exists.mockResolvedValue(true);
-      mockCosmWasmService.load.mockResolvedValue(mockContract);
-      mockLtoIndexService.verifyAnchors.mockResolvedValue({ verified: true });
-
-      const chain = new EventChain(issuer, nonce);
-      new Event({ '@context': 'instantiate_msg.json', package: 'packageCid' }).addTo(chain).signWith(issuer);
-
-      await expect(service.accept(chain, issuer)).rejects.toThrow(
-        'Chain id mismatch: Unable to confirm the Ownable was forged for specified NFT',
-      );
-    });
-  });
-
-  describe('claim()', () => {
-    const issuer = lto.account({ seed: 'issuer' });
-    const owner = lto.account({ seed: 'owner' });
-    const nftInfo: NFTInfo = {
-      network: 'testNetwork',
-      address: '8bC9f9f4aAe458E268516558e3972c5F01BbC18e',
-      id: '1',
+  const buildService = async (root: string, nftOwner = ownerWallet.address) => {
+    const nft = {
+      getOwnerOfNFT: jest.fn().mockResolvedValue(nftOwner),
+      isNFTlocked: jest.fn().mockResolvedValue(true),
+      getUnlockProof: jest.fn().mockResolvedValue('unlock-proof'),
+      isUnlockProofValid: jest.fn().mockResolvedValue(true),
+      getNFTcount: jest.fn().mockResolvedValue('42'),
+      GetServerETHBalance: jest.fn().mockResolvedValue('1.00'),
     };
 
-    let chain: EventChain;
+    const ipfs = {
+      addAll: jest.fn(async function* () {
+        yield { path: './package.json', cid: { toString: () => 'cid-file' }, mode: 0o755 };
+        yield { path: 'cid-test', cid: { toString: () => 'cid-test' }, mode: 0o755 };
+      }),
+    };
 
-    beforeEach(() => {
-      const nonce = Binary.concat(Binary.fromHex(nftInfo.address), Binary.fromInt32(Number(nftInfo.id)));
+    const service = new OwnableService(
+      {} as any,
+      buildConfig(root) as any,
+      {} as any,
+      nft as any,
+      {} as any,
+      ipfs as any,
+    );
 
-      chain = new EventChain(issuer, nonce);
-      new Event({ '@context': 'instantiate_msg.json', package: 'packageCid' }).addTo(chain).signWith(issuer);
-      new Event({ '@context': 'execute_msg.json', transfer: { to: owner.address } }).addTo(chain).signWith(issuer);
-      new Event({ '@context': 'execute_msg.json', lock: {} }).addTo(chain).signWith(owner);
-    });
+    await service.onModuleInit();
+    return { service, nft };
+  };
 
-    it('should return the event chain package', async () => {
-      const mockZip = {
-        file: jest.fn<(path: string, data: string) => void>(),
-        generateAsync: jest.fn<() => Uint8Array>().mockReturnValue(new Uint8Array([1, 2, 3])),
-      };
+  const createChain = async (nft = { network: 'eip155:base', address: '0xabc', id: '1' }) => {
+    const chain = new EventChain(`0x${'11'.repeat(32)}`);
+    const signer = {
+      getAddress: async () => ownerWallet.address,
+      sign: async (data: Uint8Array) => ethers.getBytes(await ownerWallet.signMessage(data)),
+      signMessage: async (message: string | Uint8Array) => ownerWallet.signMessage(message),
+    };
+    const event = new Event({ '@context': 'instantiate_msg.json', nft });
+    event.previous = Binary.fromHex(ethers.keccak256(ethers.toUtf8Bytes(chain.id)).slice(2));
+    await event.addTo(chain).signWith(signer);
+    return chain;
+  };
 
-      fs.readFile.mockResolvedValue(JSON.stringify(chain.toJSON()));
-      mockPackageService.zipped.mockReturnValue(mockZip);
+  it('stores bridged ownable metadata for the SIWE owner', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'hub-ownable-'));
+    const { service } = await buildService(root);
+    const chain = await createChain();
 
-      const zip = await service.claim(chain.id, owner);
-      expect(zip).toEqual(new Uint8Array([1, 2, 3]));
+    const zip = new JSZip();
+    zip.file('eventChain.json', JSON.stringify(chain.toJSON()));
+    zip.file('package.json', JSON.stringify({ name: 'test' }));
+    const buffer = await zip.generateAsync({ type: 'uint8array' });
 
-      expect(mockZip.file).toBeCalledWith('chain.json', JSON.stringify(chain.toJSON()));
-    });
+    const result = await service.bridgeOwnable(buffer, { address: ownerWallet.address }, false);
+
+    expect(result.cid).toEqual('cid-test');
+    const usersDir = path.join(root, 'users');
+    const files = readFileSync(path.join(usersDir, `cid-test_${ownerWallet.address.toLowerCase()}_bridged`), 'utf8');
+    expect(JSON.parse(files).owner).toEqual(ownerWallet.address);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('rejects claim when signer is not current NFT owner', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'hub-ownable-'));
+    const { service } = await buildService(root, ethers.Wallet.createRandom().address);
+
+    const chain = await createChain();
+    const chainsDir = path.join(root, 'chains', 'cid-1');
+    const pkgDir = path.join(root, 'packages', 'cid-1');
+    await mkdir(chainsDir, { recursive: true });
+    await mkdir(pkgDir, { recursive: true });
+
+    writeFileSync(path.join(chainsDir, 'eventChain.json'), JSON.stringify(chain.toJSON()));
+    const zip = new JSZip();
+    zip.file('package.json', '{}');
+    writeFileSync(path.join(pkgDir, 'cid-1.zip'), await zip.generateAsync({ type: 'uint8array' }));
+
+    await expect(service.claimOwnable('cid-1', { address: ownerWallet.address })).rejects.toThrow('is not current NFT owner');
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('lists bridged ownable CIDs for the provided signer', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'hub-ownable-'));
+    const { service } = await buildService(root);
+
+    const usersDir = path.join(root, 'users');
+    writeFileSync(path.join(usersDir, `cid-a_${ownerWallet.address.toLowerCase()}_bridged`), '{}');
+    writeFileSync(path.join(usersDir, `cid-b_${ownerWallet.address.toLowerCase()}_bridged`), '{}');
+    writeFileSync(path.join(usersDir, `cid-c_0xother_bridged`), '{}');
+
+    expect(service.getBridgedOwnableCIDs({ address: ownerWallet.address }).sort()).toEqual(['cid-a', 'cid-b']);
+
+    await rm(root, { recursive: true, force: true });
   });
 });

@@ -63,7 +63,6 @@ Set these env vars for a usable local/prod setup:
 - `ACCOUNT_MNEMONIC`
 - `BASE_ALCHEMY_API_KEY`
 - `BASE_NFT_CONTRACT_ADDR` and/or `BASE_SEPOLIA_NFT_CONTRACT_ADDR`
-- `LTO_ACCOUNT_SEED` (for legacy Ownable event-chain signing path)
 - `SIWE_DOMAIN`
 
 Additional keys are available in `src/config/schema.ts`.

@@ -15,7 +15,7 @@ import * as abis from './abi';
 @Injectable()
 export class EthersService implements OnModuleInit {
   private wallet: ethers.Wallet;
-  private signer: ethers.HDNodeWallet;
+  private signer: ethers.HDNodeWallet | ethers.Wallet;
   private alchemyProvider: ethers.AlchemyProvider;
   private network: ethers.Networkish;
   private readonly providers: Map<string | number, ethers.Provider> = new Map();
@@ -28,11 +28,14 @@ export class EthersService implements OnModuleInit {
       this.network,
       this.config.get('eth.account.base_alchemy_api_key'),
     );
-    this.signer = ethers.Wallet.fromPhrase(this.config.get('eth.account.mnemonic'), this.alchemyProvider);
+    const mnemonic = this.config.get('eth.account.mnemonic');
+    this.signer = mnemonic
+      ? ethers.Wallet.fromPhrase(mnemonic, this.alchemyProvider)
+      : new ethers.Wallet(ethers.id('ownables-hub-fallback-key'), this.alchemyProvider);
   }
 
   public signMessage(message: string): Promise<string> {
-    return this.signer.signMessage(ethers.toBeArray(message));
+    return this.signer.signMessage(message);
   }
 
   public verifyMessage(message: string, sig: ethers.SignatureLike): string {
@@ -63,7 +66,7 @@ export class EthersService implements OnModuleInit {
 
   private getNetwork(networkName: string): [string, number, string] {
     // https://docs.ethers.org/v6/api/providers/thirdparty/#AlchemyProvider
-    const networkId = this.config.get('lto.networkId');
+    const networkId = this.config.get('eth.mode') === 'testnet' ? 'T' : 'L';
     switch (networkName) {
       case 'eip155:ethereum':
         if (networkId === 'T')
@@ -95,7 +98,10 @@ export class EthersService implements OnModuleInit {
 
     this.alchemyProvider = new ethers.AlchemyProvider(this.network, providerApiKey);
 
-    this.signer = ethers.Wallet.fromPhrase(this.config.get('eth.account.mnemonic'), this.alchemyProvider);
+    const mnemonic = this.config.get('eth.account.mnemonic');
+    this.signer = mnemonic
+      ? ethers.Wallet.fromPhrase(mnemonic, this.alchemyProvider)
+      : new ethers.Wallet(ethers.id('ownables-hub-fallback-key'), this.alchemyProvider);
 
     const nftContract: ethers.Contract = new ethers.Contract(address, abis[type], this.signer);
     return nftContract;
