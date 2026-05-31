@@ -18,7 +18,7 @@ It only issues unlock proofs when it has the corresponding Ownable copy.
 ## Installation
 
 ```bash
-npm install
+yarn install
 ```
 
 Built with [NestJS](https://nestjs.com/).
@@ -50,15 +50,10 @@ Base path for hub routes: `/ownables`
 
 Swagger: `http://localhost:3000/api-docs`
 
-## Local run
-
-```bash
-npm run start:dev
-```
-
 ## Local Postgres + migrations
 
 Runtime requires `DATABASE_URL` and does not fall back to libpq defaults.
+Runtime storage requires `OWNABLES_STORAGE` (for local dev, use `file://storage`).
 
 Use the local dev startup flow:
 
@@ -81,6 +76,8 @@ Default local settings (override with env vars):
 - `HUB_DB_PASSWORD=ownables`
 - `HUB_LOCAL_DATABASE_URL` can override the derived local DSN used by `db:start`
 - derived default `DATABASE_URL=postgres://ownables:ownables@127.0.0.1:54329/ownables_hub`
+- `HUB_DB_READY_TIMEOUT_SECONDS` readiness timeout for existing containers (default `60`)
+- `HUB_DB_COLD_START_TIMEOUT_SECONDS` readiness timeout for new containers (default `240`)
 
 Run migrations directly (for existing Postgres targets):
 
@@ -89,22 +86,35 @@ DATABASE_URL=postgres://user:pass@127.0.0.1:5432/db yarn db:migrate:up
 DATABASE_URL=postgres://user:pass@127.0.0.1:5432/db yarn db:migrate:down
 ```
 
+## Start app locally
+
+`yarn db:start` only boots Postgres and runs migrations. Start the app with runtime env vars:
+
+```bash
+DATABASE_URL=postgres://ownables:ownables@127.0.0.1:54329/ownables_hub \
+OWNABLES_STORAGE=file://storage \
+yarn start:dev
+```
+
 ## Required configuration (minimum)
 
-Set these env vars for a usable local/prod setup:
+Set these env vars for local runtime:
+
+- `DATABASE_URL`
+- `OWNABLES_STORAGE` (example: `file://storage`)
+
+Additional runtime configuration (feature-dependent):
 
 - `ACCOUNT_MNEMONIC`
-- `BASE_ALCHEMY_API_KEY`
-- `BASE_NFT_CONTRACT_ADDR` and/or `BASE_SEPOLIA_NFT_CONTRACT_ADDR`
+- `HUB_NETWORK_PROFILE` (`testnet` default, or `mainnet`)
+- `TESTNET_*_RPC_URL` / `MAINNET_*_RPC_URL` overrides
 - `SIWE_DOMAIN`
-
-Additional keys are available in `src/config/schema.ts`.
 
 ## Tests
 
 ```bash
-npm test
-npm run test:cov
+yarn test
+yarn test:cov
 ```
 
 ## Releasing
