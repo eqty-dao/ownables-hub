@@ -33,7 +33,6 @@ Protected hub routes use SIWE-authenticated request context.
 
 Config:
 
-- `AUTH_DISABLE=true` disables auth checks (development/testing only)
 - `SIWE_DOMAIN=<expected-domain>` sets accepted SIWE domain
 
 ## Key API routes
@@ -53,7 +52,7 @@ Swagger: `http://localhost:3000/api-docs`
 ## Local Postgres + migrations
 
 Runtime requires `DATABASE_URL` and does not fall back to libpq defaults.
-Runtime storage requires `OWNABLES_STORAGE` (for local dev, use `file://storage`).
+Runtime storage uses `OWNABLES_STORAGE` if set, and defaults to `file://storage` when unset.
 
 Use the local dev startup flow:
 
@@ -101,7 +100,7 @@ yarn start:dev
 Set these env vars for local runtime:
 
 - `DATABASE_URL`
-- `OWNABLES_STORAGE` (example: `file://storage`)
+- `OWNABLES_STORAGE` (optional; defaults to `file://storage`, set to override)
 
 Additional runtime configuration (feature-dependent):
 
