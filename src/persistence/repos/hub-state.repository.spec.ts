@@ -86,6 +86,43 @@ describe('HubStateRepository', () => {
     );
   });
 
+  it('persists cursor resume block updates across successive upserts', async () => {
+    query.mockResolvedValue({ rows: [] });
+
+    await repo.upsertIndexerCursor({
+      slotName: 'mainnet',
+      cursorName: 'anchor',
+      chainId: '8453',
+      anchorContractAddress: '0xAnchor',
+      nextFromBlock: 120n,
+      lastScannedBlock: 119n,
+      lastScannedTxHash: '0xold',
+      lastScannedLogIndex: 2,
+    });
+
+    await repo.upsertIndexerCursor({
+      slotName: 'mainnet',
+      cursorName: 'anchor',
+      chainId: '8453',
+      anchorContractAddress: '0xAnchor',
+      nextFromBlock: 121n,
+      lastScannedBlock: 120n,
+      lastScannedTxHash: '0xnew',
+      lastScannedLogIndex: 0,
+    });
+
+    expect(query).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('ON CONFLICT (slot_name, cursor_name) DO UPDATE SET'),
+      ['mainnet', 'anchor', '8453', '0xAnchor', '120', '119', '0xold', 2],
+    );
+    expect(query).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('ON CONFLICT (slot_name, cursor_name) DO UPDATE SET'),
+      ['mainnet', 'anchor', '8453', '0xAnchor', '121', '120', '0xnew', 0],
+    );
+  });
+
   it('upserts notify registration transitions', async () => {
     query.mockResolvedValueOnce({ rows: [] });
 

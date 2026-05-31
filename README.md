@@ -56,6 +56,39 @@ Swagger: `http://localhost:3000/api-docs`
 npm run start:dev
 ```
 
+## Local Postgres + migrations
+
+Runtime requires `DATABASE_URL` and does not fall back to libpq defaults.
+
+Use the local dev startup flow:
+
+```bash
+yarn db:start
+```
+
+`yarn db:start` is rerunnable and will:
+- create or start a local Docker Postgres container
+- keep data in a persistent Docker volume
+- run `yarn db:migrate:up` against `DATABASE_URL`
+- print the exact local `DATABASE_URL` used for migration
+
+Default local settings (override with env vars):
+- `HUB_DB_CONTAINER=ownables-hub-postgres`
+- `HUB_DB_VOLUME=ownables-hub-postgres-data`
+- `HUB_DB_PORT=54329`
+- `HUB_DB_NAME=ownables_hub`
+- `HUB_DB_USER=ownables`
+- `HUB_DB_PASSWORD=ownables`
+- `HUB_LOCAL_DATABASE_URL` can override the derived local DSN used by `db:start`
+- derived default `DATABASE_URL=postgres://ownables:ownables@127.0.0.1:54329/ownables_hub`
+
+Run migrations directly (for existing Postgres targets):
+
+```bash
+DATABASE_URL=postgres://user:pass@127.0.0.1:5432/db yarn db:migrate:up
+DATABASE_URL=postgres://user:pass@127.0.0.1:5432/db yarn db:migrate:down
+```
+
 ## Required configuration (minimum)
 
 Set these env vars for a usable local/prod setup:

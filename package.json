@@ -27,6 +27,7 @@
     "test:debug": "node --inspect-brk node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "release": "semantic-release",
+    "db:start": "bash ./scripts/db-start.sh",
     "db:migrate:create": "node-pg-migrate create -m migrations",
     "db:migrate:up": "node-pg-migrate up -m migrations",
     "db:migrate:down": "node-pg-migrate down -m migrations"
