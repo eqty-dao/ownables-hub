@@ -1,6 +1,6 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { calculateOwnablePackageCid } from '@ownables/core';
-import { ConfigService } from '../common/config/config.service.js';
+import { ConfigService, resolveStorageRoot } from '../common/config/config.service.js';
 import JSZip from 'jszip';
 import * as fs from 'fs/promises';
 import fileExists from '../utils/fileExists.js';
@@ -16,7 +16,8 @@ export class PackageService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    this.path = this.config.getStoragePaths().packages;
+    const rootPath = resolveStorageRoot(this.config.getAppConfig().ownablesStorage);
+    this.path = path.join(rootPath, 'packages');
     await fs.mkdir(this.path, { recursive: true });
   }
 

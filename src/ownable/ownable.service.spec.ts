@@ -17,14 +17,11 @@ describe('OwnableService', () => {
   const ownerWallet = ethers.Wallet.createRandom();
 
   const buildConfig = (root: string) => ({
-    getStoragePaths: () => ({
-      packages: path.join(root, 'packages'),
-      chains: path.join(root, 'chains'),
-      users: path.join(root, 'users'),
-      nfts: path.join(root, 'nfts'),
+    getAppConfig: () => ({
+      ownablesStorage: root,
     }),
+    getRuntimeNetworkProfile: () => 'testnet',
     getAuthoritySignerMnemonic: () => ownerWallet.mnemonic?.phrase || '',
-    getBaseNftContractAddress: () => '0xbaseSepolia',
   });
 
   const buildService = async (root: string, nftOwner = ownerWallet.address) => {

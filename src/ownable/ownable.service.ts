@@ -1,7 +1,11 @@
 import { Injectable, OnModuleInit, StreamableFile } from '@nestjs/common';
 import { calculateOwnablePackageCid } from '@ownables/core';
 import { PackageService } from '../package/package.service.js';
-import { ConfigService } from '../common/config/config.service.js';
+import {
+  ConfigService,
+  RuntimeNetworkProfile,
+  resolveStorageRoot,
+} from '../common/config/config.service.js';
 import { CosmWasmService } from '../cosmwasm/cosmwasm.service.js';
 import Contract from '../cosmwasm/contract.js';
 import { mkdirSync, readFileSync, writeFileSync, readdirSync, createReadStream } from 'fs';
@@ -38,11 +42,11 @@ export class OwnableService implements OnModuleInit {
     private nft: NFTService,
     private http: HttpService,
   ) {
-    const paths = this.config.getStoragePaths();
-    this.pathToPkgs = paths.packages;
-    this.pathToCids = paths.chains;
-    this.pathToUsers = paths.users;
-    this.pathToNfts = paths.nfts;
+    const rootPath = resolveStorageRoot(this.config.getAppConfig().ownablesStorage);
+    this.pathToPkgs = path.join(rootPath, 'packages');
+    this.pathToCids = path.join(rootPath, 'chains');
+    this.pathToUsers = path.join(rootPath, 'users');
+    this.pathToNfts = path.join(rootPath, 'nfts');
 
     const mnemonic = this.config.getAuthoritySignerMnemonic();
     if (!mnemonic) {
@@ -156,7 +160,15 @@ export class OwnableService implements OnModuleInit {
   }
 
   private getBaseContractAddress(): string {
-    return this.config.getBaseNftContractAddress();
+    return this.getBaseNftContractAddressForProfile(this.config.getRuntimeNetworkProfile());
+  }
+
+  private getBaseNftContractAddressForProfile(profile: RuntimeNetworkProfile): string {
+    if (profile === 'testnet') {
+      return process.env.TESTNET_BASE_NFT_CONTRACT_ADDRESS?.trim() || '';
+    }
+
+    return process.env.MAINNET_BASE_NFT_CONTRACT_ADDRESS?.trim() || '';
   }
 
   async existsCid(cid: string): Promise<boolean> {

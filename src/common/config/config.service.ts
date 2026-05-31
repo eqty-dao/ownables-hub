@@ -29,17 +29,6 @@ interface RuntimeConfig {
     testnet: ChainRpcUrls;
     mainnet: ChainRpcUrls;
   };
-  baseNftContractAddresses: {
-    testnet: string;
-    mainnet: string;
-  };
-  storagePaths: {
-    root: string;
-    packages: string;
-    chains: string;
-    users: string;
-    nfts: string;
-  };
 }
 
 function readEnv(name: string, fallback = ''): string {
@@ -70,7 +59,7 @@ function parsePort(name: string): number {
   return value;
 }
 
-function resolveStorageRoot(ownablesStorage: string): string {
+export function resolveStorageRoot(ownablesStorage: string): string {
   const value = ownablesStorage.trim();
   if (!value) {
     return path.resolve(process.cwd(), 'storage');
@@ -113,10 +102,6 @@ export class ConfigService {
     return this.config;
   }
 
-  getStoragePaths(): RuntimeConfig['storagePaths'] {
-    return this.runtimeConfig.storagePaths;
-  }
-
   getRuntimeNetworkProfile(): RuntimeNetworkProfile {
     return this.runtimeConfig.networkProfile;
   }
@@ -138,15 +123,7 @@ export class ConfigService {
     }
   }
 
-  getBaseNftContractAddress(): string {
-    return this.runtimeConfig.networkProfile === 'testnet'
-      ? this.runtimeConfig.baseNftContractAddresses.testnet
-      : this.runtimeConfig.baseNftContractAddresses.mainnet;
-  }
-
   private buildRuntimeConfig(): RuntimeConfig {
-    const rootPath = resolveStorageRoot(this.config.ownablesStorage);
-
     return {
       networkProfile: parseRuntimeNetworkProfile('HUB_NETWORK_PROFILE'),
       authoritySignerMnemonic: readEnv('SIGNER_MNEMONIC', readEnv('ACCOUNT_MNEMONIC', '')),
@@ -163,17 +140,6 @@ export class ConfigService {
           polygon: readEnv('MAINNET_POLYGON_RPC_URL', 'https://polygon-rpc.com'),
           base: readEnv('MAINNET_BASE_RPC_URL', 'https://mainnet.base.org'),
         },
-      },
-      baseNftContractAddresses: {
-        testnet: readEnv('TESTNET_BASE_NFT_CONTRACT_ADDRESS', readEnv('BASE_SEPOLIA_NFT_CONTRACT_ADDR', '')),
-        mainnet: readEnv('MAINNET_BASE_NFT_CONTRACT_ADDRESS', readEnv('BASE_NFT_CONTRACT_ADDR', '')),
-      },
-      storagePaths: {
-        root: rootPath,
-        packages: path.join(rootPath, 'packages'),
-        chains: path.join(rootPath, 'chains'),
-        users: path.join(rootPath, 'users'),
-        nfts: path.join(rootPath, 'nfts'),
       },
     };
   }
