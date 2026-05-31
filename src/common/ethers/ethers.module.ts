@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
-import { EthersService } from './ethers.service';
-import { ConfigModule } from '../config/config.module';
+import { EthersService } from './ethers.service.js';
+import { ConfigModule } from '../config/config.module.js';
 
 @Module({
   imports: [ConfigModule],

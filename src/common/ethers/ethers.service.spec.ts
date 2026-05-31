@@ -1,19 +1,19 @@
-import { EthersService } from './ethers.service';
+import { EthersService } from './ethers.service.js';
 import { ethers } from 'ethers';
 
 describe('EthersService', () => {
   const mnemonic = 'test test test test test test test test test test test junk';
   const config = {
-    get: (key: string) => {
+    getEthMode: () => 'testnet',
+    getAccountMnemonic: () => mnemonic,
+    getAlchemyApiKey: (network: string) => {
       const values: Record<string, string> = {
-        'eth.mode': 'testnet',
-        'eth.account.mnemonic': mnemonic,
-        'eth.account.base_alchemy_api_key': '',
-        'eth.account.eth_alchemy_api_key': '',
-        'eth.account.arbitrum_alchemy_api_key': '',
-        'eth.account.polygon_alchemy_api_key': '',
+        base: '',
+        ethereum: '',
+        arbitrum: '',
+        polygon: '',
       };
-      return values[key];
+      return values[network];
     },
   };
 

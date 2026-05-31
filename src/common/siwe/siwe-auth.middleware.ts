@@ -1,23 +1,12 @@
 import { Injectable, NestMiddleware, UnauthorizedException } from '@nestjs/common';
 import { NextFunction, Request, Response } from 'express';
-import { SIWEMessage, SIWEService } from './siwe.service';
-import { ConfigService } from '../config/config.service';
+import { SIWEMessage, SIWEService } from './siwe.service.js';
 
 @Injectable()
 export class SIWEAuthMiddleware implements NestMiddleware {
-  constructor(
-    private readonly siweService: SIWEService,
-    private readonly config: ConfigService,
-  ) {}
+  constructor(private readonly siweService: SIWEService) {}
 
   async use(req: Request, _res: Response, next: NextFunction): Promise<void> {
-    if (this.config.get('auth.disable')) {
-      req['user'] = { address: 'auth-disabled' };
-      req['signer'] = req['user'];
-      next();
-      return;
-    }
-
     const authHeader = req.headers.authorization;
     if (!authHeader) {
       next();

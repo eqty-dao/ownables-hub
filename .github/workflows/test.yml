@@ -15,11 +15,26 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
+          node-version: 24
+          cache: yarn
+
+      - name: Enable Corepack
+        run: corepack enable
 
       - name: Install dependencies
-        run: npm ci
+        run: yarn install --immutable
 
-      - name: Run tests
-        run: npm test
+      - name: Typecheck
+        run: yarn typecheck
+
+      - name: Lint
+        run: yarn lint:check
+
+      - name: Unit tests
+        run: yarn test --runInBand
+
+      - name: Core compatibility smoke
+        run: yarn verify:core-compat
+
+      - name: Build
+        run: yarn build

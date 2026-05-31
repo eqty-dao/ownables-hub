@@ -1,14 +1,16 @@
 import { Controller, Get, Header, Query, Post, Req, Res, UseInterceptors, StreamableFile } from '@nestjs/common';
 import { ApiBody, ApiProperty, ApiConsumes, ApiProduces } from '@nestjs/swagger';
 import { Request, Response } from 'express';
-import { OwnableService } from './ownable.service';
-import { Signer } from '../common/http-signature/signer';
-import { AuthError, UserError } from '../interfaces/error';
+import { OwnableService } from './ownable.service.js';
+import { Signer } from '../common/http-signature/signer.js';
+import { AuthError, UserError } from '../interfaces/error.js';
 import { FileInterceptor } from '@nestjs/platform-express';
 
 interface SignerIdentity {
   address?: string;
 }
+
+type FileUploadRequest = Request & { file?: Express.Multer.File };
 
 @Controller('ownables')
 export class OwnableController {
@@ -31,7 +33,7 @@ export class OwnableController {
     },
   })
   @UseInterceptors(FileInterceptor('file'))
-  async bridgeOwnable(@Req() req: Request, @Res() res: Response, @Signer() signer?: SignerIdentity): Promise<Response> {
+  async bridgeOwnable(@Req() req: FileUploadRequest, @Res() res: Response, @Signer() signer?: SignerIdentity): Promise<Response> {
     const buffer = req.file?.buffer;
     if (!buffer || Object.getPrototypeOf(buffer) === null || Object.prototype.isPrototypeOf(buffer) == false) {
       return res.status(400).send('Failed to read data from HTTP request');

@@ -1,18 +1,22 @@
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
 import { INestApplication } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { ConfigService } from './common/config/config.service';
 import bodyParser from 'body-parser';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { AppModule } from './app.module.js';
+import { ConfigService } from './common/config/config.service.js';
+
+const hubPackage = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+  description: string;
+  version: string;
+};
 
 async function swagger(app: INestApplication, config: ConfigService) {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { description, version } = require('../package.json');
-
   const options = new DocumentBuilder()
     .setTitle('Ownables Hub')
-    .setDescription(description)
-    .setVersion(version !== '0.0.0' ? version : config.get('env'))
+    .setDescription(hubPackage.description)
+    .setVersion(hubPackage.version !== '0.0.0' ? hubPackage.version : config.get<string>('env'))
     .addBearerAuth()
     .build();
 
@@ -25,15 +29,13 @@ async function bootstrap() {
     bodyParser: false,
   });
 
-  const config = await app.get<ConfigService>(ConfigService);
-  await config.load();
+  const config = app.get<ConfigService>(ConfigService);
 
   app.use(bodyParser.json({}), bodyParser.urlencoded({ extended: false }));
-
   app.enableShutdownHooks();
 
   await swagger(app, config);
-  await app.listen(process.env.PORT || 3000);
+  await app.listen(config.get<number>('port'));
 }
 
 bootstrap();

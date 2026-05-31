@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { verifyTypedData, isAddress } from 'ethers';
 import { randomBytes } from 'crypto';
-import { ConfigService } from '../config/config.service';
+import { ConfigService } from '../config/config.service.js';
 
 export interface SIWEMessage {
   domain: string;
@@ -97,7 +97,8 @@ export class SIWEService {
 
       return { isValid: true, address: recoveredAddress };
     } catch (error) {
-      return { isValid: false, error: `SIWE verification failed: ${error.message}` };
+      const message = error instanceof Error ? error.message : String(error);
+      return { isValid: false, error: `SIWE verification failed: ${message}` };
     }
   }
 

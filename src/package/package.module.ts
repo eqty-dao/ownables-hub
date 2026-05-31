@@ -1,12 +1,11 @@
 import { Module } from '@nestjs/common';
-import { PackageService } from './package.service';
-import { PackageController } from './package.controller';
-import { ConfigModule } from '../common/config/config.module';
-import { IpfsModule } from '../common/ipfs/ipfs.module';
-import { JszipModule } from '../common/jszip/jszip.module';
+import { PackageService } from './package.service.js';
+import { PackageController } from './package.controller.js';
+import { ConfigModule } from '../common/config/config.module.js';
+import { JszipModule } from '../common/jszip/jszip.module.js';
 
 @Module({
-  imports: [ConfigModule, IpfsModule, JszipModule],
+  imports: [ConfigModule, JszipModule],
   providers: [PackageService],
   controllers: [PackageController],
   exports: [PackageService],

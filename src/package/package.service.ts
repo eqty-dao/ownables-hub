@@ -1,8 +1,9 @@
-import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '../common/config/config.service';
+import { Injectable, OnModuleInit } from '@nestjs/common';
+import { calculateOwnablePackageCid } from '@ownables/core';
+import { ConfigService } from '../common/config/config.service.js';
 import JSZip from 'jszip';
 import * as fs from 'fs/promises';
-import fileExists from '../utils/fileExists';
+import fileExists from '../utils/fileExists.js';
 import path from 'path';
 
 @Injectable()
@@ -12,11 +13,10 @@ export class PackageService implements OnModuleInit {
   constructor(
     private readonly config: ConfigService,
     private readonly zip: JSZip,
-    @Inject('IPFS') private readonly ipfs: IPFS,
   ) {}
 
   async onModuleInit() {
-    this.path = this.config.get('path.packages');
+    this.path = this.config.getStoragePaths().packages;
     await fs.mkdir(this.path, { recursive: true });
   }
 
@@ -33,15 +33,10 @@ export class PackageService implements OnModuleInit {
   }
 
   private async getCid(files: Map<string, Buffer>): Promise<string> {
-    const source = Array.from(files.entries()).map(([filename, content]) => ({
-      path: `./${filename}`,
+    return calculateOwnablePackageCid(Array.from(files.entries()).map(([filename, content]) => ({
+      path: filename,
       content,
-    }));
-
-    for await (const entry of this.ipfs.addAll(source, { onlyHash: true, cidVersion: 1, recursive: true })) {
-      if (entry.path === entry.cid.toString() && !!entry.mode) return entry.cid.toString();
-    }
-    throw new Error('Failed to calculate directory CID: importer did not find a directory entry in the input files');
+    })));
   }
 
   private async storeFiles(cid: string, files: Map<string, Buffer>): Promise<void> {

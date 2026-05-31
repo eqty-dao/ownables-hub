@@ -1,19 +1,9 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { ConfigService } from './config.service';
+import { ConfigService } from './config.service.js';
 
 describe('ConfigService', () => {
-  let service: ConfigService;
-
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [ConfigService],
-    }).compile();
-
-    service = module.get<ConfigService>(ConfigService);
-    await service.onModuleInit();
-  });
-
-  it('should give the correct environment', () => {
+  it('should expose the active environment', () => {
+    process.env.NODE_ENV = 'test';
+    const service = new ConfigService();
     expect(service.get('env')).toBe('test');
   });
 });

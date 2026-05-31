@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
-import { SIWEService } from './siwe.service';
-import { SIWEAuthMiddleware } from './siwe-auth.middleware';
-import { SIWEGuard } from './siwe.guard';
-import { AuthController } from './auth.controller';
-import { ConfigModule } from '../config/config.module';
+import { SIWEService } from './siwe.service.js';
+import { SIWEAuthMiddleware } from './siwe-auth.middleware.js';
+import { SIWEGuard } from './siwe.guard.js';
+import { AuthController } from './auth.controller.js';
+import { ConfigModule } from '../config/config.module.js';
 
 @Module({
   imports: [ConfigModule],

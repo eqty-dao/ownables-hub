@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import * as fs from 'fs/promises';
 import * as vm from 'vm';
-import Contract from './contract';
+import Contract from './contract.js';
 import * as babel from '@babel/core';
 import { TextEncoder, TextDecoder } from 'util';
 import pathToFileURL from 'url';

@@ -4,6 +4,10 @@
 /dist
 /node_modules
 package-lock.json
+.yarn/cache
+.yarn/berry
+.yarn/install-state.gz
+*.tsbuildinfo
 # Logs
 logs
 *.log

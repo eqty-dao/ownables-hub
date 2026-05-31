@@ -1,14 +1,15 @@
-import { Inject, Injectable, OnModuleInit, StreamableFile } from '@nestjs/common';
-import { PackageService } from '../package/package.service';
-import { ConfigService } from '../common/config/config.service';
-import { CosmWasmService } from '../cosmwasm/cosmwasm.service';
-import Contract from '../cosmwasm/contract';
-import { rmSync, mkdirSync, readFileSync, writeFileSync, readdirSync, createReadStream } from 'fs';
-import { NFTInfo } from '../interfaces/OwnableInfo';
-import { NFTService } from '../nft/nft.service';
+import { Injectable, OnModuleInit, StreamableFile } from '@nestjs/common';
+import { calculateOwnablePackageCid } from '@ownables/core';
+import { PackageService } from '../package/package.service.js';
+import { ConfigService } from '../common/config/config.service.js';
+import { CosmWasmService } from '../cosmwasm/cosmwasm.service.js';
+import Contract from '../cosmwasm/contract.js';
+import { mkdirSync, readFileSync, writeFileSync, readdirSync, createReadStream } from 'fs';
+import { NFTInfo } from '../interfaces/OwnableInfo.js';
+import { NFTService } from '../nft/nft.service.js';
 import { HttpService } from '@nestjs/axios';
-import { AuthError, UserError } from '../interfaces/error';
-import fileExists from '../utils/fileExists';
+import { AuthError, UserError } from '../interfaces/error.js';
+import fileExists from '../utils/fileExists.js';
 import JSZip from 'jszip';
 import path from 'path';
 import { exec } from 'child_process';
@@ -27,8 +28,7 @@ export class OwnableService implements OnModuleInit {
   private readonly pathToNfts: string;
   private readonly authoritySigner: {
     getAddress: () => Promise<string>;
-    sign: (data: Uint8Array) => Promise<Uint8Array>;
-    signMessage: (message: string | Uint8Array) => Promise<string>;
+    signTypedData: (domain: any, types: Record<string, any[]>, value: any) => Promise<string>;
   };
 
   constructor(
@@ -37,22 +37,22 @@ export class OwnableService implements OnModuleInit {
     private cosmWasm: CosmWasmService,
     private nft: NFTService,
     private http: HttpService,
-    @Inject('IPFS') private readonly ipfs: IPFS,
   ) {
-    this.pathToPkgs = this.config.get('path.packages');
-    this.pathToCids = this.config.get('path.chains');
-    this.pathToUsers = this.config.get('path.users');
-    this.pathToNfts = this.config.get('path.nfts');
+    const paths = this.config.getStoragePaths();
+    this.pathToPkgs = paths.packages;
+    this.pathToCids = paths.chains;
+    this.pathToUsers = paths.users;
+    this.pathToNfts = paths.nfts;
 
-    const mnemonic = this.config.get('eth.account.mnemonic');
+    const mnemonic = this.config.getAccountMnemonic();
     if (!mnemonic) {
-      throw new Error('Missing eth.account.mnemonic configuration');
+      throw new Error('Missing account mnemonic configuration');
     }
     const authorityWallet = ethers.Wallet.fromPhrase(mnemonic);
     this.authoritySigner = {
       getAddress: async () => authorityWallet.address,
-      sign: async (data: Uint8Array) => ethers.getBytes(await authorityWallet.signMessage(data)),
-      signMessage: async (message: string | Uint8Array) => authorityWallet.signMessage(message),
+      signTypedData: async (domain: any, types: Record<string, any[]>, value: any) =>
+        authorityWallet.signTypedData(domain, types, value),
     };
   }
 
@@ -156,8 +156,7 @@ export class OwnableService implements OnModuleInit {
   }
 
   private getBaseContractAddress(): string {
-    const mode = this.config.get('eth.mode');
-    return mode === 'testnet' ? this.config.get('eth.contracts.base_sepolia') : this.config.get('eth.contracts.base');
+    return this.config.getBaseNftContractAddress();
   }
 
   async existsCid(cid: string): Promise<boolean> {
@@ -223,15 +222,10 @@ export class OwnableService implements OnModuleInit {
   }
 
   private async getCid(files: Map<string, Buffer>): Promise<string> {
-    const source = Array.from(files.entries()).map(([filename, content]) => ({
-      path: `./${filename}`,
+    return calculateOwnablePackageCid(Array.from(files.entries()).map(([filename, content]) => ({
+      path: filename,
       content,
-    }));
-
-    for await (const entry of this.ipfs.addAll(source, { onlyHash: true, cidVersion: 1, recursive: true })) {
-      if (entry.path === entry.cid.toString() && !!entry.mode) return entry.cid.toString();
-    }
-    throw new Error('Failed to calculate directory CID: importer did not find a directory entry in the input files');
+    })));
   }
 
   private validateEventChain(chain: EventChain): void {

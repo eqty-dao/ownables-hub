@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { EthersService } from '../../common/ethers/ethers.service';
-import { NFTInfo } from '../../interfaces/OwnableInfo';
+import { EthersService } from '../../common/ethers/ethers.service.js';
+import { NFTInfo } from '../../interfaces/OwnableInfo.js';
 
 @Injectable()
 export class EthereumService {

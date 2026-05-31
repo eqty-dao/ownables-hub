@@ -1,6 +1,6 @@
 import { Controller, Get, Res } from '@nestjs/common';
 import { Response } from 'express';
-import { AppService } from './app.service';
+import { AppService } from './app.service.js';
 import { ApiExcludeEndpoint } from '@nestjs/swagger';
 
 @Controller()

@@ -1,5 +1,5 @@
-import { EthereumService } from './ethereum.service';
-import { NFTInfo } from '../../interfaces/OwnableInfo';
+import { EthereumService } from './ethereum.service.js';
+import { NFTInfo } from '../../interfaces/OwnableInfo.js';
 
 describe('EthereumService', () => {
   let service: EthereumService;

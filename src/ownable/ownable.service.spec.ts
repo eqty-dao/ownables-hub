@@ -4,26 +4,27 @@ import { tmpdir } from 'os';
 import path from 'path';
 import JSZip from 'jszip';
 import { ethers } from 'ethers';
-import { Binary, Event, EventChain } from 'eqty-core';
-import { OwnableService } from './ownable.service';
+import { Binary, Event, EventChain } from '../test-mocks/eqty-core.js';
+import { OwnableService } from './ownable.service.js';
+
+jest.mock('@ownables/core', () => ({
+  calculateOwnablePackageCid: (entries: Array<{ path: string; content: Buffer }>) =>
+    `cid-${entries.map((entry) => entry.path).sort().join('-')}`,
+}));
+jest.mock('eqty-core', () => require('../test-mocks/eqty-core.ts'));
 
 describe('OwnableService', () => {
   const ownerWallet = ethers.Wallet.createRandom();
 
   const buildConfig = (root: string) => ({
-    get: (key: string) => {
-      const values: Record<string, string> = {
-        'path.packages': path.join(root, 'packages'),
-        'path.chains': path.join(root, 'chains'),
-        'path.users': path.join(root, 'users'),
-        'path.nfts': path.join(root, 'nfts'),
-        'eth.account.mnemonic': ownerWallet.mnemonic?.phrase || '',
-        'eth.mode': 'testnet',
-        'eth.contracts.base': '0xbase',
-        'eth.contracts.base_sepolia': '0xbaseSepolia',
-      };
-      return values[key];
-    },
+    getStoragePaths: () => ({
+      packages: path.join(root, 'packages'),
+      chains: path.join(root, 'chains'),
+      users: path.join(root, 'users'),
+      nfts: path.join(root, 'nfts'),
+    }),
+    getAccountMnemonic: () => ownerWallet.mnemonic?.phrase || '',
+    getBaseNftContractAddress: () => '0xbaseSepolia',
   });
 
   const buildService = async (root: string, nftOwner = ownerWallet.address) => {
@@ -36,20 +37,12 @@ describe('OwnableService', () => {
       GetServerETHBalance: jest.fn().mockResolvedValue('1.00'),
     };
 
-    const ipfs = {
-      addAll: jest.fn(async function* () {
-        yield { path: './package.json', cid: { toString: () => 'cid-file' }, mode: 0o755 };
-        yield { path: 'cid-test', cid: { toString: () => 'cid-test' }, mode: 0o755 };
-      }),
-    };
-
     const service = new OwnableService(
       {} as any,
       buildConfig(root) as any,
       {} as any,
       nft as any,
       {} as any,
-      ipfs as any,
     );
 
     await service.onModuleInit();
@@ -60,8 +53,7 @@ describe('OwnableService', () => {
     const chain = new EventChain(`0x${'11'.repeat(32)}`);
     const signer = {
       getAddress: async () => ownerWallet.address,
-      sign: async (data: Uint8Array) => ethers.getBytes(await ownerWallet.signMessage(data)),
-      signMessage: async (message: string | Uint8Array) => ownerWallet.signMessage(message),
+      signTypedData: async () => `0x${'00'.repeat(65)}`,
     };
     const event = new Event({ '@context': 'instantiate_msg.json', nft });
     event.previous = Binary.fromHex(ethers.keccak256(ethers.toUtf8Bytes(chain.id)).slice(2));
@@ -81,9 +73,9 @@ describe('OwnableService', () => {
 
     const result = await service.bridgeOwnable(buffer, { address: ownerWallet.address }, false);
 
-    expect(result.cid).toEqual('cid-test');
+    expect(result.cid).toEqual(expect.any(String));
     const usersDir = path.join(root, 'users');
-    const files = readFileSync(path.join(usersDir, `cid-test_${ownerWallet.address.toLowerCase()}_bridged`), 'utf8');
+    const files = readFileSync(path.join(usersDir, `${result.cid}_${ownerWallet.address.toLowerCase()}_bridged`), 'utf8');
     expect(JSON.parse(files).owner).toEqual(ownerWallet.address);
 
     await rm(root, { recursive: true, force: true });

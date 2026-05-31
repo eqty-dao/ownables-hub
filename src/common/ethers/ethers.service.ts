@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { ethers } from 'ethers';
-import { ConfigService } from '../config/config.service';
-import * as abis from './abi';
+import { ConfigService } from '../config/config.service.js';
+import * as abis from './abi/index.js';
 // import { throwError } from 'rxjs';
 // import { Networkish } from '@ethersproject/networks';
 
@@ -26,9 +26,9 @@ export class EthersService implements OnModuleInit {
     this.network = { name: 'base-sepolia', chainId: 84532 };
     this.alchemyProvider = new ethers.AlchemyProvider(
       this.network,
-      this.config.get('eth.account.base_alchemy_api_key'),
+      this.config.getAlchemyApiKey('base'),
     );
-    const mnemonic = this.config.get('eth.account.mnemonic');
+    const mnemonic = this.config.getAccountMnemonic();
     this.signer = mnemonic
       ? ethers.Wallet.fromPhrase(mnemonic, this.alchemyProvider)
       : new ethers.Wallet(ethers.id('ownables-hub-fallback-key'), this.alchemyProvider);
@@ -66,25 +66,25 @@ export class EthersService implements OnModuleInit {
 
   private getNetwork(networkName: string): [string, number, string] {
     // https://docs.ethers.org/v6/api/providers/thirdparty/#AlchemyProvider
-    const networkId = this.config.get('eth.mode') === 'testnet' ? 'T' : 'L';
+    const networkId = this.config.getEthMode() === 'testnet' ? 'T' : 'L';
     switch (networkName) {
       case 'eip155:ethereum':
         if (networkId === 'T')
-          return ['sepolia', 11155111, this.config.get('eth.account.eth_alchemy_api_key')]; // Sepolia Testnet
-        else return ['mainnet', 1, this.config.get('eth.account.eth_alchemy_api_key')]; // Ethereum Mainnet
+          return ['sepolia', 11155111, this.config.getAlchemyApiKey('ethereum')]; // Sepolia Testnet
+        else return ['mainnet', 1, this.config.getAlchemyApiKey('ethereum')]; // Ethereum Mainnet
       case 'eip155:arbitrum':
         if (networkId === 'T')
           // Arbitrum Sepolia Testnet
-          return ['arbitrum-sepolia', 421614, this.config.get('eth.account.arbitrum_alchemy_api_key')];
-        else return ['arbitrum', 42161, this.config.get('eth.account.arbitrum_alchemy_api_key')]; // Arbitrum Mainnet
+          return ['arbitrum-sepolia', 421614, this.config.getAlchemyApiKey('arbitrum')];
+        else return ['arbitrum', 42161, this.config.getAlchemyApiKey('arbitrum')]; // Arbitrum Mainnet
       case 'eip155:polygon':
         if (networkId === 'T')
-          return ['matic-amoy', 80002, this.config.get('eth.account.polygon_alchemy_api_key')]; // Polygon Amoy Testnet
-        else return ['matic', 137, this.config.get('eth.account.polygon_alchemy_api_key')]; // Polygon mainnet
+          return ['matic-amoy', 80002, this.config.getAlchemyApiKey('polygon')]; // Polygon Amoy Testnet
+        else return ['matic', 137, this.config.getAlchemyApiKey('polygon')]; // Polygon mainnet
       case 'eip155:base':
         if (networkId === 'T')
-          return ['base-sepolia', 84532, this.config.get('eth.account.base_alchemy_api_key')];
-        else return ['base', 8453, this.config.get('eth.account.base_alchemy_api_key')];
+          return ['base-sepolia', 84532, this.config.getAlchemyApiKey('base')];
+        else return ['base', 8453, this.config.getAlchemyApiKey('base')];
     }
     throw new Error(
       `Incorrect network name. Supported network names: eip155:ethereum eip155:arbitrum eip155:polygon eip155:base`,
@@ -98,7 +98,7 @@ export class EthersService implements OnModuleInit {
 
     this.alchemyProvider = new ethers.AlchemyProvider(this.network, providerApiKey);
 
-    const mnemonic = this.config.get('eth.account.mnemonic');
+    const mnemonic = this.config.getAccountMnemonic();
     this.signer = mnemonic
       ? ethers.Wallet.fromPhrase(mnemonic, this.alchemyProvider)
       : new ethers.Wallet(ethers.id('ownables-hub-fallback-key'), this.alchemyProvider);
