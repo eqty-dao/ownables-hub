@@ -135,6 +135,50 @@ describe('HubStateRepository', () => {
     );
   });
 
+  it('uses slot-scoped duplicate upsert key for indexed events', async () => {
+    query.mockResolvedValue({ rows: [] });
+
+    await repo.upsertIndexedAnchorEvent({
+      slotName: 'testnet',
+      chainId: '84532',
+      anchorContractAddress: '0xA1',
+      blockNumber: 25n,
+      blockHash: '0xB1',
+      transactionHash: '0xDUP',
+      transactionIndex: 2,
+      logIndex: 4,
+      eventName: 'Anchored',
+      cid: 'cid-1',
+      ownableId: 'oid-1',
+      ownerAddress: '0xD1',
+      payloadJson: { key: 'value' },
+    });
+
+    await repo.upsertIndexedPublicEvent({
+      slotName: 'mainnet',
+      chainId: '8453',
+      anchorContractAddress: '0xA2',
+      blockNumber: 26n,
+      blockHash: '0xB2',
+      transactionHash: '0xDUP',
+      transactionIndex: 1,
+      logIndex: 4,
+      eventName: 'PublicEvent',
+      payloadJson: { key: 'value' },
+    });
+
+    expect(query).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('ON CONFLICT (slot_name, transaction_hash, log_index) DO UPDATE SET'),
+      expect.any(Array),
+    );
+    expect(query).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('ON CONFLICT (slot_name, transaction_hash, log_index) DO UPDATE SET'),
+      expect.any(Array),
+    );
+  });
+
   it('queries wallet export events ordered by block, transaction_index, and log_index', async () => {
     query.mockResolvedValueOnce({ rows: [{ id: '1', eventKind: 'anchor' }] });
 
@@ -165,6 +209,90 @@ describe('HubStateRepository', () => {
     expect(clientQuery).toHaveBeenNthCalledWith(1, 'BEGIN');
     expect(clientQuery).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO indexer_cursors'), expect.any(Array));
     expect(clientQuery).toHaveBeenLastCalledWith('COMMIT');
+  });
+
+  it('isolates cursor writes by slot between testnet and mainnet', async () => {
+    query.mockResolvedValue({ rows: [] });
+    query
+      .mockResolvedValueOnce({ rows: [{ nextFromBlock: '51', slotName: 'testnet' }] })
+      .mockResolvedValueOnce({ rows: [{ nextFromBlock: '101', slotName: 'mainnet' }] });
+
+    await repo.upsertIndexerCursor({
+      slotName: 'testnet',
+      cursorName: 'anchor-public-events',
+      chainId: '84532',
+      anchorContractAddress: '0xAnchor1',
+      nextFromBlock: 51n,
+    });
+    await repo.upsertIndexerCursor({
+      slotName: 'mainnet',
+      cursorName: 'anchor-public-events',
+      chainId: '8453',
+      anchorContractAddress: '0xAnchor2',
+      nextFromBlock: 101n,
+    });
+    await repo.getIndexerCursor('testnet', 'anchor-public-events');
+    await repo.getIndexerCursor('mainnet', 'anchor-public-events');
+
+    expect(query).toHaveBeenNthCalledWith(
+      3,
+      expect.stringContaining('WHERE slot_name = $1 AND cursor_name = $2'),
+      ['testnet', 'anchor-public-events'],
+    );
+    expect(query).toHaveBeenNthCalledWith(
+      4,
+      expect.stringContaining('WHERE slot_name = $1 AND cursor_name = $2'),
+      ['mainnet', 'anchor-public-events'],
+    );
+  });
+
+  it('persists and rereads cursor across successive advances', async () => {
+    query.mockResolvedValueOnce({ rows: [] });
+    query.mockResolvedValueOnce({ rows: [] });
+    query.mockResolvedValueOnce({
+      rows: [
+        {
+          slotName: 'testnet',
+          cursorName: 'anchor-public-events',
+          chainId: '84532',
+          anchorContractAddress: '0xAnchor',
+          nextFromBlock: '30',
+          lastScannedBlock: '29',
+          lastScannedTxHash: '0x29',
+          lastScannedTxIndex: 1,
+          lastScannedLogIndex: 2,
+        },
+      ],
+    });
+
+    await repo.upsertIndexerCursor({
+      slotName: 'testnet',
+      cursorName: 'anchor-public-events',
+      chainId: '84532',
+      anchorContractAddress: '0xAnchor',
+      nextFromBlock: 20n,
+      lastScannedBlock: 19n,
+      lastScannedTxHash: '0x19',
+      lastScannedTxIndex: 0,
+      lastScannedLogIndex: 1,
+    });
+    await repo.upsertIndexerCursor({
+      slotName: 'testnet',
+      cursorName: 'anchor-public-events',
+      chainId: '84532',
+      anchorContractAddress: '0xAnchor',
+      nextFromBlock: 30n,
+      lastScannedBlock: 29n,
+      lastScannedTxHash: '0x29',
+      lastScannedTxIndex: 1,
+      lastScannedLogIndex: 2,
+    });
+
+    const cursor = await repo.getIndexerCursor('testnet', 'anchor-public-events');
+    expect(cursor?.nextFromBlock).toBe(30n);
+    expect(cursor?.lastScannedBlock).toBe(29n);
+    expect(cursor?.lastScannedTxIndex).toBe(1);
+    expect(cursor?.lastScannedLogIndex).toBe(2);
   });
 
   it('rolls back transaction when event persistence fails', async () => {
