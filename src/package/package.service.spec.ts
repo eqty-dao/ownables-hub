@@ -1,13 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { PackageService } from './package.service.js';
-import { ConfigModule } from '../common/config/config.module.js';
-import { calculateOwnablePackageCid } from '@ownables/core';
-import * as fsModule from 'fs/promises';
 import JSZip from 'jszip';
-import path from 'path';
+import { ArchiveStorageService } from '../storage/archive-storage.service.js';
 
-const fs = jest.mocked(fsModule);
-jest.mock('fs/promises');
 jest.mock('@ownables/core', () => ({
   calculateOwnablePackageCid: (entries: Array<{ path: string; content: Buffer }>) =>
     `cid-${entries.map((entry) => entry.path).sort().join('-')}`,
@@ -20,89 +15,52 @@ describe('PackageService', () => {
       files: {
         'package.json': { async: jest.fn(() => Promise.resolve('{}')) },
         foo: { async: jest.fn(() => Promise.resolve('_foo_')) },
-        bar: { async: jest.fn(() => Promise.resolve('_bar_')) },
       },
     })),
+  } as unknown as JSZip;
+
+  const storage = {
+    storePackageArtifacts: jest.fn().mockResolvedValue(undefined),
+    hasPackage: jest.fn().mockResolvedValue(false),
+    packageAssetKey: jest.fn((cid: string, file: string) => `archives/packages/${cid}/${file}`),
+    packageZipKey: jest.fn((cid: string) => `archives/packages/${cid}/${cid}.zip`),
+    getPackageZip: jest.fn().mockResolvedValue(Buffer.from('zip-data')),
   };
 
   beforeEach(async () => {
+    jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
-      imports: [ConfigModule],
-      providers: [PackageService, { provide: JSZip, useValue: zip }],
+      providers: [PackageService, { provide: JSZip, useValue: zip }, { provide: ArchiveStorageService, useValue: storage }],
     }).compile();
     await module.init();
 
     service = module.get<PackageService>(PackageService);
   });
 
-  it('should be defined', () => {
-    expect(service).toBeDefined();
-  });
-
-  describe('exists()', () => {
-    it('returns true if package exists', async () => {
-      fs.access.mockReturnValue(Promise.resolve());
-
-      expect(await service.exists('some_cid')).toEqual(true);
-      expect(fs.access).toHaveBeenCalledWith(path.join(process.cwd(), 'storage', 'packages', 'some_cid'));
-    });
-
-    it('returns false if package does not exist', async () => {
-      fs.access.mockReturnValue(Promise.reject(''));
-
-      expect(await service.exists('some_cid')).toEqual(false);
-      expect(fs.access).toHaveBeenCalledWith(path.join(process.cwd(), 'storage', 'packages', 'some_cid'));
-    });
-  });
-
-  describe('file()', () => {
-    it('gives the path to a file in a package', () => {
-      const file = service.file('some_cid', 'index.html');
-      expect(file).toEqual(path.join(process.cwd(), 'storage', 'packages', 'some_cid', 'index.html'));
-    });
-  });
-
-  describe('store()', () => {
+  it('stores package artifacts in archive storage when cid is new', async () => {
     const buffer = new Uint8Array([1, 2, 3]);
-    const cid = calculateOwnablePackageCid([
-      { path: 'package.json', content: Buffer.from('{}') },
-      { path: 'foo', content: Buffer.from('_foo_') },
-      { path: 'bar', content: Buffer.from('_bar_') },
-    ]);
-    const uploadPath = path.join(process.cwd(), 'storage', 'packages');
 
-    beforeEach(() => {
-      fs.access.mockReset();
-      fs.readlink.mockReset();
+    const cid = await service.store(buffer);
 
-      zip.loadAsync.mockClear();
-      fs.writeFile.mockClear();
-      fs.rename.mockClear();
-      fs.symlink.mockClear();
-    });
+    expect(cid).toBe('cid-foo-package.json');
+    expect(storage.storePackageArtifacts).toHaveBeenCalledWith(
+      'cid-foo-package.json',
+      buffer,
+      expect.any(Map),
+    );
+  });
 
-    it('stores a new package', async () => {
-      fs.access.mockReturnValue(Promise.reject());
+  it('returns cid without writing when package exists', async () => {
+    storage.hasPackage.mockResolvedValueOnce(true);
 
-      await expect(service.store(buffer)).resolves.toEqual(await cid);
+    const cid = await service.store(new Uint8Array([1, 2, 3]));
 
-      expect(zip.loadAsync).toHaveBeenCalledWith(buffer, { createFolders: true });
-      expect(fs.writeFile).toHaveBeenCalledTimes(4);
-      expect(fs.writeFile).toHaveBeenCalledWith(`${uploadPath}/${await cid}/package.json`, '{}');
-      expect(fs.writeFile).toHaveBeenCalledWith(`${uploadPath}/${await cid}/foo`, '_foo_');
-      expect(fs.writeFile).toHaveBeenCalledWith(`${uploadPath}/${await cid}/bar`, '_bar_');
-      expect(fs.writeFile).toHaveBeenCalledWith(`${uploadPath}/${await cid}.zip`, buffer);
-    });
+    expect(cid).toBe('cid-foo-package.json');
+    expect(storage.storePackageArtifacts).not.toHaveBeenCalled();
+  });
 
-    it('skips an existing package', async () => {
-      fs.access.mockReturnValue(Promise.resolve());
-      fs.readlink.mockReturnValue(Promise.resolve(`${uploadPath}/${await cid}`));
-
-      await expect(service.store(buffer)).resolves.toEqual(await cid);
-
-      expect(fs.writeFile).not.toHaveBeenCalled();
-      expect(fs.rename).not.toHaveBeenCalled();
-      expect(fs.symlink).not.toHaveBeenCalled();
-    });
+  it('uses archive keys for file lookup', () => {
+    expect(service.file('abc', 'package.json')).toBe('archives/packages/abc/package.json');
+    expect(service.file('abc')).toBe('archives/packages/abc/abc.zip');
   });
 });

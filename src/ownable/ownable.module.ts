@@ -7,9 +7,20 @@ import { EthersModule } from '../common/ethers/ethers.module.js';
 import { NFTModule } from '../nft/nft.module.js';
 import { OwnableService } from './ownable.service.js';
 import { HttpModule } from '@nestjs/axios';
+import { PersistenceModule } from '../persistence/persistence.module.js';
+import { StorageModule } from '../storage/storage.module.js';
 
 @Module({
-  imports: [ConfigModule, CosmWasmModule, PackageModule, EthersModule, NFTModule, HttpModule],
+  imports: [
+    ConfigModule,
+    CosmWasmModule,
+    PackageModule,
+    EthersModule,
+    NFTModule,
+    HttpModule,
+    PersistenceModule,
+    StorageModule,
+  ],
   providers: [OwnableService],
   controllers: [OwnableController],
 })
