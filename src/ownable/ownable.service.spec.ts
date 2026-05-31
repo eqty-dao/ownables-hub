@@ -85,6 +85,11 @@ describe('OwnableService', () => {
     expect(storage.storePackageArtifacts).toHaveBeenCalledTimes(1);
     expect(storage.storeEventChain).toHaveBeenCalledTimes(1);
     expect(hubState.upsertOwnableRecord).toHaveBeenCalledTimes(1);
+    expect(hubState.upsertOwnableRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        subjectId: chain.id,
+      }),
+    );
     expect(hubState.setOwnerState).toHaveBeenCalledWith('id-1', ownerWallet.address);
   });
 

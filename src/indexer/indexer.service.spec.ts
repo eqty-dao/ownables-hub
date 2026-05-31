@@ -68,7 +68,7 @@ describe('IndexerService', () => {
   it('persists anchor/public events and advances cursor from start block when no cursor exists', async () => {
     const iface = new Interface([
       'event Anchored(bytes32 indexed cidHash, string cid, address indexed owner)',
-      'event PublicEvent(bytes32 indexed cidHash, string cid, address indexed owner, bytes payload)',
+      'event PublicEvent(bytes32 indexed subjectId, address indexed source, string eventType, bytes data, uint64 timestamp)',
     ]);
     const anchoredLog = iface.encodeEventLog(iface.getEvent('Anchored'), [
       '0x' + '0'.repeat(64),
@@ -76,10 +76,11 @@ describe('IndexerService', () => {
       '0x00000000000000000000000000000000000000aa',
     ]);
     const publicLog = iface.encodeEventLog(iface.getEvent('PublicEvent'), [
-      '0x' + '0'.repeat(64),
-      'cid-2',
+      '0x' + '1'.repeat(64),
       '0x00000000000000000000000000000000000000bb',
-      '0x12345678',
+      'transfer',
+      '0x12345678abcdef',
+      42n,
     ]);
 
     providerState.head = 102;
@@ -133,6 +134,13 @@ describe('IndexerService', () => {
     expect(input.publicEvents).toHaveLength(1);
     expect(input.anchorEvents[0].transactionIndex).toBe(1);
     expect(input.publicEvents[0].transactionIndex).toBe(0);
+    expect(input.publicEvents[0]).toMatchObject({
+      subjectId: `0x${'1'.repeat(64)}`,
+      sourceAddress: '0x00000000000000000000000000000000000000bb',
+      eventType: 'transfer',
+      dataHex: '0x12345678abcdef',
+      eventTimestamp: 42n,
+    });
   });
 
   it('resumes from cursor next block and remains idempotent across reruns', async () => {
@@ -164,7 +172,7 @@ describe('IndexerService', () => {
   it('resumes within current head range and advances cursor from the resumed window', async () => {
     const iface = new Interface([
       'event Anchored(bytes32 indexed cidHash, string cid, address indexed owner)',
-      'event PublicEvent(bytes32 indexed cidHash, string cid, address indexed owner, bytes payload)',
+      'event PublicEvent(bytes32 indexed subjectId, address indexed source, string eventType, bytes data, uint64 timestamp)',
     ]);
     const anchoredLog = iface.encodeEventLog(iface.getEvent('Anchored'), [
       '0x' + '0'.repeat(64),

@@ -293,6 +293,7 @@ export class OwnableService implements OnModuleInit {
     const record = await this.hubState.upsertOwnableRecord({
       cid,
       prevOwnerAddress: signerAddress,
+      subjectId: chain.id,
       nftNetwork: nftInfo.network,
       nftContractAddress: nftInfo.address,
       nftTokenId: nftInfo.id,

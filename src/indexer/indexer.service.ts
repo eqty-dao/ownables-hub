@@ -7,7 +7,7 @@ const ANCHOR_CURSOR_NAME = 'anchor-public-events';
 
 const ANCHOR_EVENT_ABI = [
   'event Anchored(bytes32 indexed cidHash, string cid, address indexed owner)',
-  'event PublicEvent(bytes32 indexed cidHash, string cid, address indexed owner, bytes payload)',
+  'event PublicEvent(bytes32 indexed subjectId, address indexed source, string eventType, bytes data, uint64 timestamp)',
 ] as const;
 
 type NormalizedIndexedEvent = {
@@ -23,6 +23,11 @@ type NormalizedIndexedEvent = {
   eventName: string;
   cid: string | null;
   ownerAddress: string | null;
+  subjectId: string | null;
+  sourceAddress: string | null;
+  eventType: string | null;
+  dataHex: string | null;
+  eventTimestamp: bigint | null;
   payloadJson: unknown;
 };
 
@@ -100,8 +105,11 @@ export class IndexerService {
         transactionIndex: event.transactionIndex,
         logIndex: event.logIndex,
         eventName: event.eventName,
-        cid: event.cid,
-        ownerAddress: event.ownerAddress,
+        subjectId: event.subjectId,
+        sourceAddress: event.sourceAddress,
+        eventType: event.eventType,
+        dataHex: event.dataHex,
+        eventTimestamp: event.eventTimestamp,
         payloadJson: event.payloadJson,
       })),
     });
@@ -148,7 +156,17 @@ export class IndexerService {
 
       const cid = this.asNullableString(parsed.args.cid);
       const ownerAddress = this.asNullableString(parsed.args.owner)?.toLowerCase() ?? null;
-      const payloadHex = eventKind === 'public' ? this.asNullableString(parsed.args.payload) : null;
+      const subjectId = eventKind === 'public' ? this.asNullableString(parsed.args.subjectId)?.toLowerCase() ?? null : null;
+      const sourceAddress = eventKind === 'public' ? this.asNullableString(parsed.args.source)?.toLowerCase() ?? null : null;
+      const eventType = eventKind === 'public' ? this.asNullableString(parsed.args.eventType) : null;
+      const dataHex = eventKind === 'public' ? this.asNullableString(parsed.args.data)?.toLowerCase() ?? null : null;
+      const rawTimestamp = eventKind === 'public' ? parsed.args.timestamp : null;
+      const eventTimestamp =
+        rawTimestamp === null || rawTimestamp === undefined
+          ? null
+          : typeof rawTimestamp === 'bigint'
+            ? rawTimestamp
+            : BigInt(String(rawTimestamp));
 
       events.push({
         eventKind,
@@ -163,12 +181,19 @@ export class IndexerService {
         eventName: parsed.name,
         cid,
         ownerAddress,
+        subjectId,
+        sourceAddress,
+        eventType,
+        dataHex,
+        eventTimestamp,
         payloadJson:
           eventKind === 'public'
             ? {
-                cid,
-                ownerAddress,
-                payloadHex,
+                subjectId,
+                source: sourceAddress,
+                eventType,
+                data: dataHex,
+                timestamp: eventTimestamp?.toString() ?? null,
               }
             : {
                 cid,

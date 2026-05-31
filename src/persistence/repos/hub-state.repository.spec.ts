@@ -13,13 +13,14 @@ describe('HubStateRepository', () => {
   });
 
   it('upserts and resolves ownable lookups by cid and nft', async () => {
-    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-1', prevOwnerAddress: '0xabc' }] });
-    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-1', prevOwnerAddress: '0xabc' }] });
-    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-1', prevOwnerAddress: '0xabc' }] });
+    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
+    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
+    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
 
     await repo.upsertOwnableRecord({
       cid: 'cid-1',
       prevOwnerAddress: '0xABC',
+      subjectId: '0x11',
       nftNetwork: 'eip155:base',
       nftContractAddress: '0xNFT',
       nftTokenId: '1',
@@ -91,7 +92,7 @@ describe('HubStateRepository', () => {
     expect(cursor?.lastScannedTxIndex).toBe(3);
   });
 
-  it('upserts indexed events with transaction ordering metadata', async () => {
+  it('upserts replay-ready public events with transaction ordering metadata', async () => {
     query.mockResolvedValue({ rows: [] });
 
     await repo.upsertIndexedAnchorEvent({
@@ -120,6 +121,11 @@ describe('HubStateRepository', () => {
       transactionIndex: 1,
       logIndex: 5,
       eventName: 'PublicEvent',
+      subjectId: `0x${'2'.repeat(64)}`,
+      sourceAddress: '0x00000000000000000000000000000000000000bb',
+      eventType: 'transfer',
+      dataHex: '0xdeadbeef',
+      eventTimestamp: 321n,
       payloadJson: { key: 'value' },
     });
 
@@ -131,7 +137,21 @@ describe('HubStateRepository', () => {
     expect(query).toHaveBeenNthCalledWith(
       2,
       expect.stringContaining('INSERT INTO indexed_public_events'),
-      expect.arrayContaining(['mainnet', '8453', '0xA2', '26', '0xB2', '0xC2', 1, 5]),
+      expect.arrayContaining([
+        'mainnet',
+        '8453',
+        '0xA2',
+        '26',
+        '0xB2',
+        '0xC2',
+        1,
+        5,
+        `0x${'2'.repeat(64)}`,
+        '0x00000000000000000000000000000000000000bb',
+        'transfer',
+        '0xdeadbeef',
+        '321',
+      ]),
     );
   });
 
@@ -164,6 +184,11 @@ describe('HubStateRepository', () => {
       transactionIndex: 1,
       logIndex: 4,
       eventName: 'PublicEvent',
+      subjectId: `0x${'3'.repeat(64)}`,
+      sourceAddress: '0x00000000000000000000000000000000000000bb',
+      eventType: 'transfer',
+      dataHex: '0x01',
+      eventTimestamp: 1n,
       payloadJson: { key: 'value' },
     });
 
@@ -177,14 +202,41 @@ describe('HubStateRepository', () => {
       expect.stringContaining('ON CONFLICT (slot_name, transaction_hash, log_index) DO UPDATE SET'),
       expect.any(Array),
     );
+    expect(query).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('SELECT id FROM ownable_records WHERE subject_id = LOWER($10)'),
+      expect.any(Array),
+    );
   });
 
   it('queries wallet export events ordered by block, transaction_index, and log_index', async () => {
-    query.mockResolvedValueOnce({ rows: [{ id: '1', eventKind: 'anchor' }] });
+    query.mockResolvedValueOnce({
+      rows: [
+        {
+          id: '1',
+          eventKind: 'public',
+          subjectId: `0x${'4'.repeat(64)}`,
+          sourceAddress: '0x00000000000000000000000000000000000000bb',
+          eventType: 'transfer',
+          dataHex: '0xdead',
+          eventTimestamp: '123',
+        },
+      ],
+    });
 
     const rows = await repo.listWalletEventsByCid('cid-abc');
 
-    expect(rows).toEqual([{ id: '1', eventKind: 'anchor' }]);
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: '1',
+        eventKind: 'public',
+        subjectId: `0x${'4'.repeat(64)}`,
+        sourceAddress: '0x00000000000000000000000000000000000000bb',
+        eventType: 'transfer',
+        dataHex: '0xdead',
+        eventTimestamp: '123',
+      }),
+    ]);
     expect(query).toHaveBeenCalledWith(expect.stringContaining('ORDER BY "blockNumber"::numeric ASC, "transactionIndex" ASC, "logIndex" ASC'), ['cid-abc']);
   });
 

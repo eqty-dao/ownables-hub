@@ -5,6 +5,7 @@ import type { PoolClient } from 'pg';
 export interface OwnableRecordInput {
   cid: string;
   prevOwnerAddress: string;
+  subjectId?: string;
   nftNetwork?: string;
   nftContractAddress?: string;
   nftTokenId?: string;
@@ -15,6 +16,7 @@ export interface OwnableRecord {
   id: string;
   cid: string;
   prevOwnerAddress: string;
+  subjectId: string | null;
   nftNetwork: string | null;
   nftContractAddress: string | null;
   nftTokenId: string | null;
@@ -35,6 +37,11 @@ export interface IndexedWalletEvent {
   cid: string | null;
   ownableId: string | null;
   ownerAddress: string | null;
+  subjectId: string | null;
+  sourceAddress: string | null;
+  eventType: string | null;
+  dataHex: string | null;
+  eventTimestamp: string | null;
   payloadJson: unknown;
   indexedAt: string;
 }
@@ -60,22 +67,25 @@ export class HubStateRepository {
       `INSERT INTO ownable_records (
          cid,
          prev_owner_address,
+         subject_id,
          nft_network,
          nft_contract_address,
          nft_token_id,
          chain_file_name
-       ) VALUES ($1, LOWER($2), $3, $4, $5, $6)
+       ) VALUES ($1, LOWER($2), LOWER($3), $4, $5, $6, $7)
        ON CONFLICT (cid) DO UPDATE SET
          prev_owner_address = EXCLUDED.prev_owner_address,
+         subject_id = EXCLUDED.subject_id,
          nft_network = EXCLUDED.nft_network,
          nft_contract_address = EXCLUDED.nft_contract_address,
          nft_token_id = EXCLUDED.nft_token_id,
          chain_file_name = EXCLUDED.chain_file_name,
          updated_at = NOW()
-       RETURNING id, cid, prev_owner_address AS "prevOwnerAddress", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"`,
+       RETURNING id, cid, prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"`,
       [
         input.cid,
         input.prevOwnerAddress,
+        input.subjectId ?? null,
         input.nftNetwork ?? null,
         input.nftContractAddress ?? null,
         input.nftTokenId ?? null,
@@ -88,7 +98,7 @@ export class HubStateRepository {
 
   async getOwnableByCid(cid: string): Promise<OwnableRecord | null> {
     const result = await this.db.query<OwnableRecord>(
-      `SELECT id, cid, prev_owner_address AS "prevOwnerAddress", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
+      `SELECT id, cid, prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
        FROM ownable_records WHERE cid = $1`,
       [cid],
     );
@@ -98,7 +108,7 @@ export class HubStateRepository {
 
   async getOwnableByNft(nftNetwork: string, nftContractAddress: string, nftTokenId: string): Promise<OwnableRecord | null> {
     const result = await this.db.query<OwnableRecord>(
-      `SELECT id, cid, prev_owner_address AS "prevOwnerAddress", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
+      `SELECT id, cid, prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
        FROM ownable_records
        WHERE nft_network = $1 AND nft_contract_address = $2 AND nft_token_id = $3`,
       [nftNetwork, nftContractAddress, nftTokenId],
@@ -357,9 +367,11 @@ export class HubStateRepository {
     transactionIndex: number;
     logIndex: number;
     eventName: string;
-    cid?: string | null;
-    ownableId?: string | null;
-    ownerAddress?: string | null;
+    subjectId: string;
+    sourceAddress: string;
+    eventType: string;
+    dataHex: string;
+    eventTimestamp: bigint;
     payloadJson: unknown;
   }, client?: PoolClient): Promise<void> {
     await this.runQuery(
@@ -373,11 +385,33 @@ export class HubStateRepository {
          transaction_index,
          log_index,
          event_name,
-         cid,
          ownable_id,
-         owner_address,
+         cid,
+         subject_id,
+         source_address,
+         event_type,
+         data_hex,
+         event_timestamp,
          payload_json
-       ) VALUES ($1, $2, LOWER($3), $4, LOWER($5), LOWER($6), $7, $8, $9, $10, $11, LOWER($12), $13::jsonb)
+       ) VALUES (
+         $1,
+         $2,
+         LOWER($3),
+         $4,
+         LOWER($5),
+         LOWER($6),
+         $7,
+         $8,
+         $9,
+         (SELECT id FROM ownable_records WHERE subject_id = LOWER($10) LIMIT 1),
+         (SELECT cid FROM ownable_records WHERE subject_id = LOWER($10) LIMIT 1),
+         LOWER($10),
+         LOWER($11),
+         $12,
+         LOWER($13),
+         $14,
+         $15::jsonb
+       )
        ON CONFLICT (slot_name, transaction_hash, log_index) DO UPDATE SET
          chain_id = EXCLUDED.chain_id,
          anchor_contract_address = EXCLUDED.anchor_contract_address,
@@ -385,9 +419,13 @@ export class HubStateRepository {
          block_hash = EXCLUDED.block_hash,
          transaction_index = EXCLUDED.transaction_index,
          event_name = EXCLUDED.event_name,
-         cid = EXCLUDED.cid,
          ownable_id = EXCLUDED.ownable_id,
-         owner_address = EXCLUDED.owner_address,
+         cid = EXCLUDED.cid,
+         subject_id = EXCLUDED.subject_id,
+         source_address = EXCLUDED.source_address,
+         event_type = EXCLUDED.event_type,
+         data_hex = EXCLUDED.data_hex,
+         event_timestamp = EXCLUDED.event_timestamp,
          payload_json = EXCLUDED.payload_json,
          indexed_at = NOW()`,
       [
@@ -400,9 +438,11 @@ export class HubStateRepository {
         input.transactionIndex,
         input.logIndex,
         input.eventName,
-        input.cid ?? null,
-        input.ownableId ?? null,
-        input.ownerAddress ?? null,
+        input.subjectId,
+        input.sourceAddress,
+        input.eventType,
+        input.dataHex,
+        input.eventTimestamp.toString(),
         JSON.stringify(input.payloadJson),
       ],
       client,
@@ -444,9 +484,11 @@ export class HubStateRepository {
       transactionIndex: number;
       logIndex: number;
       eventName: string;
-      cid?: string | null;
-      ownableId?: string | null;
-      ownerAddress?: string | null;
+      subjectId: string;
+      sourceAddress: string;
+      eventType: string;
+      dataHex: string;
+      eventTimestamp: bigint;
       payloadJson: unknown;
     }>;
   }): Promise<void> {
@@ -499,6 +541,11 @@ export class HubStateRepository {
            cid,
            ownable_id AS "ownableId",
            owner_address AS "ownerAddress",
+           NULL::text AS "subjectId",
+           NULL::text AS "sourceAddress",
+           NULL::text AS "eventType",
+           NULL::text AS "dataHex",
+           NULL::text AS "eventTimestamp",
            payload_json AS "payloadJson",
            indexed_at::text AS "indexedAt"
          FROM indexed_anchor_events
@@ -518,7 +565,12 @@ export class HubStateRepository {
            event_name AS "eventName",
            cid,
            ownable_id AS "ownableId",
-           owner_address AS "ownerAddress",
+           NULL::text AS "ownerAddress",
+           subject_id AS "subjectId",
+           source_address AS "sourceAddress",
+           event_type AS "eventType",
+           data_hex AS "dataHex",
+           event_timestamp::text AS "eventTimestamp",
            payload_json AS "payloadJson",
            indexed_at::text AS "indexedAt"
          FROM indexed_public_events
