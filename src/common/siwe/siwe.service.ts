@@ -30,7 +30,7 @@ export class SIWEService {
   private readonly version = '1';
 
   constructor(private readonly config: ConfigService) {
-    this.domain = this.config.get('siwe.domain');
+    this.domain = this.config.getAppConfig().siweDomain;
   }
 
   async verifySIWEMessage(message: SIWEMessage, signature: string): Promise<SIWEAuthResult> {

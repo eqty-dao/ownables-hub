@@ -13,10 +13,11 @@ const hubPackage = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 
 };
 
 async function swagger(app: INestApplication, config: ConfigService) {
+  const appConfig = config.getAppConfig();
   const options = new DocumentBuilder()
     .setTitle('Ownables Hub')
     .setDescription(hubPackage.description)
-    .setVersion(hubPackage.version !== '0.0.0' ? hubPackage.version : config.get<string>('env'))
+    .setVersion(hubPackage.version !== '0.0.0' ? hubPackage.version : appConfig.env)
     .addBearerAuth()
     .build();
 
@@ -35,7 +36,7 @@ async function bootstrap() {
   app.enableShutdownHooks();
 
   await swagger(app, config);
-  await app.listen(config.get<number>('port'));
+  await app.listen(config.getAppConfig().port);
 }
 
 bootstrap();

@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import path from 'path';
 
 export type AppEnv = 'development' | 'test' | 'staging' | 'production';
+export type RuntimeNetworkProfile = 'testnet' | 'mainnet';
+export type EvmNetworkName = 'eip155:ethereum' | 'eip155:arbitrum' | 'eip155:polygon' | 'eip155:base';
 
 export interface AppConfig {
   env: AppEnv;
@@ -13,27 +15,23 @@ export interface AppConfig {
   siweDomain: string;
 }
 
-type ConfigPath =
-  | 'env'
-  | 'port'
-  | 'log.level'
-  | 'publicBaseUrl'
-  | 'databaseUrl'
-  | 'ownablesStorage'
-  | 'siwe.domain';
+interface ChainRpcUrls {
+  ethereum: string;
+  arbitrum: string;
+  polygon: string;
+  base: string;
+}
 
-interface RuntimeInternals {
-  ethMode: 'testnet' | 'mainnet';
-  accountMnemonic: string;
-  alchemyApiKeys: {
-    arbitrum: string;
-    polygon: string;
-    ethereum: string;
-    base: string;
+interface RuntimeConfig {
+  networkProfile: RuntimeNetworkProfile;
+  authoritySignerMnemonic: string;
+  rpcUrls: {
+    testnet: ChainRpcUrls;
+    mainnet: ChainRpcUrls;
   };
-  baseNftContracts: {
-    mainnet: string;
+  baseNftContractAddresses: {
     testnet: string;
+    mainnet: string;
   };
   storagePaths: {
     root: string;
@@ -56,7 +54,7 @@ function parseEnv(name: string): AppEnv {
   throw new Error(`Invalid ${name}: ${raw}`);
 }
 
-function parseMode(name: string): 'testnet' | 'mainnet' {
+function parseRuntimeNetworkProfile(name: string): RuntimeNetworkProfile {
   const raw = readEnv(name, 'testnet');
   if (raw === 'testnet' || raw === 'mainnet') {
     return raw;
@@ -109,67 +107,66 @@ function buildConfig(): AppConfig {
 @Injectable()
 export class ConfigService {
   private readonly config: AppConfig = buildConfig();
-  private readonly internals: RuntimeInternals = this.buildInternals();
-
-  get<T = unknown>(key: ConfigPath): T {
-    const map: Record<ConfigPath, unknown> = {
-      env: this.config.env,
-      port: this.config.port,
-      'log.level': this.config.logLevel,
-      publicBaseUrl: this.config.publicBaseUrl,
-      databaseUrl: this.config.databaseUrl,
-      ownablesStorage: this.config.ownablesStorage,
-      'siwe.domain': this.config.siweDomain,
-    };
-
-    return map[key] as T;
-  }
-
-  has(key: ConfigPath): boolean {
-    return this.get(key) !== undefined;
-  }
+  private readonly runtimeConfig: RuntimeConfig = this.buildRuntimeConfig();
 
   getAppConfig(): AppConfig {
     return this.config;
   }
 
-  getStoragePaths(): RuntimeInternals['storagePaths'] {
-    return this.internals.storagePaths;
+  getStoragePaths(): RuntimeConfig['storagePaths'] {
+    return this.runtimeConfig.storagePaths;
   }
 
-  getEthMode(): RuntimeInternals['ethMode'] {
-    return this.internals.ethMode;
+  getRuntimeNetworkProfile(): RuntimeNetworkProfile {
+    return this.runtimeConfig.networkProfile;
   }
 
-  getAccountMnemonic(): string {
-    return this.internals.accountMnemonic;
+  getAuthoritySignerMnemonic(): string {
+    return this.runtimeConfig.authoritySignerMnemonic;
   }
 
-  getAlchemyApiKey(network: keyof RuntimeInternals['alchemyApiKeys']): string {
-    return this.internals.alchemyApiKeys[network];
+  getRpcUrl(profile: RuntimeNetworkProfile, network: EvmNetworkName): string {
+    switch (network) {
+      case 'eip155:ethereum':
+        return this.runtimeConfig.rpcUrls[profile].ethereum;
+      case 'eip155:arbitrum':
+        return this.runtimeConfig.rpcUrls[profile].arbitrum;
+      case 'eip155:polygon':
+        return this.runtimeConfig.rpcUrls[profile].polygon;
+      case 'eip155:base':
+        return this.runtimeConfig.rpcUrls[profile].base;
+    }
   }
 
   getBaseNftContractAddress(): string {
-    return this.internals.ethMode === 'testnet'
-      ? this.internals.baseNftContracts.testnet
-      : this.internals.baseNftContracts.mainnet;
+    return this.runtimeConfig.networkProfile === 'testnet'
+      ? this.runtimeConfig.baseNftContractAddresses.testnet
+      : this.runtimeConfig.baseNftContractAddresses.mainnet;
   }
 
-  private buildInternals(): RuntimeInternals {
+  private buildRuntimeConfig(): RuntimeConfig {
     const rootPath = resolveStorageRoot(this.config.ownablesStorage);
 
     return {
-      ethMode: parseMode('ETH_MODE'),
-      accountMnemonic: readEnv('ACCOUNT_MNEMONIC', ''),
-      alchemyApiKeys: {
-        arbitrum: readEnv('ARBITRUM_ALCHEMY_API_KEY', ''),
-        polygon: readEnv('POLYGON_ALCHEMY_API_KEY', ''),
-        ethereum: readEnv('ETH_ALCHEMY_API_KEY', ''),
-        base: readEnv('BASE_ALCHEMY_API_KEY', ''),
+      networkProfile: parseRuntimeNetworkProfile('HUB_NETWORK_PROFILE'),
+      authoritySignerMnemonic: readEnv('SIGNER_MNEMONIC', readEnv('ACCOUNT_MNEMONIC', '')),
+      rpcUrls: {
+        testnet: {
+          ethereum: readEnv('TESTNET_ETHEREUM_RPC_URL', 'https://rpc.sepolia.org'),
+          arbitrum: readEnv('TESTNET_ARBITRUM_RPC_URL', 'https://sepolia-rollup.arbitrum.io/rpc'),
+          polygon: readEnv('TESTNET_POLYGON_RPC_URL', 'https://rpc-amoy.polygon.technology'),
+          base: readEnv('TESTNET_BASE_RPC_URL', 'https://sepolia.base.org'),
+        },
+        mainnet: {
+          ethereum: readEnv('MAINNET_ETHEREUM_RPC_URL', 'https://eth.llamarpc.com'),
+          arbitrum: readEnv('MAINNET_ARBITRUM_RPC_URL', 'https://arb1.arbitrum.io/rpc'),
+          polygon: readEnv('MAINNET_POLYGON_RPC_URL', 'https://polygon-rpc.com'),
+          base: readEnv('MAINNET_BASE_RPC_URL', 'https://mainnet.base.org'),
+        },
       },
-      baseNftContracts: {
-        mainnet: readEnv('BASE_NFT_CONTRACT_ADDR', ''),
-        testnet: readEnv('BASE_SEPOLIA_NFT_CONTRACT_ADDR', ''),
+      baseNftContractAddresses: {
+        testnet: readEnv('TESTNET_BASE_NFT_CONTRACT_ADDRESS', readEnv('BASE_SEPOLIA_NFT_CONTRACT_ADDR', '')),
+        mainnet: readEnv('MAINNET_BASE_NFT_CONTRACT_ADDRESS', readEnv('BASE_NFT_CONTRACT_ADDR', '')),
       },
       storagePaths: {
         root: rootPath,

@@ -4,17 +4,9 @@ import { ethers } from 'ethers';
 describe('EthersService', () => {
   const mnemonic = 'test test test test test test test test test test test junk';
   const config = {
-    getEthMode: () => 'testnet',
-    getAccountMnemonic: () => mnemonic,
-    getAlchemyApiKey: (network: string) => {
-      const values: Record<string, string> = {
-        base: '',
-        ethereum: '',
-        arbitrum: '',
-        polygon: '',
-      };
-      return values[network];
-    },
+    getRuntimeNetworkProfile: () => 'testnet',
+    getAuthoritySignerMnemonic: () => mnemonic,
+    getRpcUrl: (_profile: string, _network: string) => 'http://127.0.0.1:8545',
   };
 
   let service: EthersService;

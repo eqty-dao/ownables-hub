@@ -44,7 +44,7 @@ export class OwnableService implements OnModuleInit {
     this.pathToUsers = paths.users;
     this.pathToNfts = paths.nfts;
 
-    const mnemonic = this.config.getAccountMnemonic();
+    const mnemonic = this.config.getAuthoritySignerMnemonic();
     if (!mnemonic) {
       throw new Error('Missing account mnemonic configuration');
     }

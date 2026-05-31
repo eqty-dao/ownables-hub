@@ -4,6 +4,6 @@ describe('ConfigService', () => {
   it('should expose the active environment', () => {
     process.env.NODE_ENV = 'test';
     const service = new ConfigService();
-    expect(service.get('env')).toBe('test');
+    expect(service.getAppConfig().env).toBe('test');
   });
 });

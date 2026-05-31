@@ -12,10 +12,9 @@ describe('SIWEService', () => {
         {
           provide: ConfigService,
           useValue: {
-            get: jest.fn((key: string) => {
-              if (key === 'siwe.domain') return 'localhost';
-              return undefined;
-            }),
+            getAppConfig: jest.fn(() => ({
+              siweDomain: 'localhost',
+            })),
           },
         },
       ],

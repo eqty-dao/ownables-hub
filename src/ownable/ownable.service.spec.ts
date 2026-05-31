@@ -23,7 +23,7 @@ describe('OwnableService', () => {
       users: path.join(root, 'users'),
       nfts: path.join(root, 'nfts'),
     }),
-    getAccountMnemonic: () => ownerWallet.mnemonic?.phrase || '',
+    getAuthoritySignerMnemonic: () => ownerWallet.mnemonic?.phrase || '',
     getBaseNftContractAddress: () => '0xbaseSepolia',
   });
 
