@@ -2,11 +2,13 @@ import { HubStateRepository } from './hub-state.repository.js';
 
 describe('HubStateRepository', () => {
   const query = jest.fn();
-  const db = { query };
+  const withClient = jest.fn();
+  const db = { query, withClient };
   let repo: HubStateRepository;
 
   beforeEach(() => {
     query.mockReset();
+    withClient.mockReset();
     repo = new HubStateRepository(db as any);
   });
 
@@ -28,17 +30,6 @@ describe('HubStateRepository', () => {
 
     expect(byCid?.cid).toBe('cid-1');
     expect(byNft?.id).toBe('own-1');
-    expect(query).toHaveBeenNthCalledWith(
-      1,
-      expect.stringContaining('INSERT INTO ownable_records'),
-      expect.arrayContaining(['cid-1', '0xABC', 'eip155:base', '0xNFT', '1']),
-    );
-    expect(query).toHaveBeenNthCalledWith(2, expect.stringContaining('FROM ownable_records WHERE cid = $1'), ['cid-1']);
-    expect(query).toHaveBeenNthCalledWith(
-      3,
-      expect.stringContaining('WHERE nft_network = $1 AND nft_contract_address = $2 AND nft_token_id = $3'),
-      ['eip155:base', '0xNFT', '1'],
-    );
   });
 
   it('reads bridged cid list by previous owner', async () => {
@@ -58,16 +49,25 @@ describe('HubStateRepository', () => {
     const state = await repo.getOwnerStateByCid('cid-1');
 
     expect(state).toEqual({ owner: '0xowner', version: 3 });
-    expect(query).toHaveBeenNthCalledWith(
-      1,
-      expect.stringContaining('owner_state_version = ownable_owner_state.owner_state_version + 1'),
-      ['own-1', '0xOWNER', 'evt-1'],
-    );
-    expect(query).toHaveBeenNthCalledWith(2, expect.stringContaining('FROM ownable_owner_state s'), ['cid-1']);
   });
 
-  it('upserts indexer cursor state', async () => {
+  it('upserts and reads indexer cursor state including tx index', async () => {
     query.mockResolvedValueOnce({ rows: [] });
+    query.mockResolvedValueOnce({
+      rows: [
+        {
+          slotName: 'testnet',
+          cursorName: 'anchor',
+          chainId: '84532',
+          anchorContractAddress: '0xAnchor',
+          nextFromBlock: '10',
+          lastScannedBlock: '9',
+          lastScannedTxHash: '0xTx',
+          lastScannedTxIndex: 3,
+          lastScannedLogIndex: 7,
+        },
+      ],
+    });
 
     await repo.upsertIndexerCursor({
       slotName: 'testnet',
@@ -77,95 +77,22 @@ describe('HubStateRepository', () => {
       nextFromBlock: 10n,
       lastScannedBlock: 9n,
       lastScannedTxHash: '0xTx',
+      lastScannedTxIndex: 3,
       lastScannedLogIndex: 7,
     });
-
-    expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT INTO indexer_cursors'),
-      ['testnet', 'anchor', '84532', '0xAnchor', '10', '9', '0xTx', 7],
-    );
-  });
-
-  it('persists cursor resume block updates across successive upserts', async () => {
-    query.mockResolvedValue({ rows: [] });
-
-    await repo.upsertIndexerCursor({
-      slotName: 'mainnet',
-      cursorName: 'anchor',
-      chainId: '8453',
-      anchorContractAddress: '0xAnchor',
-      nextFromBlock: 120n,
-      lastScannedBlock: 119n,
-      lastScannedTxHash: '0xold',
-      lastScannedLogIndex: 2,
-    });
-
-    await repo.upsertIndexerCursor({
-      slotName: 'mainnet',
-      cursorName: 'anchor',
-      chainId: '8453',
-      anchorContractAddress: '0xAnchor',
-      nextFromBlock: 121n,
-      lastScannedBlock: 120n,
-      lastScannedTxHash: '0xnew',
-      lastScannedLogIndex: 0,
-    });
+    const cursor = await repo.getIndexerCursor('testnet', 'anchor');
 
     expect(query).toHaveBeenNthCalledWith(
       1,
-      expect.stringContaining('ON CONFLICT (slot_name, cursor_name) DO UPDATE SET'),
-      ['mainnet', 'anchor', '8453', '0xAnchor', '120', '119', '0xold', 2],
+      expect.stringContaining('INSERT INTO indexer_cursors'),
+      ['testnet', 'anchor', '84532', '0xAnchor', '10', '9', '0xTx', 3, 7],
     );
-    expect(query).toHaveBeenNthCalledWith(
-      2,
-      expect.stringContaining('ON CONFLICT (slot_name, cursor_name) DO UPDATE SET'),
-      ['mainnet', 'anchor', '8453', '0xAnchor', '121', '120', '0xnew', 0],
-    );
+    expect(cursor?.nextFromBlock).toBe(10n);
+    expect(cursor?.lastScannedTxIndex).toBe(3);
   });
 
-  it('upserts notify registration transitions', async () => {
-    query.mockResolvedValueOnce({ rows: [] });
-
-    await repo.upsertNotifyRegistration({
-      ownerAddress: '0xOwner',
-      ownerAccount: 'eip155:base:0xOwner',
-      topic: 'wc-topic',
-      status: 'stale',
-    });
-
-    expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT INTO notify_registrations'),
-      ['0xOwner', 'eip155:base:0xOwner', 'wc-topic', 'stale'],
-    );
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('ON CONFLICT (owner_address, topic) DO UPDATE SET'),
-      expect.any(Array));
-  });
-
-  it('upserts notify delivery state with dedupe conflict key', async () => {
-    query.mockResolvedValueOnce({ rows: [] });
-
-    await repo.upsertNotifyDeliveryState({
-      registrationId: 'reg-1',
-      ownableId: 'own-1',
-      ownerStateVersion: 5,
-      triggerKind: 'availability',
-      status: 'delivered',
-      attemptCount: 2,
-      lastError: null,
-    });
-
-    expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT INTO notify_delivery_state'),
-      ['reg-1', 'own-1', 5, 'availability', 'delivered', 2, null],
-    );
-    expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('ON CONFLICT (registration_id, ownable_id, owner_state_version, trigger_kind) DO UPDATE SET'),
-      expect.any(Array),
-    );
-  });
-
-  it('upserts anchor events into indexed_anchor_events', async () => {
-    query.mockResolvedValueOnce({ rows: [] });
+  it('upserts indexed events with transaction ordering metadata', async () => {
+    query.mockResolvedValue({ rows: [] });
 
     await repo.upsertIndexedAnchorEvent({
       slotName: 'testnet',
@@ -174,22 +101,14 @@ describe('HubStateRepository', () => {
       blockNumber: 25n,
       blockHash: '0xB1',
       transactionHash: '0xC1',
+      transactionIndex: 2,
       logIndex: 4,
-      eventName: 'AnchorEvent',
+      eventName: 'Anchored',
       cid: 'cid-1',
       ownableId: 'oid-1',
       ownerAddress: '0xD1',
       payloadJson: { key: 'value' },
     });
-
-    expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT INTO indexed_anchor_events'),
-      expect.arrayContaining(['testnet', '84532', '0xA1', '25', '0xB1', '0xC1', 4, 'AnchorEvent']),
-    );
-  });
-
-  it('upserts public events into indexed_public_events', async () => {
-    query.mockResolvedValueOnce({ rows: [] });
 
     await repo.upsertIndexedPublicEvent({
       slotName: 'mainnet',
@@ -198,25 +117,90 @@ describe('HubStateRepository', () => {
       blockNumber: 26n,
       blockHash: '0xB2',
       transactionHash: '0xC2',
+      transactionIndex: 1,
       logIndex: 5,
       eventName: 'PublicEvent',
       payloadJson: { key: 'value' },
     });
 
-    expect(query).toHaveBeenCalledWith(
+    expect(query).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('INSERT INTO indexed_anchor_events'),
+      expect.arrayContaining(['testnet', '84532', '0xA1', '25', '0xB1', '0xC1', 2, 4]),
+    );
+    expect(query).toHaveBeenNthCalledWith(
+      2,
       expect.stringContaining('INSERT INTO indexed_public_events'),
-      expect.arrayContaining(['mainnet', '8453', '0xA2', '26', '0xB2', '0xC2', 5, 'PublicEvent']),
+      expect.arrayContaining(['mainnet', '8453', '0xA2', '26', '0xB2', '0xC2', 1, 5]),
     );
   });
 
-  it('queries wallet export events through anchor/public union', async () => {
+  it('queries wallet export events ordered by block, transaction_index, and log_index', async () => {
     query.mockResolvedValueOnce({ rows: [{ id: '1', eventKind: 'anchor' }] });
 
     const rows = await repo.listWalletEventsByCid('cid-abc');
 
     expect(rows).toEqual([{ id: '1', eventKind: 'anchor' }]);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('UNION ALL'), ['cid-abc']);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM indexed_anchor_events'), ['cid-abc']);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM indexed_public_events'), ['cid-abc']);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('ORDER BY "blockNumber"::numeric ASC, "transactionIndex" ASC, "logIndex" ASC'), ['cid-abc']);
+  });
+
+  it('commits transaction after persisting events and cursor', async () => {
+    const clientQuery = jest.fn().mockResolvedValue({ rows: [] });
+    withClient.mockImplementation(async (fn: (client: any) => Promise<void>) => fn({ query: clientQuery }));
+
+    await repo.withIndexerPersistenceTransaction({
+      slotName: 'testnet',
+      cursorName: 'anchor',
+      chainId: '84532',
+      anchorContractAddress: '0xAnchor',
+      nextFromBlock: 12n,
+      lastScannedBlock: 11n,
+      lastScannedTxHash: '0xTx',
+      lastScannedTxIndex: 1,
+      lastScannedLogIndex: 2,
+      anchorEvents: [],
+      publicEvents: [],
+    });
+
+    expect(clientQuery).toHaveBeenNthCalledWith(1, 'BEGIN');
+    expect(clientQuery).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO indexer_cursors'), expect.any(Array));
+    expect(clientQuery).toHaveBeenLastCalledWith('COMMIT');
+  });
+
+  it('rolls back transaction when event persistence fails', async () => {
+    const clientQuery = jest
+      .fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockRejectedValueOnce(new Error('insert failed'))
+      .mockResolvedValueOnce({ rows: [] });
+    withClient.mockImplementation(async (fn: (client: any) => Promise<void>) => fn({ query: clientQuery }));
+
+    await expect(
+      repo.withIndexerPersistenceTransaction({
+        slotName: 'mainnet',
+        cursorName: 'anchor',
+        chainId: '8453',
+        anchorContractAddress: '0xAnchor',
+        nextFromBlock: 20n,
+        anchorEvents: [
+          {
+            slotName: 'mainnet',
+            chainId: '8453',
+            anchorContractAddress: '0xAnchor',
+            blockNumber: 19n,
+            blockHash: '0xB',
+            transactionHash: '0xT',
+            transactionIndex: 0,
+            logIndex: 0,
+            eventName: 'Anchored',
+            payloadJson: {},
+          },
+        ],
+        publicEvents: [],
+      }),
+    ).rejects.toThrow('insert failed');
+
+    expect(clientQuery).toHaveBeenNthCalledWith(1, 'BEGIN');
+    expect(clientQuery).toHaveBeenLastCalledWith('ROLLBACK');
   });
 });

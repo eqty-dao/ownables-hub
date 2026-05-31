@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PostgresService } from '../postgres.service.js';
+import type { PoolClient } from 'pg';
 
 export interface OwnableRecordInput {
   cid: string;
@@ -28,6 +29,7 @@ export interface IndexedWalletEvent {
   blockNumber: string;
   blockHash: string;
   transactionHash: string;
+  transactionIndex: number;
   logIndex: number;
   eventName: string;
   cid: string | null;
@@ -35,6 +37,18 @@ export interface IndexedWalletEvent {
   ownerAddress: string | null;
   payloadJson: unknown;
   indexedAt: string;
+}
+
+export interface IndexerCursorState {
+  slotName: 'testnet' | 'mainnet';
+  cursorName: string;
+  chainId: string;
+  anchorContractAddress: string;
+  nextFromBlock: bigint;
+  lastScannedBlock: bigint | null;
+  lastScannedTxHash: string | null;
+  lastScannedTxIndex: number | null;
+  lastScannedLogIndex: number | null;
 }
 
 @Injectable()
@@ -127,6 +141,46 @@ export class HubStateRepository {
     return result.rows[0] ?? null;
   }
 
+  private async runQuery<T = unknown>(text: string, values: unknown[] = [], client?: PoolClient) {
+    if (client) {
+      return client.query<T>(text, values);
+    }
+    return this.db.query<T>(text, values);
+  }
+
+  async getIndexerCursor(slotName: 'testnet' | 'mainnet', cursorName: string): Promise<IndexerCursorState | null> {
+    const result = await this.db.query<IndexerCursorState>(
+      `SELECT
+         slot_name AS "slotName",
+         cursor_name AS "cursorName",
+         chain_id AS "chainId",
+         anchor_contract_address AS "anchorContractAddress",
+         next_from_block AS "nextFromBlock",
+         last_scanned_block AS "lastScannedBlock",
+         last_scanned_tx_hash AS "lastScannedTxHash",
+         last_scanned_tx_index AS "lastScannedTxIndex",
+         last_scanned_log_index AS "lastScannedLogIndex"
+       FROM indexer_cursors
+       WHERE slot_name = $1 AND cursor_name = $2`,
+      [slotName, cursorName],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+    return {
+      slotName: row.slotName,
+      cursorName: row.cursorName,
+      chainId: row.chainId,
+      anchorContractAddress: row.anchorContractAddress,
+      nextFromBlock: BigInt(row.nextFromBlock),
+      lastScannedBlock: row.lastScannedBlock === null ? null : BigInt(row.lastScannedBlock),
+      lastScannedTxHash: row.lastScannedTxHash,
+      lastScannedTxIndex: row.lastScannedTxIndex,
+      lastScannedLogIndex: row.lastScannedLogIndex,
+    };
+  }
+
   async upsertIndexerCursor(input: {
     slotName: 'testnet' | 'mainnet';
     cursorName: string;
@@ -135,9 +189,10 @@ export class HubStateRepository {
     nextFromBlock: bigint;
     lastScannedBlock?: bigint | null;
     lastScannedTxHash?: string | null;
+    lastScannedTxIndex?: number | null;
     lastScannedLogIndex?: number | null;
-  }): Promise<void> {
-    await this.db.query(
+  }, client?: PoolClient): Promise<void> {
+    await this.runQuery(
       `INSERT INTO indexer_cursors (
          slot_name,
          cursor_name,
@@ -146,14 +201,16 @@ export class HubStateRepository {
          next_from_block,
          last_scanned_block,
          last_scanned_tx_hash,
+         last_scanned_tx_index,
          last_scanned_log_index
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (slot_name, cursor_name) DO UPDATE SET
          chain_id = EXCLUDED.chain_id,
          anchor_contract_address = EXCLUDED.anchor_contract_address,
          next_from_block = EXCLUDED.next_from_block,
          last_scanned_block = EXCLUDED.last_scanned_block,
          last_scanned_tx_hash = EXCLUDED.last_scanned_tx_hash,
+         last_scanned_tx_index = EXCLUDED.last_scanned_tx_index,
          last_scanned_log_index = EXCLUDED.last_scanned_log_index,
          updated_at = NOW()`,
       [
@@ -164,8 +221,10 @@ export class HubStateRepository {
         input.nextFromBlock.toString(),
         input.lastScannedBlock?.toString() ?? null,
         input.lastScannedTxHash ?? null,
+        input.lastScannedTxIndex ?? null,
         input.lastScannedLogIndex ?? null,
       ],
+      client,
     );
   }
 
@@ -233,14 +292,15 @@ export class HubStateRepository {
     blockNumber: bigint;
     blockHash: string;
     transactionHash: string;
+    transactionIndex: number;
     logIndex: number;
     eventName: string;
     cid?: string | null;
     ownableId?: string | null;
     ownerAddress?: string | null;
     payloadJson: unknown;
-  }): Promise<void> {
-    await this.db.query(
+  }, client?: PoolClient): Promise<void> {
+    await this.runQuery(
       `INSERT INTO indexed_anchor_events (
          slot_name,
          chain_id,
@@ -248,18 +308,20 @@ export class HubStateRepository {
          block_number,
          block_hash,
          transaction_hash,
+         transaction_index,
          log_index,
          event_name,
          cid,
          ownable_id,
          owner_address,
          payload_json
-       ) VALUES ($1, $2, LOWER($3), $4, LOWER($5), LOWER($6), $7, $8, $9, $10, LOWER($11), $12::jsonb)
+       ) VALUES ($1, $2, LOWER($3), $4, LOWER($5), LOWER($6), $7, $8, $9, $10, $11, LOWER($12), $13::jsonb)
        ON CONFLICT (slot_name, transaction_hash, log_index) DO UPDATE SET
          chain_id = EXCLUDED.chain_id,
          anchor_contract_address = EXCLUDED.anchor_contract_address,
          block_number = EXCLUDED.block_number,
          block_hash = EXCLUDED.block_hash,
+         transaction_index = EXCLUDED.transaction_index,
          event_name = EXCLUDED.event_name,
          cid = EXCLUDED.cid,
          ownable_id = EXCLUDED.ownable_id,
@@ -273,6 +335,7 @@ export class HubStateRepository {
         input.blockNumber.toString(),
         input.blockHash,
         input.transactionHash,
+        input.transactionIndex,
         input.logIndex,
         input.eventName,
         input.cid ?? null,
@@ -280,6 +343,7 @@ export class HubStateRepository {
         input.ownerAddress ?? null,
         JSON.stringify(input.payloadJson),
       ],
+      client,
     );
   }
 
@@ -290,14 +354,15 @@ export class HubStateRepository {
     blockNumber: bigint;
     blockHash: string;
     transactionHash: string;
+    transactionIndex: number;
     logIndex: number;
     eventName: string;
     cid?: string | null;
     ownableId?: string | null;
     ownerAddress?: string | null;
     payloadJson: unknown;
-  }): Promise<void> {
-    await this.db.query(
+  }, client?: PoolClient): Promise<void> {
+    await this.runQuery(
       `INSERT INTO indexed_public_events (
          slot_name,
          chain_id,
@@ -305,18 +370,20 @@ export class HubStateRepository {
          block_number,
          block_hash,
          transaction_hash,
+         transaction_index,
          log_index,
          event_name,
          cid,
          ownable_id,
          owner_address,
          payload_json
-       ) VALUES ($1, $2, LOWER($3), $4, LOWER($5), LOWER($6), $7, $8, $9, $10, LOWER($11), $12::jsonb)
+       ) VALUES ($1, $2, LOWER($3), $4, LOWER($5), LOWER($6), $7, $8, $9, $10, $11, LOWER($12), $13::jsonb)
        ON CONFLICT (slot_name, transaction_hash, log_index) DO UPDATE SET
          chain_id = EXCLUDED.chain_id,
          anchor_contract_address = EXCLUDED.anchor_contract_address,
          block_number = EXCLUDED.block_number,
          block_hash = EXCLUDED.block_hash,
+         transaction_index = EXCLUDED.transaction_index,
          event_name = EXCLUDED.event_name,
          cid = EXCLUDED.cid,
          ownable_id = EXCLUDED.ownable_id,
@@ -330,6 +397,7 @@ export class HubStateRepository {
         input.blockNumber.toString(),
         input.blockHash,
         input.transactionHash,
+        input.transactionIndex,
         input.logIndex,
         input.eventName,
         input.cid ?? null,
@@ -337,7 +405,80 @@ export class HubStateRepository {
         input.ownerAddress ?? null,
         JSON.stringify(input.payloadJson),
       ],
+      client,
     );
+  }
+
+  async withIndexerPersistenceTransaction(input: {
+    slotName: 'testnet' | 'mainnet';
+    cursorName: string;
+    chainId: string;
+    anchorContractAddress: string;
+    nextFromBlock: bigint;
+    lastScannedBlock?: bigint | null;
+    lastScannedTxHash?: string | null;
+    lastScannedTxIndex?: number | null;
+    lastScannedLogIndex?: number | null;
+    anchorEvents: Array<{
+      slotName: string;
+      chainId: string;
+      anchorContractAddress: string;
+      blockNumber: bigint;
+      blockHash: string;
+      transactionHash: string;
+      transactionIndex: number;
+      logIndex: number;
+      eventName: string;
+      cid?: string | null;
+      ownableId?: string | null;
+      ownerAddress?: string | null;
+      payloadJson: unknown;
+    }>;
+    publicEvents: Array<{
+      slotName: string;
+      chainId: string;
+      anchorContractAddress: string;
+      blockNumber: bigint;
+      blockHash: string;
+      transactionHash: string;
+      transactionIndex: number;
+      logIndex: number;
+      eventName: string;
+      cid?: string | null;
+      ownableId?: string | null;
+      ownerAddress?: string | null;
+      payloadJson: unknown;
+    }>;
+  }): Promise<void> {
+    await this.db.withClient(async (client) => {
+      await client.query('BEGIN');
+      try {
+        for (const event of input.anchorEvents) {
+          await this.upsertIndexedAnchorEvent(event, client);
+        }
+        for (const event of input.publicEvents) {
+          await this.upsertIndexedPublicEvent(event, client);
+        }
+        await this.upsertIndexerCursor(
+          {
+            slotName: input.slotName,
+            cursorName: input.cursorName,
+            chainId: input.chainId,
+            anchorContractAddress: input.anchorContractAddress,
+            nextFromBlock: input.nextFromBlock,
+            lastScannedBlock: input.lastScannedBlock ?? null,
+            lastScannedTxHash: input.lastScannedTxHash ?? null,
+            lastScannedTxIndex: input.lastScannedTxIndex ?? null,
+            lastScannedLogIndex: input.lastScannedLogIndex ?? null,
+          },
+          client,
+        );
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      }
+    });
   }
 
   async listWalletEventsByCid(cid: string): Promise<IndexedWalletEvent[]> {
@@ -352,6 +493,7 @@ export class HubStateRepository {
            block_number::text AS "blockNumber",
            block_hash AS "blockHash",
            transaction_hash AS "transactionHash",
+           transaction_index AS "transactionIndex",
            log_index AS "logIndex",
            event_name AS "eventName",
            cid,
@@ -371,6 +513,7 @@ export class HubStateRepository {
            block_number::text AS "blockNumber",
            block_hash AS "blockHash",
            transaction_hash AS "transactionHash",
+           transaction_index AS "transactionIndex",
            log_index AS "logIndex",
            event_name AS "eventName",
            cid,
@@ -381,7 +524,7 @@ export class HubStateRepository {
          FROM indexed_public_events
          WHERE cid = $1
        ) wallet_events
-       ORDER BY "blockNumber"::numeric ASC, "logIndex" ASC`,
+       ORDER BY "blockNumber"::numeric ASC, "transactionIndex" ASC, "logIndex" ASC`,
       [cid],
     );
 

@@ -18,6 +18,7 @@
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "start:prod": "node --preserve-symlinks dist/main.js",
+    "indexer:run": "node --preserve-symlinks dist/indexer/main.js",
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
     "lint:check": "eslint \"{src,test}/**/*.ts\"",
     "test": "jest --detectOpenHandles",

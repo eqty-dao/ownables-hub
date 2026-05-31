@@ -4,6 +4,7 @@ import path from 'path';
 export type AppEnv = 'development' | 'test' | 'staging' | 'production';
 export type RuntimeNetworkProfile = 'testnet' | 'mainnet';
 export type EvmNetworkName = 'eip155:ethereum' | 'eip155:arbitrum' | 'eip155:polygon' | 'eip155:base';
+export type IndexerSlotName = 'testnet' | 'mainnet';
 
 export interface AppConfig {
   env: AppEnv;
@@ -31,6 +32,14 @@ interface RuntimeConfig {
   };
 }
 
+export interface IndexerSlotConfig {
+  slotName: IndexerSlotName;
+  chainId: string;
+  rpcUrl: string;
+  anchorContractAddress: string;
+  anchorStartBlock: bigint;
+}
+
 function readEnv(name: string, fallback = ''): string {
   return process.env[name]?.trim() || fallback;
 }
@@ -56,6 +65,28 @@ function parsePort(name: string): number {
   if (!Number.isInteger(value) || value <= 0 || value > 65535) {
     throw new Error(`Invalid ${name}: ${value}`);
   }
+  return value;
+}
+
+function parseRequiredEnv(name: string): string {
+  const value = readEnv(name, '');
+  if (!value) {
+    throw new Error(`${name} is required`);
+  }
+  return value;
+}
+
+function parseRequiredNonNegativeBigInt(name: string): bigint {
+  const raw = parseRequiredEnv(name);
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`Invalid ${name}: ${raw}`);
+  }
+
+  const value = BigInt(raw);
+  if (value < 0n) {
+    throw new Error(`Invalid ${name}: ${raw}`);
+  }
+
   return value;
 }
 
@@ -125,6 +156,20 @@ export class ConfigService {
       case 'eip155:base':
         return this.runtimeConfig.rpcUrls[profile].base;
     }
+  }
+
+  getIndexerSlots(): [IndexerSlotConfig, IndexerSlotConfig] {
+    return [this.parseIndexerSlot('TESTNET', 'testnet'), this.parseIndexerSlot('MAINNET', 'mainnet')];
+  }
+
+  private parseIndexerSlot(prefix: 'TESTNET' | 'MAINNET', slotName: IndexerSlotName): IndexerSlotConfig {
+    return {
+      slotName,
+      chainId: parseRequiredEnv(`${prefix}_CHAIN_ID`),
+      rpcUrl: parseRequiredEnv(`${prefix}_RPC_URL`),
+      anchorContractAddress: parseRequiredEnv(`${prefix}_ANCHOR_CONTRACT_ADDR`),
+      anchorStartBlock: parseRequiredNonNegativeBigInt(`${prefix}_ANCHOR_START_BLOCK`),
+    };
   }
 
   private buildRuntimeConfig(): RuntimeConfig {
