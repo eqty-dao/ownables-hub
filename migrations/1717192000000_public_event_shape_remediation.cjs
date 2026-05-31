@@ -42,6 +42,9 @@ exports.up = (pgm) => {
   pgm.createIndex('indexed_public_events', 'cid');
   pgm.createIndex('indexed_public_events', 'subject_id');
   pgm.createIndex('indexed_public_events', ['subject_id', 'block_number', 'transaction_index', 'log_index']);
+
+  // Local cursor state is disposable for this shape remediation: force historical reindex.
+  pgm.sql("DELETE FROM indexer_cursors WHERE cursor_name = 'anchor-public-events'");
 };
 
 /**

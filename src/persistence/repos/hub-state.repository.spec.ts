@@ -240,6 +240,62 @@ describe('HubStateRepository', () => {
     expect(query).toHaveBeenCalledWith(expect.stringContaining('ORDER BY "blockNumber"::numeric ASC, "transactionIndex" ASC, "logIndex" ASC'), ['cid-abc']);
   });
 
+  it('resolves public events by ownable_records subject linkage when indexed before upload', async () => {
+    query.mockResolvedValueOnce({ rows: [] });
+
+    await repo.upsertIndexedPublicEvent({
+      slotName: 'testnet',
+      chainId: '84532',
+      anchorContractAddress: '0xA2',
+      blockNumber: 26n,
+      blockHash: '0xB2',
+      transactionHash: '0xC2',
+      transactionIndex: 1,
+      logIndex: 5,
+      eventName: 'PublicEvent',
+      subjectId: `0x${'5'.repeat(64)}`,
+      sourceAddress: '0x00000000000000000000000000000000000000bb',
+      eventType: 'transfer',
+      dataHex: '0xdeadbeef',
+      eventTimestamp: 321n,
+      payloadJson: { key: 'value' },
+    });
+
+    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-abc', prevOwnerAddress: '0xabc', subjectId: `0x${'5'.repeat(64)}` }] });
+    await repo.upsertOwnableRecord({
+      cid: 'cid-abc',
+      prevOwnerAddress: '0xABC',
+      subjectId: `0x${'5'.repeat(64)}`,
+    });
+
+    query.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'pub-1',
+          eventKind: 'public',
+          subjectId: `0x${'5'.repeat(64)}`,
+          sourceAddress: '0x00000000000000000000000000000000000000bb',
+          eventType: 'transfer',
+          dataHex: '0xdeadbeef',
+          eventTimestamp: '321',
+        },
+      ],
+    });
+    const rows = await repo.listWalletEventsByCid('cid-abc');
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: 'pub-1',
+        eventKind: 'public',
+        subjectId: `0x${'5'.repeat(64)}`,
+      }),
+    ]);
+    expect(query).toHaveBeenLastCalledWith(
+      expect.stringContaining('OR subject_id IN ('),
+      ['cid-abc'],
+    );
+  });
+
   it('commits transaction after persisting events and cursor', async () => {
     const clientQuery = jest.fn().mockResolvedValue({ rows: [] });
     withClient.mockImplementation(async (fn: (client: any) => Promise<void>) => fn({ query: clientQuery }));

@@ -574,7 +574,16 @@ export class HubStateRepository {
            payload_json AS "payloadJson",
            indexed_at::text AS "indexedAt"
          FROM indexed_public_events
-         WHERE cid = $1
+         WHERE ownable_id IN (
+           SELECT id
+           FROM ownable_records
+           WHERE cid = $1
+         )
+         OR subject_id IN (
+           SELECT subject_id
+           FROM ownable_records
+           WHERE cid = $1
+         )
        ) wallet_events
        ORDER BY "blockNumber"::numeric ASC, "transactionIndex" ASC, "logIndex" ASC`,
       [cid],
