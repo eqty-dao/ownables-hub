@@ -8,13 +8,12 @@ export class PostgresService implements OnModuleDestroy {
 
   constructor(config: ConfigService) {
     const databaseUrl = config.getAppConfig().databaseUrl;
-    this.pool = new Pool(
-      databaseUrl
-        ? {
-            connectionString: databaseUrl,
-          }
-        : undefined,
-    );
+    if (!databaseUrl) {
+      throw new Error('DATABASE_URL is required');
+    }
+    this.pool = new Pool({
+      connectionString: databaseUrl,
+    });
   }
 
   async query<T = unknown>(text: string, values: unknown[] = []): Promise<QueryResult<T>> {

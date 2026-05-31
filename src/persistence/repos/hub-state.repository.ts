@@ -187,6 +187,45 @@ export class HubStateRepository {
     );
   }
 
+  async upsertNotifyDeliveryState(input: {
+    registrationId: string;
+    ownableId: string;
+    ownerStateVersion: number;
+    triggerKind: string;
+    status?: string;
+    attemptCount?: number;
+    lastError?: string | null;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO notify_delivery_state (
+         registration_id,
+         ownable_id,
+         owner_state_version,
+         trigger_kind,
+         status,
+         attempt_count,
+         last_error,
+         last_attempt_at,
+         delivered_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), CASE WHEN $5 = 'delivered' THEN NOW() ELSE NULL END)
+       ON CONFLICT (registration_id, ownable_id, owner_state_version, trigger_kind) DO UPDATE SET
+         status = EXCLUDED.status,
+         attempt_count = EXCLUDED.attempt_count,
+         last_error = EXCLUDED.last_error,
+         last_attempt_at = NOW(),
+         delivered_at = CASE WHEN EXCLUDED.status = 'delivered' THEN NOW() ELSE notify_delivery_state.delivered_at END`,
+      [
+        input.registrationId,
+        input.ownableId,
+        input.ownerStateVersion,
+        input.triggerKind,
+        input.status ?? 'pending',
+        input.attemptCount ?? 0,
+        input.lastError ?? null,
+      ],
+    );
+  }
+
   async upsertIndexedAnchorEvent(input: {
     slotName: string;
     chainId: string;

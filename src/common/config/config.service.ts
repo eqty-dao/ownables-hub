@@ -81,13 +81,17 @@ export function resolveStorageRoot(ownablesStorage: string): string {
 function buildConfig(): AppConfig {
   const env = parseEnv('NODE_ENV');
   const ownablesStorage = readEnv('OWNABLES_STORAGE', 'file://storage');
+  const databaseUrl = readEnv('DATABASE_URL', '');
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL is required');
+  }
 
   return {
     env,
     port: parsePort('PORT'),
     logLevel: readEnv('LOG_LEVEL', ''),
     publicBaseUrl: readEnv('PUBLIC_BASE_URL', ''),
-    databaseUrl: readEnv('DATABASE_URL', ''),
+    databaseUrl,
     ownablesStorage,
     siweDomain: readEnv('SIWE_DOMAIN', 'localhost'),
   };
