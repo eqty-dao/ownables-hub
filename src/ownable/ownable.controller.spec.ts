@@ -1,13 +1,17 @@
 import { OwnableController } from './ownable.controller.js';
 import { UserError } from '../interfaces/error.js';
 
-jest.mock('@ownables/core', () => ({
-  calculateOwnablePackageCid: () => 'cid-mock',
-  evaluateReplayFreshness: jest.fn(() => ({ stale: false, missingReplayKeys: [] })),
-  publicEventReplayKey: ({ transactionHash, logIndex }: { transactionHash: string; logIndex: number }) =>
-    `${transactionHash}:${logIndex}`,
-}));
 jest.mock('eqty-core', () => require('../test-mocks/eqty-core.ts'));
+jest.mock('@ownables/core', () => ({
+  calculateOwnablePackageCid: jest.fn(),
+  evaluateReplayFreshness: jest.fn(),
+  OwnableService: class {},
+  EventChainService: class {},
+}));
+jest.mock('@ownables/platform-node', () => ({
+  NodePackageAssetIO: class {},
+  NodeSandboxOwnableRPC: class {},
+}));
 
 describe('OwnableController', () => {
   const buildRes = () => {
@@ -63,15 +67,33 @@ describe('OwnableController', () => {
     expect(res.status).toHaveBeenCalledWith(409);
   });
 
-  it('proof remains signer-sensitive via service behavior', async () => {
+  it('rejects wrong signer for proof with non-200 response', async () => {
     const ownableService = {
-      getUnlockProof: jest.fn().mockRejectedValue(new Error('Missing SIWE signer')),
+      getUnlockProof: jest.fn().mockRejectedValue(new UserError('Signer 0x1 is not current NFT owner 0x2')),
+    } as any;
+    const controller = new OwnableController(ownableService);
+    const res = buildRes();
+
+    await controller.getUnlockProof('cid-1', { address: '0x1' }, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.send).toHaveBeenCalled();
+  });
+
+  it('keeps bridge and claim as thin aliases', async () => {
+    const ownableService = {
+      uploadOwnable: jest.fn().mockResolvedValue({ cid: 'cid-1' }),
+      downloadOwnable: jest.fn().mockResolvedValue('stream'),
     } as any;
     const controller = new OwnableController(ownableService);
 
-    const result = await controller.getUnlockProof('cid-1', undefined);
+    const uploadReq: any = { file: { buffer: Buffer.from('zip') } };
+    const uploadRes = buildRes();
+    await controller.bridgeOwnable(uploadReq, uploadRes, undefined);
+    expect(ownableService.uploadOwnable).toHaveBeenCalledWith(uploadReq.file.buffer, undefined, true);
 
-    expect(ownableService.getUnlockProof).toHaveBeenCalledWith('cid-1', undefined);
-    expect(result).toEqual({ error: 'Error: Missing SIWE signer' });
+    const claimRes = buildRes();
+    await controller.claim('cid-1', claimRes);
+    expect(ownableService.downloadOwnable).toHaveBeenCalledWith('cid-1');
   });
 });

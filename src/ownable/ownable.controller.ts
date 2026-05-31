@@ -104,12 +104,13 @@ export class OwnableController {
 
   @Get('proof')
   @UseGuards(SIWEGuard)
-  async getUnlockProof(@Query('cid') cid: string, @Signer() signer?: SignerIdentity) {
+  async getUnlockProof(@Query('cid') cid: string, @Signer() signer?: SignerIdentity, @Res() res?: Response) {
     try {
       const unlockProof = await this.ownableService.getUnlockProof(cid, signer);
+      if (res) return res.status(200).json({ unlockProof });
       return { unlockProof };
     } catch (e) {
-      return { error: `${e}` };
+      return this.errorResponse(res as Response, e);
     }
   }
 

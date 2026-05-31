@@ -121,7 +121,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@babel/core@npm:^7.23.9, @babel/core@npm:^7.27.4, @babel/core@npm:^7.29.7":
+"@babel/core@npm:^7.23.9, @babel/core@npm:^7.27.4, @babel/core@npm:^7.28.4, @babel/core@npm:^7.29.7":
   version: 7.29.7
   resolution: "@babel/core@npm:7.29.7"
   dependencies:
@@ -2038,6 +2038,7 @@ __metadata:
     "@nestjs/swagger": "npm:^11.4.4"
     "@nestjs/testing": "npm:^11.1.24"
     "@ownables/core": "portal:../ownables-js/packages/core"
+    "@ownables/platform-node": "portal:../ownables-js/packages/platform-node"
     "@semantic-release/commit-analyzer": "npm:^13.0.1"
     "@semantic-release/github": "npm:^12.0.8"
     "@semantic-release/release-notes-generator": "npm:^14.1.1"
@@ -2074,6 +2075,20 @@ __metadata:
     tsconfig-paths: "npm:^4.2.0"
     typescript: "npm:^6.0.3"
   languageName: unknown
+  linkType: soft
+
+"@ownables/platform-node@portal:../ownables-js/packages/platform-node::locator=%40ownables%2Fhub%40workspace%3A.":
+  version: 0.0.0-use.local
+  resolution: "@ownables/platform-node@portal:../ownables-js/packages/platform-node::locator=%40ownables%2Fhub%40workspace%3A."
+  dependencies:
+    "@babel/core": "npm:^7.28.4"
+    any-bucket: "npm:^0.1.6"
+    babel-plugin-remove-import-export: "npm:^1.1.1"
+    cbor-x: "npm:^1.6.0"
+    jszip: "npm:^3.10.1"
+  peerDependencies:
+    "@ownables/core": ^0.6.0
+  languageName: node
   linkType: soft
 
 "@paralleldrive/cuid2@npm:^2.2.2":

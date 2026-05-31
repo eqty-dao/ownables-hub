@@ -1,19 +1,24 @@
 import { Injectable, OnModuleInit, StreamableFile } from '@nestjs/common';
-import { calculateOwnablePackageCid, evaluateReplayFreshness, publicEventReplayKey } from '@ownables/core';
+import {
+  calculateOwnablePackageCid,
+  evaluateReplayFreshness,
+  OwnableService as CoreOwnableService,
+  EventChainService as CoreEventChainService,
+  type IndexedPublicEvent,
+  type StateStore,
+  type TypedPackage,
+  type AnchorProvider,
+} from '@ownables/core';
+import { NodePackageAssetIO, NodeSandboxOwnableRPC } from '@ownables/platform-node';
 import { ConfigService, RuntimeNetworkProfile } from '../common/config/config.service.js';
-import { CosmWasmService } from '../cosmwasm/cosmwasm.service.js';
-import Contract from '../cosmwasm/contract.js';
 import { NFTInfo } from '../interfaces/OwnableInfo.js';
 import { NFTService } from '../nft/nft.service.js';
 import { AuthError, UserError } from '../interfaces/error.js';
 import JSZip from 'jszip';
-import { Event, EventChain } from 'eqty-core';
+import { EventChain } from 'eqty-core';
 import { Readable } from 'stream';
 import { ArchiveStorageService } from '../storage/archive-storage.service.js';
 import { HubStateRepository, IndexedWalletEvent } from '../persistence/repos/hub-state.repository.js';
-import os from 'os';
-import path from 'path';
-import fs from 'fs/promises';
 
 interface SignerIdentity {
   address?: string;
@@ -25,11 +30,92 @@ interface ReplayDerivedState {
   latestAppliedPublicEventId: string | null;
 }
 
+class InMemoryStateStore implements StateStore {
+  private readonly stores = new Map<string, Map<any, any>>();
+
+  async get(store: string, key: string): Promise<any> {
+    return this.stores.get(store)?.get(key);
+  }
+
+  async getAll(store: string): Promise<Array<any>> {
+    return Array.from(this.stores.get(store)?.values() ?? []);
+  }
+
+  async getMap(store: string): Promise<Map<any, any>> {
+    return new Map(this.stores.get(store) ?? []);
+  }
+
+  async keys(store: string): Promise<string[]> {
+    return Array.from(this.stores.get(store)?.keys() ?? []);
+  }
+
+  async set(store: string, key: string, value: any): Promise<void> {
+    if (!this.stores.has(store)) this.stores.set(store, new Map());
+    this.stores.get(store)?.set(key, value);
+  }
+
+  async setAll(store: string, map: Record<string, any> | Map<any, any>): Promise<void>;
+  async setAll(data: Record<string, Record<string, any> | Map<any, any>>): Promise<void>;
+  async setAll(
+    storeOrData: string | Record<string, Record<string, any> | Map<any, any>>,
+    mapMaybe?: Record<string, any> | Map<any, any>,
+  ): Promise<void> {
+    if (typeof storeOrData === 'string') {
+      const store = storeOrData;
+      const mapOrObj = mapMaybe;
+      if (!mapOrObj) return;
+      if (!this.stores.has(store)) this.stores.set(store, new Map());
+      const storeMap = this.stores.get(store) as Map<any, any>;
+      if (mapOrObj instanceof Map) {
+        for (const [k, v] of mapOrObj.entries()) storeMap.set(k, v);
+      } else {
+        for (const [k, v] of Object.entries(mapOrObj)) storeMap.set(k, v);
+      }
+      return;
+    }
+
+    for (const [store, mapOrObj] of Object.entries(storeOrData)) {
+      if (!this.stores.has(store)) this.stores.set(store, new Map());
+      const storeMap = this.stores.get(store) as Map<any, any>;
+      if (mapOrObj instanceof Map) {
+        for (const [k, v] of mapOrObj.entries()) storeMap.set(k, v);
+      } else {
+        for (const [k, v] of Object.entries(mapOrObj)) storeMap.set(k, v);
+      }
+    }
+  }
+
+  async hasStore(store: string): Promise<boolean> {
+    return this.stores.has(store);
+  }
+
+  async createStore(...stores: string[]): Promise<void> {
+    for (const store of stores) if (!this.stores.has(store)) this.stores.set(store, new Map());
+  }
+
+  async deleteStore(store: string | RegExp): Promise<void> {
+    if (typeof store === 'string') {
+      this.stores.delete(store);
+      return;
+    }
+    for (const name of this.stores.keys()) {
+      if (store.test(name)) this.stores.delete(name);
+    }
+  }
+
+  async listStores(): Promise<string[]> {
+    return Array.from(this.stores.keys());
+  }
+
+  async delete(store: string, key: string): Promise<void> {
+    this.stores.get(store)?.delete(key);
+  }
+}
+
 @Injectable()
 export class OwnableService implements OnModuleInit {
   constructor(
     private config: ConfigService,
-    private cosmWasm: CosmWasmService,
     private nft: NFTService,
     private readonly storage: ArchiveStorageService,
     private readonly hubState: HubStateRepository,
@@ -44,63 +130,6 @@ export class OwnableService implements OnModuleInit {
 
   public async GetServerETHBalance(networkName: string): Promise<string> {
     return await this.nft.GetServerETHBalance(networkName);
-  }
-
-  private async applyEvent(contract: Contract, event: Event): Promise<void> {
-    const info: { sender: string; funds: [] } = { sender: event.signerAddress ?? '', funds: [] };
-    const { '@context': context, ...msg } = event.parsedData;
-
-    switch (context) {
-      case 'instantiate_msg.json':
-        await contract.instantiate(msg, info);
-        break;
-      case 'execute_msg.json':
-        await contract.execute(msg, info);
-        break;
-      case 'external_event_msg.json':
-        await contract.externalEvent(msg, info);
-        break;
-      default:
-        throw new UserError(`Unknown event type: ${context}`);
-    }
-  }
-
-  private async loadContractFromFiles(files: Map<string, Buffer>): Promise<Contract> {
-    const js = files.get('ownable.js');
-    const wasm = files.get('ownable_bg.wasm');
-    if (!js || !wasm) {
-      throw new UserError('Invalid package: ownable runtime assets missing');
-    }
-
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hub-ownable-'));
-    const jsFile = path.join(tmpDir, 'ownable.js');
-    const wasmFile = path.join(tmpDir, 'ownable_bg.wasm');
-
-    await fs.writeFile(jsFile, js);
-    await fs.writeFile(wasmFile, wasm);
-
-    try {
-      return await this.cosmWasm.load(jsFile, wasmFile);
-    } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true });
-    }
-  }
-
-  private toReplayEvent(row: IndexedWalletEvent): Event | null {
-    if (row.eventKind !== 'public' || !row.sourceAddress || !row.eventType || !row.dataHex) {
-      return null;
-    }
-
-    return new Event({
-      '@context': 'external_event_msg.json',
-      source: row.sourceAddress,
-      eventType: row.eventType,
-      data: row.dataHex,
-      blockNumber: Number(row.blockNumber),
-      transactionHash: row.transactionHash,
-      transactionIndex: row.transactionIndex,
-      logIndex: row.logIndex,
-    });
   }
 
   private validateEventChain(chain: EventChain): void {
@@ -118,6 +147,22 @@ export class OwnableService implements OnModuleInit {
     return { network: parsed.nft.network, address: parsed.nft.address, id: String(parsed.nft.id) };
   }
 
+  private toIndexedPublicEvent(row: IndexedWalletEvent): IndexedPublicEvent | null {
+    if (row.eventKind !== 'public' || !row.sourceAddress || !row.eventType || !row.dataHex) {
+      return null;
+    }
+
+    return {
+      source: row.sourceAddress,
+      eventType: row.eventType,
+      data: row.dataHex,
+      blockNumber: Number(row.blockNumber),
+      transactionHash: row.transactionHash,
+      transactionIndex: row.transactionIndex,
+      logIndex: row.logIndex,
+    };
+  }
+
   private async replayStoredOwnable(cid: string): Promise<ReplayDerivedState> {
     const eventChainBuffer = await this.storage.getEventChain(cid);
     const chain = EventChain.from(JSON.parse(eventChainBuffer.toString('utf8')));
@@ -127,58 +172,87 @@ export class OwnableService implements OnModuleInit {
     await zipped.loadAsync(await this.storage.getPackageZip(cid), { createFolders: true });
     zipped.file('eventChain.json', eventChainBuffer);
     const files = await this.unzip(await zipped.generateAsync({ type: 'uint8array' }));
-    const contract = await this.loadContractFromFiles(files);
 
-    for (const event of chain.events) {
-      await this.applyEvent(contract, event);
-    }
+    const stateStore = new InMemoryStateStore();
+    const anchorProvider: AnchorProvider = {
+      address: '0x0000000000000000000000000000000000000000',
+      chainId: 0,
+      signer: null,
+      sign: async () => {},
+      anchor: async () => {},
+      submitAnchors: async () => undefined,
+      emitPublicEvent: async () => {
+        throw new Error('emitPublicEvent is not supported in hub replay');
+      },
+      verifyAnchors: async () => ({ verified: true, anchors: {}, map: {} }),
+    };
 
-    const indexedEvents = await this.hubState.listWalletEventsByCid(cid);
-    const publicRows = indexedEvents.filter((row) => row.eventKind === 'public');
+    const packageInfo: TypedPackage = {
+      title: cid,
+      name: cid,
+      cid,
+      isDynamic: true,
+      hasMetadata: false,
+      hasWidgetState: false,
+      isConsumable: false,
+      isConsumer: false,
+      isTransferable: false,
+      versions: [{ date: new Date(), cid }],
+    };
 
-    const appliedReplayKeys: string[] = [];
-    let latestAppliedPublicEventId: string | null = null;
+    const packageAssetIO = new NodePackageAssetIO({
+      infoResolver: () => packageInfo,
+      assetLoader: async (_packageCid, name) => files.get(name),
+      assetList: async () => Array.from(files.keys()),
+    });
 
-    for (const row of publicRows) {
-      const replay = this.toReplayEvent(row);
-      if (!replay) continue;
-      try {
-        await this.applyEvent(contract, replay);
-        appliedReplayKeys.push(publicEventReplayKey({ transactionHash: row.transactionHash, logIndex: row.logIndex }));
-        latestAppliedPublicEventId = row.id;
-      } catch {
-        // freshness check below converts this into stable stale contract
-        break;
-      }
-    }
-
-    const freshness = evaluateReplayFreshness(
-      publicRows
-        .filter((row) => !!row.sourceAddress && !!row.eventType && !!row.dataHex)
-        .map((row) => ({
-          source: row.sourceAddress as string,
-          eventType: row.eventType as string,
-          data: row.dataHex as string,
-          blockNumber: Number(row.blockNumber),
-          transactionHash: row.transactionHash,
-          transactionIndex: row.transactionIndex,
-          logIndex: row.logIndex,
-        })),
-      appliedReplayKeys,
+    const eventChains = new CoreEventChainService(stateStore, anchorProvider);
+    const coreOwnables = new CoreOwnableService(
+      stateStore,
+      eventChains,
+      anchorProvider,
+      packageAssetIO,
+      undefined,
+      console,
+      { create: (id: string) => new NodeSandboxOwnableRPC(id) },
     );
+
+    await coreOwnables.initWorker(chain.id, cid);
+    const privateStateDump = await coreOwnables.apply(chain, []);
+
+    const indexedRows = await this.hubState.listWalletEventsByCid(cid);
+    const indexedEventsWithRowId = indexedRows
+      .map((row) => ({ rowId: row.id, event: this.toIndexedPublicEvent(row) }))
+      .filter((value): value is { rowId: string; event: IndexedPublicEvent } => Boolean(value.event));
+    const indexedEvents = indexedEventsWithRowId.map(({ event }) => event);
+    const replay = await coreOwnables.attemptReplayIndexedPublicEvents(chain.id, privateStateDump, indexedEvents);
+
+    const freshness = evaluateReplayFreshness(indexedEvents, replay.appliedReplayKeys);
 
     if (freshness.stale) {
       throw new UserError(`STALE_OWNABLE missingReplayKeys=${freshness.missingReplayKeys.join(',')}`);
     }
 
-    const info = await contract.query({ get_info: {} });
+    const info = await coreOwnables.rpc(chain.id).query({ get_info: {} }, replay.stateDump);
     const owner = String(info.owner ?? '').toLowerCase();
     if (!owner) throw new UserError('Unable to derive owner from replayed state');
+
+    const latestAppliedPublicEvent = replay.appliedEvents.at(-1);
+    const latestAppliedPublicEventId =
+      latestAppliedPublicEvent === undefined
+        ? null
+        : indexedEventsWithRowId.find(
+            ({ event }) =>
+              event.transactionHash === latestAppliedPublicEvent.transactionHash &&
+              event.logIndex === latestAppliedPublicEvent.logIndex,
+          )?.rowId ?? null;
+
+    coreOwnables.clearRpc(chain.id);
 
     return {
       nftInfo: this.parseNftInfoFromChain(chain),
       owner,
-      latestAppliedPublicEventId,
+      latestAppliedPublicEventId: latestAppliedPublicEventId ?? null,
     };
   }
 
