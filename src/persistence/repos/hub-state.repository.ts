@@ -348,15 +348,19 @@ export class HubStateRepository {
     return result.rows;
   }
 
-  async markNotifyRegistrationReplaced(ownerAddress: string, topic: string, replacedByRegistrationId: string): Promise<void> {
-    await this.db.query(
+  async markNotifyRegistrationReplaced(ownerAddress: string, topic: string, replacedByRegistrationId: string): Promise<boolean> {
+    const result = await this.db.query(
       `UPDATE notify_registrations
        SET status = 'replaced',
            replaced_by_registration_id = $3,
            updated_at = NOW()
-       WHERE owner_address = LOWER($1) AND topic = $2`,
+       WHERE owner_address = LOWER($1)
+         AND topic = $2
+         AND status = 'active'
+         AND id <> $3`,
       [ownerAddress, topic, replacedByRegistrationId],
     );
+    return result.rowCount > 0;
   }
 
   async markNotifyRegistrationStale(registrationId: string, reason: string): Promise<void> {

@@ -52,6 +52,22 @@ describe('HubStateRepository', () => {
     expect(state).toEqual({ owner: '0xowner', version: 3 });
   });
 
+  it('marks prior topic replaced only when an active row was updated', async () => {
+    query.mockResolvedValueOnce({ rowCount: 1 });
+    query.mockResolvedValueOnce({ rowCount: 0 });
+
+    const replaced = await repo.markNotifyRegistrationReplaced('0xowner', 'topic-a', 'reg-new');
+    const missing = await repo.markNotifyRegistrationReplaced('0xowner', 'topic-stale', 'reg-new');
+
+    expect(replaced).toBe(true);
+    expect(missing).toBe(false);
+    expect(query).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("AND status = 'active'"),
+      ['0xowner', 'topic-a', 'reg-new'],
+    );
+  });
+
   it('upserts and reads indexer cursor state including tx index', async () => {
     query.mockResolvedValueOnce({ rows: [] });
     query.mockResolvedValueOnce({

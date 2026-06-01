@@ -1,9 +1,10 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Optional } from '@nestjs/common';
 import { NotifyPublisherService, type NotifyPublisherTransport } from '@ownables/notify-publisher';
 import { HubStateRepository, type AvailableOwnableRow } from '../persistence/repos/hub-state.repository.js';
 import { LocalNotifyTransport } from './local-notify.transport.js';
 
 export type NotifyTriggerKind = 'catchup' | 'upload' | 'download_replay';
+export const NOTIFY_PUBLISHER_TRANSPORT = Symbol('NOTIFY_PUBLISHER_TRANSPORT');
 
 export interface RegisterNotifyInput {
   ownerAddress: string;
@@ -32,6 +33,8 @@ export class NotifyService {
 
   constructor(
     private readonly hubState: HubStateRepository,
+    @Optional()
+    @Inject(NOTIFY_PUBLISHER_TRANSPORT)
     transport?: NotifyPublisherTransport,
   ) {
     this.publisher = new NotifyPublisherService(transport ?? new LocalNotifyTransport());
@@ -62,8 +65,10 @@ export class NotifyService {
 
     let status: 'created' | 'refreshed' | 'replaced' = wasExisting ? 'refreshed' : 'created';
     if (previous && previous !== topic) {
-      await this.hubState.markNotifyRegistrationReplaced(normalizedOwner, previous, registration.id);
-      status = 'replaced';
+      const replaced = await this.hubState.markNotifyRegistrationReplaced(normalizedOwner, previous, registration.id);
+      if (replaced) {
+        status = 'replaced';
+      }
     }
 
     const catchUpRows = await this.hubState.listAvailableOwnablesByOwner(normalizedOwner);
