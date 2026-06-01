@@ -2038,6 +2038,8 @@ __metadata:
     "@nestjs/swagger": "npm:^11.4.4"
     "@nestjs/testing": "npm:^11.1.24"
     "@ownables/core": "portal:../ownables-js/packages/core"
+    "@ownables/notify-core": "portal:../ownables-js/packages/notify-core"
+    "@ownables/notify-publisher": "portal:../ownables-js/packages/notify-publisher"
     "@ownables/platform-node": "portal:../ownables-js/packages/platform-node"
     "@semantic-release/commit-analyzer": "npm:^13.0.1"
     "@semantic-release/github": "npm:^12.0.8"
@@ -2075,6 +2077,20 @@ __metadata:
     tsconfig-paths: "npm:^4.2.0"
     typescript: "npm:^6.0.3"
   languageName: unknown
+  linkType: soft
+
+"@ownables/notify-core@portal:../ownables-js/packages/notify-core::locator=%40ownables%2Fhub%40workspace%3A.":
+  version: 0.0.0-use.local
+  resolution: "@ownables/notify-core@portal:../ownables-js/packages/notify-core::locator=%40ownables%2Fhub%40workspace%3A."
+  languageName: node
+  linkType: soft
+
+"@ownables/notify-publisher@portal:../ownables-js/packages/notify-publisher::locator=%40ownables%2Fhub%40workspace%3A.":
+  version: 0.0.0-use.local
+  resolution: "@ownables/notify-publisher@portal:../ownables-js/packages/notify-publisher::locator=%40ownables%2Fhub%40workspace%3A."
+  peerDependencies:
+    "@ownables/notify-core": ^0.6.0
+  languageName: node
   linkType: soft
 
 "@ownables/platform-node@portal:../ownables-js/packages/platform-node::locator=%40ownables%2Fhub%40workspace%3A.":

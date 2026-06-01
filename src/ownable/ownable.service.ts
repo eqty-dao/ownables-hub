@@ -19,6 +19,7 @@ import { EventChain } from 'eqty-core';
 import { Readable } from 'stream';
 import { ArchiveStorageService } from '../storage/archive-storage.service.js';
 import { HubStateRepository, IndexedWalletEvent } from '../persistence/repos/hub-state.repository.js';
+import { NotifyService } from '../notify/notify.service.js';
 
 interface SignerIdentity {
   address?: string;
@@ -119,6 +120,7 @@ export class OwnableService implements OnModuleInit {
     private nft: NFTService,
     private readonly storage: ArchiveStorageService,
     private readonly hubState: HubStateRepository,
+    private readonly notifyService: NotifyService,
   ) {
     const mnemonic = this.config.getAuthoritySignerMnemonic();
     if (!mnemonic) {
@@ -415,6 +417,21 @@ export class OwnableService implements OnModuleInit {
 
     if (ownerFromPrivateState) {
       await this.hubState.setOwnerState(record.id, ownerFromPrivateState);
+      const ownerState = await this.hubState.getOwnerStateByCid(cid);
+      if (ownerState) {
+        await this.notifyService.notifyOwnableAvailability({
+          ownerAddress: ownerFromPrivateState,
+          ownableId: record.id,
+          cid,
+          ownerStateVersion: ownerState.version,
+          latestAppliedPublicEventId: ownerState.latestAppliedPublicEventId,
+          issuerAddress: record.prevOwnerAddress,
+          nftNetwork: record.nftNetwork,
+          nftContractAddress: record.nftContractAddress,
+          nftTokenId: record.nftTokenId,
+          triggerKind: 'upload',
+        });
+      }
     }
 
     return {
@@ -436,8 +453,29 @@ export class OwnableService implements OnModuleInit {
     if (!(await this.existsCid(cid))) throw new UserError(`Event chain with cid ${cid} not available on this hub`);
     if (!(await this.existsPkg(cid))) throw new UserError(`Ownable package with cid ${cid} not available on this hub`);
 
+    const ownerStateBefore = await this.hubState.getOwnerStateByCid(cid);
     const replayState = await this.replayStoredOwnable(cid);
     await this.hubState.setOwnerState(record.id, replayState.owner, replayState.latestAppliedPublicEventId);
+    const ownerStateAfter = await this.hubState.getOwnerStateByCid(cid);
+    const shouldNotify =
+      ownerStateAfter &&
+      (!ownerStateBefore ||
+        ownerStateBefore.owner !== ownerStateAfter.owner ||
+        ownerStateBefore.latestAppliedPublicEventId !== ownerStateAfter.latestAppliedPublicEventId);
+    if (shouldNotify && ownerStateAfter) {
+      await this.notifyService.notifyOwnableAvailability({
+        ownerAddress: replayState.owner,
+        ownableId: record.id,
+        cid: record.cid,
+        ownerStateVersion: ownerStateAfter.version,
+        latestAppliedPublicEventId: ownerStateAfter.latestAppliedPublicEventId,
+        issuerAddress: record.prevOwnerAddress,
+        nftNetwork: record.nftNetwork,
+        nftContractAddress: record.nftContractAddress,
+        nftTokenId: record.nftTokenId,
+        triggerKind: 'download_replay',
+      });
+    }
 
     const zipped = new JSZip();
     const zipFile = await this.storage.getPackageZip(cid);

@@ -162,16 +162,20 @@ describe('OwnableService', () => {
     const hubState = {
       upsertOwnableRecord: jest.fn().mockResolvedValue({ id: 'id-1' }),
       setOwnerState: jest.fn().mockResolvedValue(undefined),
+      getOwnerStateByCid: jest.fn().mockResolvedValue({ owner: ownerWallet.address.toLowerCase(), version: 1, latestAppliedPublicEventId: null }),
       getOwnableByCid: jest.fn().mockResolvedValue({ id: 'id-1', cid: 'cid-1' }),
       getOwnableByNft: jest.fn(),
       listOwnableCidsByPrevOwner: jest.fn().mockResolvedValue(['cid-a']),
       listWalletEventsByCid: jest.fn().mockResolvedValue([]),
     };
+    const notifyService = {
+      notifyOwnableAvailability: jest.fn().mockResolvedValue(undefined),
+    };
 
-    const service = new OwnableService(buildConfig() as any, nft as any, storage as any, hubState as any);
+    const service = new OwnableService(buildConfig() as any, nft as any, storage as any, hubState as any, notifyService as any);
 
     await service.onModuleInit();
-    return { service, nft, storage, hubState };
+    return { service, nft, storage, hubState, notifyService };
   };
 
   const createChain = async (nft = { network: 'eip155:base', address: '0xabc', id: '1' }) => {
@@ -199,7 +203,7 @@ describe('OwnableService', () => {
   };
 
   it('accepts upload without SIWE signer ownership gating', async () => {
-    const { service, storage, hubState, nft } = await buildService();
+    const { service, storage, hubState, nft, notifyService } = await buildService();
     const chain = await createChain();
 
     const zip = new JSZip();
@@ -215,10 +219,13 @@ describe('OwnableService', () => {
     expect(storage.storeEventChain).toHaveBeenCalledTimes(1);
     expect(hubState.upsertOwnableRecord).toHaveBeenCalledTimes(1);
     expect(nft.getOwnerOfNFT).not.toHaveBeenCalled();
+    expect(notifyService.notifyOwnableAvailability).toHaveBeenCalledWith(
+      expect.objectContaining({ triggerKind: 'upload', cid: result.cid }),
+    );
   });
 
   it('delegates public replay to core service and persists replay-derived owner state', async () => {
-    const { service, storage, hubState } = await buildService();
+    const { service, storage, hubState, notifyService } = await buildService();
     const chain = await createChain();
     const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
 
@@ -253,11 +260,49 @@ describe('OwnableService', () => {
     ]);
 
     const replaySpy = jest.spyOn(CoreOwnableService.prototype, 'attemptReplayIndexedPublicEvents');
+    hubState.getOwnerStateByCid
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        owner: '0x6465aa5c80764b174606094decaa4ee9560a2e43',
+        version: 2,
+        latestAppliedPublicEventId: 'evt-1',
+      });
 
     await service.downloadOwnable('cid-1');
 
     expect(replaySpy).toHaveBeenCalled();
     expect(hubState.setOwnerState).toHaveBeenCalledWith('id-1', '0x6465aa5c80764b174606094decaa4ee9560a2e43', 'evt-1');
+    expect(notifyService.notifyOwnableAvailability).toHaveBeenCalledWith(
+      expect.objectContaining({ triggerKind: 'download_replay', cid: 'cid-1' }),
+    );
+  });
+
+  it('does not publish replay notify when owner state is unchanged across download', async () => {
+    const { service, storage, hubState, notifyService } = await buildService();
+    const chain = await createChain();
+
+    storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
+    const packageZip = new JSZip();
+    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
+    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
+    hubState.listWalletEventsByCid.mockResolvedValue([]);
+    hubState.getOwnerStateByCid
+      .mockResolvedValueOnce({
+        owner: '0x6465aa5c80764b174606094decaa4ee9560a2e43',
+        version: 2,
+        latestAppliedPublicEventId: null,
+      })
+      .mockResolvedValueOnce({
+        owner: '0x6465aa5c80764b174606094decaa4ee9560a2e43',
+        version: 3,
+        latestAppliedPublicEventId: null,
+      });
+
+    await service.downloadOwnable('cid-1');
+
+    expect(notifyService.notifyOwnableAvailability).not.toHaveBeenCalledWith(
+      expect.objectContaining({ triggerKind: 'download_replay' }),
+    );
   });
 
   it('rejects stale ownables with stable stale error contract', async () => {

@@ -42,6 +42,8 @@
     "@nestjs/platform-express": "^11.1.24",
     "@nestjs/swagger": "^11.4.4",
     "@ownables/core": "portal:../ownables-js/packages/core",
+    "@ownables/notify-core": "portal:../ownables-js/packages/notify-core",
+    "@ownables/notify-publisher": "portal:../ownables-js/packages/notify-publisher",
     "@ownables/platform-node": "portal:../ownables-js/packages/platform-node",
     "any-bucket": "^0.1.6",
     "axios": "^1.16.1",
@@ -96,12 +98,16 @@
       "^.+\\.(t|j)s$": "ts-jest"
     },
     "moduleNameMapper": {
-      "^(\\.{1,2}/.*)\\.js$": "$1"
+      "^(\\.{1,2}/.*)\\.js$": "$1",
+      "^@ownables/notify-publisher$": "<rootDir>/test-support/notify-publisher.mock.ts"
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "transformIgnorePatterns": [
+      "/node_modules/(?!@ownables/notify-publisher|@ownables/notify-core)/"
+    ]
   }
 }

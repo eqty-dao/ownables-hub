@@ -191,6 +191,7 @@ async function main() {
   };
 
   const ownerStateCalls = [];
+  const ownerStateByCid = new Map();
   const hubState = {
     getOwnableByCid: async () => ({ id: 'ownable-1', cid: 'cid-1' }),
     listWalletEventsByCid: async () => [
@@ -220,12 +221,21 @@ async function main() {
     ],
     setOwnerState: async (id, owner, latestAppliedPublicEventId) => {
       ownerStateCalls.push({ id, owner, latestAppliedPublicEventId });
+      ownerStateByCid.set('cid-1', {
+        owner,
+        version: ownerStateCalls.length,
+        latestAppliedPublicEventId: latestAppliedPublicEventId ?? null,
+      });
     },
+    getOwnerStateByCid: async (cid) => ownerStateByCid.get(cid) ?? null,
+  };
+  const notifyService = {
+    notifyOwnableAvailability: async () => undefined,
   };
 
   const wasmShim = installAbiInstantiationShim(expectedOwner);
   try {
-    const service = new OwnableService(config, nft, storage, hubState);
+    const service = new OwnableService(config, nft, storage, hubState, notifyService);
     await service.onModuleInit();
 
     const file = await service.downloadOwnable('cid-1');
