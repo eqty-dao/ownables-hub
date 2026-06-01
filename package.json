@@ -10,8 +10,8 @@
   },
   "license": "MIT",
   "scripts": {
-    "prebuild": "rimraf dist",
-    "build": "nest build",
+    "prebuild": "rimraf dist tsconfig.build.tsbuildinfo",
+    "build": "tsc -p tsconfig.build.json --incremental false",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
@@ -31,7 +31,8 @@
     "db:start": "bash ./scripts/db-start.sh",
     "db:migrate:create": "node-pg-migrate create -m migrations",
     "db:migrate:up": "node-pg-migrate up -m migrations",
-    "db:migrate:down": "node-pg-migrate down -m migrations"
+    "db:migrate:down": "node-pg-migrate down -m migrations",
+    "verify:hub-replay-boundary": "yarn node scripts/verify-hub-replay-boundary.mjs"
   },
   "dependencies": {
     "@babel/core": "^7.29.7",
