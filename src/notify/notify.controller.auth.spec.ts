@@ -1,23 +1,21 @@
-import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
-import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants.js';
+import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import type { Request, Response } from 'express';
-import { SIWEAuthMiddleware } from '../common/siwe/siwe-auth.middleware.js';
-import { SIWEGuard } from '../common/siwe/siwe.guard.js';
+import request from 'supertest';
+import { AppModule } from '../app.module.js';
 import { SIWEService } from '../common/siwe/siwe.service.js';
-import { SIWEModule } from '../common/siwe/siwe.module.js';
-import { NotifyController } from './notify.controller.js';
-import { NotifyModule } from './notify.module.js';
 import { NotifyService } from './notify.service.js';
 
-@Module({
-  imports: [NotifyModule, SIWEModule],
-})
-class NotifyAuthRouteTestModule implements NestModule {
-  configure(consumer: MiddlewareConsumer) {
-    consumer.apply(SIWEAuthMiddleware).forRoutes(NotifyController);
-  }
-}
+jest.mock('@ownables/core', () => ({
+  calculateOwnablePackageCid: jest.fn(),
+  evaluateReplayFreshness: jest.fn(),
+  EventChainService: jest.fn(),
+  OwnableService: jest.fn(),
+}));
+
+jest.mock('@ownables/platform-node', () => ({
+  NodePackageAssetIO: jest.fn(),
+  NodeSandboxOwnableRPC: jest.fn(),
+}));
 
 describe('NotifyController auth path', () => {
   const notifyService = {
@@ -27,16 +25,14 @@ describe('NotifyController auth path', () => {
     verifySIWEMessage: jest.fn().mockResolvedValue({ isValid: true, address: '0xAbC' }),
   };
 
-  let middleware: SIWEAuthMiddleware;
-  let guard: SIWEGuard;
-  let controller: NotifyController;
+  let app: INestApplication;
 
   beforeAll(async () => {
     process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://planner:planner@127.0.0.1:5432/ownables_hub_test';
     process.env.ACCOUNT_MNEMONIC = process.env.ACCOUNT_MNEMONIC || 'test test test test test test test test test test test junk';
 
     const moduleRef = await Test.createTestingModule({
-      imports: [NotifyAuthRouteTestModule],
+      imports: [AppModule],
     })
       .overrideProvider(NotifyService)
       .useValue(notifyService)
@@ -44,9 +40,12 @@ describe('NotifyController auth path', () => {
       .useValue(siweService)
       .compile();
 
-    middleware = moduleRef.get(SIWEAuthMiddleware);
-    guard = moduleRef.get(SIWEGuard);
-    controller = moduleRef.get(NotifyController);
+    app = moduleRef.createNestApplication();
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app?.close();
   });
 
   afterEach(() => {
@@ -71,54 +70,27 @@ describe('NotifyController auth path', () => {
     return Buffer.from(JSON.stringify(payload)).toString('base64');
   }
 
-  it('wires SIWE middleware and notify route metadata for POST /notify/registrations', () => {
-    const apply = jest.fn().mockReturnValue({ forRoutes: jest.fn() });
-    new NotifyAuthRouteTestModule().configure({ apply } as unknown as MiddlewareConsumer);
-    expect(apply).toHaveBeenCalledWith(SIWEAuthMiddleware);
+  it('rejects unauthenticated registration on the real route', async () => {
+    await request(app.getHttpServer())
+      .post('/notify/registrations')
+      .send({ ownerAddress: '0xabc', topic: 'topic-a' })
+      .expect(401);
 
-    const controllerPath = Reflect.getMetadata(PATH_METADATA, NotifyController);
-    const methodPath = Reflect.getMetadata(PATH_METADATA, NotifyController.prototype.register as object);
-    const method = Reflect.getMetadata(METHOD_METADATA, NotifyController.prototype.register as object);
-    expect(controllerPath).toBe('notify');
-    expect(methodPath).toBe('registrations');
-    expect(method).toBe(RequestMethod.POST);
-  });
-
-  it('rejects unauthenticated registration via SIWE middleware + guard path', async () => {
-    const req = { headers: {} } as Request;
-    const next = jest.fn();
-    await middleware.use(req, {} as Response, next);
-    expect(next).toHaveBeenCalled();
-
-    expect(siweService.verifySIWEMessage).not.toHaveBeenCalled();
     expect(notifyService.register).not.toHaveBeenCalled();
-    expect(() =>
-      guard.canActivate({
-        switchToHttp: () => ({
-          getRequest: () => req,
-        }),
-      } as any),
-    ).toThrow('User not authenticated via SIWE');
+    expect(siweService.verifySIWEMessage).not.toHaveBeenCalled();
   });
 
-  it('uses SIWE signer identity for authenticated registration', async () => {
-    const req = {
-      headers: { authorization: `Bearer ${buildBearerToken('0xAbC')}` },
-    } as Request;
-    const next = jest.fn();
-    await middleware.use(req, {} as Response, next);
-    expect(next).toHaveBeenCalled();
+  it('uses SIWE signer identity for authenticated registration on the real route', async () => {
+    await request(app.getHttpServer())
+      .post('/notify/registrations')
+      .set('Authorization', `Bearer ${buildBearerToken('0xAbC')}`)
+      .send({ ownerAddress: '0xabc', topic: 'topic-a' })
+      .expect(201)
+      .expect(({ body }) => {
+        expect(body).toEqual({ status: 'created', catchUpAttempted: 0 });
+      });
 
     expect(siweService.verifySIWEMessage).toHaveBeenCalledTimes(1);
-    expect(
-      guard.canActivate({
-        switchToHttp: () => ({
-          getRequest: () => req,
-        }),
-      } as any),
-    ).toBe(true);
-
-    await controller.register({ ownerAddress: '0xabc', topic: 'topic-a' }, req['signer']);
     expect(notifyService.register).toHaveBeenCalledWith({
       ownerAddress: '0xabc',
       topic: 'topic-a',
