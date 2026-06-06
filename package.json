@@ -98,6 +98,7 @@
       "^.+\\.(t|j)s$": "ts-jest"
     },
     "moduleNameMapper": {
+      "^@ownables/notify-core$": "<rootDir>/../../ownables-js/packages/notify-core/src/index.ts",
       "^(\\.{1,2}/.*)\\.js$": "$1",
       "^@ownables/notify-publisher$": "<rootDir>/test-support/notify-publisher.mock.ts"
     },

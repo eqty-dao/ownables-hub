@@ -5,6 +5,9 @@ import { Event, EventChain } from '../test-mocks/eqty-core.js';
 import { OwnableService } from './ownable.service.js';
 import { OwnableService as CoreOwnableService } from '@ownables/core';
 
+const PRIVATE_STATE_OWNER_WALLET = ethers.Wallet.createRandom();
+const REPLAY_OWNER_WALLET = ethers.Wallet.createRandom();
+
 jest.mock('eqty-core', () => require('../test-mocks/eqty-core.ts'));
 jest.mock('@ownables/core', () => {
   class MockCoreEventChainService {
@@ -16,7 +19,7 @@ jest.mock('@ownables/core', () => {
     constructor(..._args: any[]) {}
     async initWorker(id: string, _cid: string) {
       this.rpcStore.set(id, {
-        query: async () => ({ owner: '0x6465aa5c80764b174606094decaa4ee9560a2e43' }),
+        query: async () => ({ owner: REPLAY_OWNER_WALLET.address.toLowerCase() }),
       });
     }
     async apply(_chain: any, _state: any[]) {
@@ -135,16 +138,14 @@ jest.mock('@ownables/platform-node', () => {
 });
 
 describe('OwnableService', () => {
-  const ownerWallet = ethers.Wallet.createRandom();
-
   const buildConfig = () => ({
     getRuntimeNetworkProfile: () => 'testnet',
-    getAuthoritySignerMnemonic: () => ownerWallet.mnemonic?.phrase || '',
+    getAuthoritySignerMnemonic: () => PRIVATE_STATE_OWNER_WALLET.mnemonic?.phrase || '',
   });
 
   const buildService = async () => {
     const nft = {
-      getOwnerOfNFT: jest.fn().mockResolvedValue(ownerWallet.address),
+      getOwnerOfNFT: jest.fn().mockResolvedValue(PRIVATE_STATE_OWNER_WALLET.address),
       isNFTlocked: jest.fn().mockResolvedValue(true),
       getUnlockProof: jest.fn().mockResolvedValue('unlock-proof'),
       isUnlockProofValid: jest.fn().mockResolvedValue(true),
@@ -162,14 +163,14 @@ describe('OwnableService', () => {
     const hubState = {
       upsertOwnableRecord: jest.fn().mockResolvedValue({ id: 'id-1' }),
       setOwnerState: jest.fn().mockResolvedValue(undefined),
-      getOwnerStateByCid: jest.fn().mockResolvedValue({ owner: ownerWallet.address.toLowerCase(), version: 1, latestAppliedPublicEventId: null }),
+      getOwnerStateByCid: jest.fn().mockResolvedValue({ owner: REPLAY_OWNER_WALLET.address.toLowerCase(), version: 1, latestAppliedPublicEventId: null }),
       getOwnableByCid: jest.fn().mockResolvedValue({ id: 'id-1', cid: 'cid-1' }),
       getOwnableByNft: jest.fn(),
       listOwnableCidsByPrevOwner: jest.fn().mockResolvedValue(['cid-a']),
       listWalletEventsByCid: jest.fn().mockResolvedValue([]),
     };
     const notifyService = {
-      notifyOwnableAvailability: jest.fn().mockResolvedValue({ status: 'delivered', ownerAccount: ownerWallet.address.toLowerCase() }),
+      notifyOwnableAvailability: jest.fn().mockResolvedValue({ status: 'delivered', ownerAccount: REPLAY_OWNER_WALLET.address.toLowerCase() }),
     };
 
     const service = new OwnableService(buildConfig() as any, nft as any, storage as any, hubState as any, notifyService as any);
@@ -181,7 +182,7 @@ describe('OwnableService', () => {
   const createChain = async (nft = { network: 'eip155:base', address: '0xabc', id: '1' }) => {
     const chain = new EventChain(`0x${'11'.repeat(32)}`);
     const signer = {
-      getAddress: async () => ownerWallet.address,
+      getAddress: async () => PRIVATE_STATE_OWNER_WALLET.address,
       signTypedData: async () => `0x${'00'.repeat(65)}`,
     };
     const event = new Event({ '@context': 'instantiate_msg.json', nft });
@@ -225,14 +226,17 @@ describe('OwnableService', () => {
     expect(storage.storeEventChain).toHaveBeenCalledTimes(1);
     expect(hubState.upsertOwnableRecord).toHaveBeenCalledTimes(1);
     expect(nft.getOwnerOfNFT).not.toHaveBeenCalled();
-    expect(hubState.setOwnerState).toHaveBeenCalledWith('id-1', '0x6465aa5c80764b174606094decaa4ee9560a2e43', null);
+    expect(hubState.setOwnerState).toHaveBeenCalledWith('id-1', REPLAY_OWNER_WALLET.address.toLowerCase(), null);
     expect(notifyService.notifyOwnableAvailability).toHaveBeenCalledWith(
       expect.objectContaining({
         triggerKind: 'upload',
         cid: result.cid,
-        ownerAddress: '0x6465aa5c80764b174606094decaa4ee9560a2e43',
+        ownerAddress: REPLAY_OWNER_WALLET.address.toLowerCase(),
         ownerNetwork: 'eip155:base',
       }),
+    );
+    expect(notifyService.notifyOwnableAvailability).not.toHaveBeenCalledWith(
+      expect.objectContaining({ ownerAddress: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase() }),
     );
   });
 
@@ -275,7 +279,7 @@ describe('OwnableService', () => {
     hubState.getOwnerStateByCid
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({
-        owner: '0x6465aa5c80764b174606094decaa4ee9560a2e43',
+        owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
         version: 2,
         latestAppliedPublicEventId: 'evt-1',
       });
@@ -283,12 +287,12 @@ describe('OwnableService', () => {
     await service.downloadOwnable('cid-1');
 
     expect(replaySpy).toHaveBeenCalled();
-    expect(hubState.setOwnerState).toHaveBeenCalledWith('id-1', '0x6465aa5c80764b174606094decaa4ee9560a2e43', 'evt-1');
+    expect(hubState.setOwnerState).toHaveBeenCalledWith('id-1', REPLAY_OWNER_WALLET.address.toLowerCase(), 'evt-1');
     expect(notifyService.notifyOwnableAvailability).toHaveBeenCalledWith(
       expect.objectContaining({
         triggerKind: 'download_replay',
         cid: 'cid-1',
-        ownerAddress: '0x6465aa5c80764b174606094decaa4ee9560a2e43',
+        ownerAddress: REPLAY_OWNER_WALLET.address.toLowerCase(),
         ownerNetwork: 'eip155:base',
       }),
     );
@@ -305,12 +309,12 @@ describe('OwnableService', () => {
     hubState.listWalletEventsByCid.mockResolvedValue([]);
     hubState.getOwnerStateByCid
       .mockResolvedValueOnce({
-        owner: '0x6465aa5c80764b174606094decaa4ee9560a2e43',
+        owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
         version: 2,
         latestAppliedPublicEventId: null,
       })
       .mockResolvedValueOnce({
-        owner: '0x6465aa5c80764b174606094decaa4ee9560a2e43',
+        owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
         version: 3,
         latestAppliedPublicEventId: null,
       });
@@ -371,13 +375,13 @@ describe('OwnableService', () => {
     hubState.getOwnerStateByCid
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({
-        owner: '0x6465aa5c80764b174606094decaa4ee9560a2e43',
+        owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
         version: 2,
         latestAppliedPublicEventId: null,
       });
     notifyService.notifyOwnableAvailability.mockResolvedValue({
       status: 'not_subscribed',
-      ownerAccount: 'eip155:84532:0x6465aa5c80764b174606094decaa4ee9560a2e43',
+      ownerAccount: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
       warningCode: 'reown_not_subscribed',
       warningMessage: 'not subscribed',
     });

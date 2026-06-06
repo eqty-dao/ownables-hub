@@ -1,5 +1,6 @@
 import { BadRequestException, Inject, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { normalizeCaip10Account } from '@ownables/notify-core';
 import { NotifyPublisherService, type NotifyPublisherTransport } from '@ownables/notify-publisher';
 import { ethers } from 'ethers';
 import { ConfigService } from '../common/config/config.service.js';
@@ -156,7 +157,14 @@ export class NotifyService {
       throw new BadRequestException('owner is required');
     }
 
-    return this.hubState.getNotifyDeliveryStateByOwnableAndOwner(trimmedCid, trimmedOwner);
+    let normalizedOwner: string;
+    try {
+      normalizedOwner = normalizeCaip10Account(trimmedOwner);
+    } catch {
+      throw new BadRequestException('owner must be a valid CAIP-10 account');
+    }
+
+    return this.hubState.getNotifyDeliveryStateByOwnableAndOwner(trimmedCid, normalizedOwner);
   }
 
   private async persistWarning(

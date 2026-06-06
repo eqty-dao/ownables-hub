@@ -10,6 +10,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgres://ownables:ownables@127.0.0.1:5432/ownables_hub_test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ownables_hub_test
+          POSTGRES_USER: ownables
+          POSTGRES_PASSWORD: ownables
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ownables -d ownables_hub_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout
@@ -33,11 +49,14 @@ jobs:
       - name: Lint
         run: yarn lint:check
 
-      - name: Unit tests
-        run: yarn test --runInBand
-
       - name: Core compatibility smoke
         run: yarn verify:core-compat
+
+      - name: Replay boundary verifier
+        run: yarn verify:hub-replay-boundary
+
+      - name: Unit tests
+        run: yarn test --runInBand
 
       - name: Build
         run: yarn build

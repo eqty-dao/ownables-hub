@@ -2,6 +2,8 @@ import { NotifyService } from './notify.service.js';
 import { ReownTransportError } from './reown-notify.transport.js';
 
 describe('NotifyService', () => {
+  const ownerAddress = '0x6465aa5c80764b174606094decaa4ee9560a2e43';
+
   const buildRepo = () => ({
     getNotifyDeliveryStateByDedupKey: jest.fn(),
     getNotifyDeliveryStateByOwnableAndOwner: jest.fn(),
@@ -27,7 +29,7 @@ describe('NotifyService', () => {
   });
 
   const notifyInput = () => ({
-    ownerAddress: '0x6465aa5c80764b174606094decaa4ee9560a2e43',
+    ownerAddress,
     ownerNetwork: 'eip155:base',
     ownableId: 'own-1',
     cid: 'cid-1',
@@ -49,7 +51,7 @@ describe('NotifyService', () => {
 
     expect(result).toEqual({
       status: 'delivered',
-      ownerAccount: 'eip155:84532:0x6465aa5c80764b174606094decaa4ee9560a2e43',
+      ownerAccount: `eip155:84532:${ownerAddress}`,
     });
     expect(repo.upsertNotifyDeliveryState).not.toHaveBeenCalled();
   });
@@ -84,7 +86,7 @@ describe('NotifyService', () => {
 
     expect(result).toEqual({
       status: 'failed_configuration',
-      ownerAccount: 'eip155:84532:0x6465aa5c80764b174606094decaa4ee9560a2e43',
+      ownerAccount: `eip155:84532:${ownerAddress}`,
       warningCode: 'missing_reown_config',
       warningMessage: 'notify disabled',
     });
@@ -149,14 +151,61 @@ describe('NotifyService', () => {
     );
   });
 
+  it.each([
+    ['testnet ethereum name', 'testnet', 'eip155:ethereum', `eip155:11155111:${ownerAddress}`],
+    ['testnet arbitrum name', 'testnet', 'eip155:arbitrum', `eip155:421614:${ownerAddress}`],
+    ['testnet polygon name', 'testnet', 'eip155:polygon', `eip155:80002:${ownerAddress}`],
+    ['testnet base name', 'testnet', 'eip155:base', `eip155:84532:${ownerAddress}`],
+    ['mainnet ethereum name', 'mainnet', 'eip155:ethereum', `eip155:1:${ownerAddress}`],
+    ['mainnet arbitrum name', 'mainnet', 'eip155:arbitrum', `eip155:42161:${ownerAddress}`],
+    ['mainnet polygon name', 'mainnet', 'eip155:polygon', `eip155:137:${ownerAddress}`],
+    ['mainnet base name', 'mainnet', 'eip155:base', `eip155:8453:${ownerAddress}`],
+    ['testnet numeric CAIP-2', 'testnet', 'eip155:84532', `eip155:84532:${ownerAddress}`],
+    ['mainnet numeric CAIP-2', 'mainnet', 'eip155:8453', `eip155:8453:${ownerAddress}`],
+  ])('derives owner account for %s', async (_label, profile, ownerNetwork, expectedOwnerAccount) => {
+    const repo = buildRepo();
+    repo.getNotifyDeliveryStateByDedupKey.mockResolvedValue({ status: 'delivered', attemptCount: 1 });
+    const service = new NotifyService(
+      repo as any,
+      buildConfig({ getRuntimeNetworkProfile: jest.fn().mockReturnValue(profile) }) as any,
+      buildTransport() as any,
+    );
+
+    const result = await service.notifyOwnableAvailability({ ...notifyInput(), ownerNetwork });
+
+    expect(result).toEqual({
+      status: 'delivered',
+      ownerAccount: expectedOwnerAccount,
+    });
+    expect(repo.getNotifyDeliveryStateByDedupKey).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerAccount: expectedOwnerAccount }),
+    );
+  });
+
   it('reads delivery status by cid and owner account', async () => {
     const repo = buildRepo();
     repo.getNotifyDeliveryStateByOwnableAndOwner.mockResolvedValue({ id: 'del-1', status: 'delivered' });
     const service = new NotifyService(repo as any, buildConfig() as any, buildTransport() as any);
 
-    const result = await service.getDeliveryStatus('cid-1', 'eip155:84532:0xabc');
+    const result = await service.getDeliveryStatus('cid-1', 'eip155:84532:0xabcdefabcdefabcdefabcdefabcdefabcdefabcd');
 
     expect(result).toEqual({ id: 'del-1', status: 'delivered' });
-    expect(repo.getNotifyDeliveryStateByOwnableAndOwner).toHaveBeenCalledWith('cid-1', 'eip155:84532:0xabc');
+    expect(repo.getNotifyDeliveryStateByOwnableAndOwner).toHaveBeenCalledWith(
+      'cid-1',
+      'eip155:84532:0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+    );
+  });
+
+  it('normalizes mixed-case EVM CAIP-10 owner input before lookup', async () => {
+    const repo = buildRepo();
+    repo.getNotifyDeliveryStateByOwnableAndOwner.mockResolvedValue({ id: 'del-1', status: 'delivered' });
+    const service = new NotifyService(repo as any, buildConfig() as any, buildTransport() as any);
+
+    await service.getDeliveryStatus('cid-1', 'eip155:84532:0xAbCdefABCDefabCDEfAbCdefabcdeFABcDEFabCD');
+
+    expect(repo.getNotifyDeliveryStateByOwnableAndOwner).toHaveBeenCalledWith(
+      'cid-1',
+      'eip155:84532:0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
+    );
   });
 });
