@@ -46,6 +46,7 @@ Base path for hub routes: `/ownables`
 - `GET /ownables/cid?...` lookup CID by NFT
 - `GET /ownables/chains` list available NFT chain setup
 - `GET /ownables/serverinfo` inspect wallet balances and hub info
+- `GET /notify/delivery-status?cid=<cid>&owner=<caip10-account>` inspect the latest public notify delivery status for one owner/account pair
 
 Swagger: `http://localhost:3000/api-docs`
 
@@ -108,6 +109,20 @@ Additional runtime configuration (feature-dependent):
 - `HUB_NETWORK_PROFILE` (`testnet` default, or `mainnet`)
 - `TESTNET_*_RPC_URL` / `MAINNET_*_RPC_URL` overrides
 - `SIWE_DOMAIN`
+- `PUBLIC_BASE_URL` for absolute download URLs in notifications
+
+Optional Reown notify publishing configuration:
+
+- `REOWN_PROJECT_ID`
+- `REOWN_NOTIFY_API_SECRET`
+- `REOWN_NOTIFICATION_TYPE_ID`
+- `REOWN_APP_DOMAIN`
+
+Reown notify stays non-blocking:
+
+- if the Reown env vars are unset or partially configured, upload/download still succeed and Hub records `failed_configuration`
+- if the owner account is not subscribed to the configured notification type, upload/download still succeed and Hub records `not_subscribed`
+- Hub no longer exposes a topic registration endpoint or stores local topic registrations
 
 ## Tests
 

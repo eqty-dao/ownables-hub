@@ -415,31 +415,35 @@ export class OwnableService implements OnModuleInit {
       nftTokenId: nftInfo.id,
     });
 
-    if (ownerFromPrivateState) {
-      await this.hubState.setOwnerState(record.id, ownerFromPrivateState);
-      const ownerState = await this.hubState.getOwnerStateByCid(cid);
-      if (ownerState) {
+    const replayState = await this.replayStoredOwnable(cid);
+    await this.hubState.setOwnerState(record.id, replayState.owner, replayState.latestAppliedPublicEventId);
+    const ownerState = await this.hubState.getOwnerStateByCid(cid);
+    if (ownerState) {
+      try {
         await this.notifyService.notifyOwnableAvailability({
-          ownerAddress: ownerFromPrivateState,
+          ownerAddress: replayState.owner,
+          ownerNetwork: replayState.nftInfo.network,
           ownableId: record.id,
           cid,
           ownerStateVersion: ownerState.version,
           latestAppliedPublicEventId: ownerState.latestAppliedPublicEventId,
           issuerAddress: record.prevOwnerAddress,
-          nftNetwork: record.nftNetwork,
-          nftContractAddress: record.nftContractAddress,
-          nftTokenId: record.nftTokenId,
+          nftNetwork: replayState.nftInfo.network,
+          nftContractAddress: replayState.nftInfo.address,
+          nftTokenId: replayState.nftInfo.id,
           triggerKind: 'upload',
         });
+      } catch (error) {
+        console.warn('notifyOwnableAvailability warning during upload', error);
       }
     }
 
     return {
       cid: cid.toString(),
-      owner: ownerFromPrivateState,
-      nftNetwork: nftInfo.network,
-      smartContractAddress: nftInfo.address,
-      NftId: nftInfo.id,
+      owner: replayState.owner,
+      nftNetwork: replayState.nftInfo.network,
+      smartContractAddress: replayState.nftInfo.address,
+      NftId: replayState.nftInfo.id,
     };
   }
 
@@ -463,18 +467,23 @@ export class OwnableService implements OnModuleInit {
         ownerStateBefore.owner !== ownerStateAfter.owner ||
         ownerStateBefore.latestAppliedPublicEventId !== ownerStateAfter.latestAppliedPublicEventId);
     if (shouldNotify && ownerStateAfter) {
-      await this.notifyService.notifyOwnableAvailability({
-        ownerAddress: replayState.owner,
-        ownableId: record.id,
-        cid: record.cid,
-        ownerStateVersion: ownerStateAfter.version,
-        latestAppliedPublicEventId: ownerStateAfter.latestAppliedPublicEventId,
-        issuerAddress: record.prevOwnerAddress,
-        nftNetwork: record.nftNetwork,
-        nftContractAddress: record.nftContractAddress,
-        nftTokenId: record.nftTokenId,
-        triggerKind: 'download_replay',
-      });
+      try {
+        await this.notifyService.notifyOwnableAvailability({
+          ownerAddress: replayState.owner,
+          ownerNetwork: replayState.nftInfo.network,
+          ownableId: record.id,
+          cid: record.cid,
+          ownerStateVersion: ownerStateAfter.version,
+          latestAppliedPublicEventId: ownerStateAfter.latestAppliedPublicEventId,
+          issuerAddress: record.prevOwnerAddress,
+          nftNetwork: replayState.nftInfo.network,
+          nftContractAddress: replayState.nftInfo.address,
+          nftTokenId: replayState.nftInfo.id,
+          triggerKind: 'download_replay',
+        });
+      } catch (error) {
+        console.warn('notifyOwnableAvailability warning during download replay', error);
+      }
     }
 
     const zipped = new JSZip();

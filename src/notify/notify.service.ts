@@ -1,21 +1,19 @@
 import { BadRequestException, Inject, Injectable, Optional } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { NotifyPublisherService, type NotifyPublisherTransport } from '@ownables/notify-publisher';
-import { HubStateRepository, type AvailableOwnableRow } from '../persistence/repos/hub-state.repository.js';
-import { LocalNotifyTransport } from './local-notify.transport.js';
+import { ethers } from 'ethers';
+import { ConfigService } from '../common/config/config.service.js';
+import { resolveCaip2Reference } from '../common/config/evm-network.util.js';
+import { HubStateRepository, type NotifyDeliveryStateRow } from '../persistence/repos/hub-state.repository.js';
+import { ReownNotifyTransport, ReownTransportError } from './reown-notify.transport.js';
 
-export type NotifyTriggerKind = 'catchup' | 'upload' | 'download_replay';
+export type NotifyTriggerKind = 'upload' | 'download_replay';
+export type NotifyDeliveryStatus = 'delivered' | 'not_subscribed' | 'failed_configuration' | 'failed_transient' | 'failed_permanent';
 export const NOTIFY_PUBLISHER_TRANSPORT = Symbol('NOTIFY_PUBLISHER_TRANSPORT');
-
-export interface RegisterNotifyInput {
-  ownerAddress: string;
-  topic: string;
-  previousTopic?: string;
-  ownerAccount?: string;
-  signerAddress: string;
-}
 
 export interface NotifyOwnableInput {
   ownerAddress: string;
+  ownerNetwork?: string | null;
   ownableId: string;
   cid: string;
   ownerStateVersion: number;
@@ -27,135 +25,223 @@ export interface NotifyOwnableInput {
   triggerKind: NotifyTriggerKind;
 }
 
+export interface NotifyOwnableResult {
+  status: NotifyDeliveryStatus;
+  ownerAccount: string | null;
+  warningCode?: string;
+  warningMessage?: string;
+}
+
 @Injectable()
 export class NotifyService {
   private readonly publisher: NotifyPublisherService;
+  private readonly transport: ReownNotifyTransport;
 
   constructor(
     private readonly hubState: HubStateRepository,
+    private readonly config: ConfigService,
     @Optional()
     @Inject(NOTIFY_PUBLISHER_TRANSPORT)
     transport?: NotifyPublisherTransport,
   ) {
-    this.publisher = new NotifyPublisherService(transport ?? new LocalNotifyTransport());
+    this.transport =
+      transport && 'getSubscriber' in transport
+        ? (transport as ReownNotifyTransport)
+        : new ReownNotifyTransport(this.config);
+    this.publisher = new NotifyPublisherService(transport ?? this.transport);
   }
 
-  async register(input: RegisterNotifyInput): Promise<{ status: 'created' | 'refreshed' | 'replaced'; catchUpAttempted: number }> {
-    const normalizedOwner = input.ownerAddress.trim().toLowerCase();
-    const signer = input.signerAddress.trim().toLowerCase();
-    if (normalizedOwner !== signer) {
-      throw new BadRequestException('Signer and ownerAddress mismatch');
+  async notifyOwnableAvailability(input: NotifyOwnableInput): Promise<NotifyOwnableResult> {
+    const ownerAccount = this.deriveOwnerAccount(input.ownerAddress, input.ownerNetwork ?? input.nftNetwork ?? null);
+    if (!ownerAccount) {
+      return this.persistWarning(input, null, 'failed_configuration', 'owner_account_derivation_failed', 'Unable to derive CAIP-10 owner account.');
     }
 
-    const topic = input.topic.trim();
-    if (!topic) {
-      throw new BadRequestException('topic is required');
-    }
-
-    const previous = input.previousTopic?.trim();
-    const existing = await this.hubState.listActiveNotifyRegistrationsByOwner(normalizedOwner);
-    const wasExisting = existing.some((row) => row.topic === topic);
-
-    const registration = await this.hubState.upsertNotifyRegistration({
-      ownerAddress: normalizedOwner,
-      ownerAccount: input.ownerAccount?.trim() || `eip155:1:${normalizedOwner}`,
-      topic,
-      status: 'active',
-    });
-
-    let status: 'created' | 'refreshed' | 'replaced' = wasExisting ? 'refreshed' : 'created';
-    if (previous && previous !== topic) {
-      const replaced = await this.hubState.markNotifyRegistrationReplaced(normalizedOwner, previous, registration.id);
-      if (replaced) {
-        status = 'replaced';
-      }
-    }
-
-    const catchUpRows = await this.hubState.listAvailableOwnablesByOwner(normalizedOwner);
-    for (const row of catchUpRows) {
-      await this.publishForRegistration(registration, row, 'catchup');
-    }
-
-    return { status, catchUpAttempted: catchUpRows.length };
-  }
-
-  async notifyOwnableAvailability(input: NotifyOwnableInput): Promise<void> {
-    const regs = await this.hubState.listActiveNotifyRegistrationsByOwner(input.ownerAddress);
-    for (const reg of regs) {
-      const row: AvailableOwnableRow = {
-        ownableId: input.ownableId,
-        cid: input.cid,
-        ownerAddress: input.ownerAddress,
-        ownerStateVersion: input.ownerStateVersion,
-        latestAppliedPublicEventId: input.latestAppliedPublicEventId,
-        prevOwnerAddress: input.issuerAddress,
-        nftNetwork: input.nftNetwork ?? null,
-        nftContractAddress: input.nftContractAddress ?? null,
-        nftTokenId: input.nftTokenId ?? null,
-      };
-      await this.publishForRegistration(reg, row, input.triggerKind);
-    }
-  }
-
-  private async publishForRegistration(
-    registration: { id: string; ownerAddress: string; topic: string },
-    ownable: AvailableOwnableRow,
-    triggerKind: NotifyTriggerKind,
-  ): Promise<void> {
-    const existing = await this.hubState.getNotifyDeliveryState({
-      registrationId: registration.id,
-      ownableId: ownable.ownableId,
-      ownerStateVersion: ownable.ownerStateVersion,
-      triggerKind,
+    const notificationId = this.buildNotificationId(input, ownerAccount);
+    const existing = await this.hubState.getNotifyDeliveryStateByDedupKey({
+      ownableId: input.ownableId,
+      ownerAccount,
+      ownerStateVersion: input.ownerStateVersion,
+      triggerKind: input.triggerKind,
     });
     if (existing?.status === 'delivered') {
-      return;
+      return { status: 'delivered', ownerAccount };
     }
 
     const attemptCount = (existing?.attemptCount ?? 0) + 1;
+    const configIssue = this.config.getReownConfigIssue();
+    if (configIssue) {
+      return this.persistWarning(input, ownerAccount, 'failed_configuration', configIssue.code, configIssue.message, {
+        existing,
+        attemptCount,
+        notificationId,
+      });
+    }
+
+    const downloadUrl = this.buildDownloadUrl(input.cid);
+    const reownConfig = this.config.getReownConfig();
+    if (!reownConfig) {
+      return this.persistWarning(input, ownerAccount, 'failed_configuration', 'missing_reown_config', 'Reown notify configuration is unavailable.', {
+        existing,
+        attemptCount,
+        notificationId,
+      });
+    }
 
     try {
-      await this.publisher.publishOwnableAvailable({
-        target: { ownerAddress: ownable.ownerAddress, topic: registration.topic },
-        ownableId: ownable.ownableId,
-        cid: ownable.cid,
+      const subscriber = await this.transport.getSubscriber(ownerAccount);
+      if (!subscriber.subscribed || !subscriber.notificationTypes.includes(reownConfig.notificationTypeId)) {
+        return this.persistWarning(
+          input,
+          ownerAccount,
+          'not_subscribed',
+          'reown_not_subscribed',
+          'Account is not subscribed to the configured notification type.',
+          {
+            existing,
+            attemptCount,
+            notificationId,
+            notificationType: reownConfig.notificationTypeId,
+          },
+        );
+      }
+
+      const publishResult = await this.publisher.publishOwnableAvailable({
+        eventId: notificationId,
+        target: { account: ownerAccount },
+        ownableId: input.ownableId,
+        cid: input.cid,
         scope: 'direct',
-        issuerAddress: ownable.prevOwnerAddress,
-        ownerAddress: ownable.ownerAddress,
-        accept: { url: `/ownables/${ownable.cid}/download`, method: 'GET' },
-        ...(ownable.nftNetwork && ownable.nftContractAddress && ownable.nftTokenId
-          ? { nft: { network: ownable.nftNetwork, contract: ownable.nftContractAddress, tokenId: ownable.nftTokenId } }
+        issuerAddress: input.issuerAddress,
+        ownerAccount,
+        ownerAddress: input.ownerAddress,
+        url: downloadUrl,
+        ...(input.nftNetwork && input.nftContractAddress && input.nftTokenId
+          ? { nft: { network: input.nftNetwork, contract: input.nftContractAddress, tokenId: input.nftTokenId } }
           : {}),
       });
 
       await this.hubState.upsertNotifyDeliveryState({
-        registrationId: registration.id,
-        ownableId: ownable.ownableId,
-        ownerStateVersion: ownable.ownerStateVersion,
-        triggerKind,
+        ownableId: input.ownableId,
+        ownerAddress: input.ownerAddress,
+        ownerAccount,
+        ownerStateVersion: input.ownerStateVersion,
+        triggerKind: input.triggerKind,
         status: 'delivered',
+        notificationType: reownConfig.notificationTypeId,
+        notificationId,
+        transportId: publishResult.transportId ?? null,
         attemptCount,
       });
+
+      return { status: 'delivered', ownerAccount };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const permanent =
-        message.includes('Invalid notify target topic') ||
-        message.includes('Invalid notify target ownerAddress') ||
-        message.includes('Notify target ownerAddress does not match payload ownerAddress');
-
-      await this.hubState.upsertNotifyDeliveryState({
-        registrationId: registration.id,
-        ownableId: ownable.ownableId,
-        ownerStateVersion: ownable.ownerStateVersion,
-        triggerKind,
-        status: permanent ? 'failed_permanent' : 'failed_transient',
+      const classified = this.classifyTransportError(error);
+      return this.persistWarning(input, ownerAccount, classified.status, classified.code, classified.message, {
+        existing,
         attemptCount,
-        lastError: message,
+        notificationId,
+        notificationType: reownConfig.notificationTypeId,
       });
-
-      if (permanent) {
-        await this.hubState.markNotifyRegistrationStale(registration.id, message);
-      }
     }
+  }
+
+  async getDeliveryStatus(cid: string, ownerAccount: string): Promise<NotifyDeliveryStateRow | null> {
+    const trimmedCid = cid.trim();
+    const trimmedOwner = ownerAccount.trim();
+    if (!trimmedCid) {
+      throw new BadRequestException('cid is required');
+    }
+    if (!trimmedOwner) {
+      throw new BadRequestException('owner is required');
+    }
+
+    return this.hubState.getNotifyDeliveryStateByOwnableAndOwner(trimmedCid, trimmedOwner);
+  }
+
+  private async persistWarning(
+    input: NotifyOwnableInput,
+    ownerAccount: string | null,
+    status: Exclude<NotifyDeliveryStatus, 'delivered'>,
+    warningCode: string,
+    warningMessage: string,
+    options: {
+      existing?: NotifyDeliveryStateRow | null;
+      attemptCount?: number;
+      notificationId?: string | null;
+      notificationType?: string | null;
+    } = {},
+  ): Promise<NotifyOwnableResult> {
+    await this.hubState.upsertNotifyDeliveryState({
+      ownableId: input.ownableId,
+      ownerAddress: input.ownerAddress,
+      ownerAccount: ownerAccount ?? `unknown:${input.ownerAddress.toLowerCase()}`,
+      ownerStateVersion: input.ownerStateVersion,
+      triggerKind: input.triggerKind,
+      status,
+      notificationType: options.notificationType ?? null,
+      notificationId: options.notificationId ?? null,
+      transportId: options.existing?.transportId ?? null,
+      attemptCount: options.attemptCount ?? ((options.existing?.attemptCount ?? 0) + 1),
+      errorCode: warningCode,
+      lastError: warningMessage,
+    });
+
+    return {
+      status,
+      ownerAccount,
+      warningCode,
+      warningMessage,
+    };
+  }
+
+  private buildDownloadUrl(cid: string): string {
+    const base = this.config.getAppConfig().publicBaseUrl.trim();
+    if (!base) {
+      throw new BadRequestException('PUBLIC_BASE_URL is required to build notify links');
+    }
+
+    const normalizedBase = base.endsWith('/') ? base : `${base}/`;
+    return new URL(`ownables/${encodeURIComponent(cid)}/download`, normalizedBase).toString();
+  }
+
+  private buildNotificationId(input: NotifyOwnableInput, ownerAccount: string): string {
+    const digest = createHash('sha256')
+      .update(`${input.ownableId}|${ownerAccount}|${input.ownerStateVersion}|${input.triggerKind}`)
+      .digest('hex');
+    return `ownables_${digest}`;
+  }
+
+  private deriveOwnerAccount(ownerAddress: string, ownerNetwork: string | null): string | null {
+    if (!ownerNetwork) {
+      return null;
+    }
+
+    const reference = resolveCaip2Reference(ownerNetwork, this.config.getRuntimeNetworkProfile());
+    if (!reference) {
+      return null;
+    }
+
+    try {
+      const normalized = ethers.getAddress(ownerAddress).toLowerCase();
+      return `eip155:${reference}:${normalized}`;
+    } catch {
+      return null;
+    }
+  }
+
+  private classifyTransportError(error: unknown): { status: 'failed_configuration' | 'failed_transient' | 'failed_permanent'; code: string; message: string } {
+    if (error instanceof ReownTransportError) {
+      if (error.code === 'reown_auth_failed') {
+        return { status: 'failed_configuration', code: error.code, message: error.message };
+      }
+      if (error.code === 'reown_rate_limited' || error.code === 'reown_upstream_error') {
+        return { status: 'failed_transient', code: error.code, message: error.message };
+      }
+      return { status: 'failed_permanent', code: error.code, message: error.message };
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    return { status: 'failed_transient', code: 'reown_upstream_error', message };
   }
 }

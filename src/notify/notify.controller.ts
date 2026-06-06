@@ -1,32 +1,29 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
-import { Signer } from '../common/http-signature/signer.js';
-import { SIWEGuard } from '../common/siwe/siwe.guard.js';
+import { Controller, Get, NotFoundException, Query } from '@nestjs/common';
 import { NotifyService } from './notify.service.js';
-
-interface SignerIdentity {
-  address?: string;
-}
-
-interface RegisterNotifyBody {
-  ownerAddress: string;
-  topic: string;
-  previousTopic?: string;
-  ownerAccount?: string;
-}
 
 @Controller('notify')
 export class NotifyController {
   constructor(private readonly notifyService: NotifyService) {}
 
-  @Post('registrations')
-  @UseGuards(SIWEGuard)
-  async register(@Body() body: RegisterNotifyBody, @Signer() signer?: SignerIdentity) {
-    return this.notifyService.register({
-      ownerAddress: body.ownerAddress,
-      topic: body.topic,
-      previousTopic: body.previousTopic,
-      ownerAccount: body.ownerAccount,
-      signerAddress: signer?.address || '',
-    });
+  @Get('delivery-status')
+  async getDeliveryStatus(@Query('cid') cid: string, @Query('owner') owner: string) {
+    const row = await this.notifyService.getDeliveryStatus(cid, owner);
+    if (!row) {
+      throw new NotFoundException(`No notify delivery state found for cid ${cid} and owner ${owner}`);
+    }
+
+    return {
+      cid: row.cid,
+      owner: row.ownerAccount,
+      ownerStateVersion: row.ownerStateVersion,
+      triggerKind: row.triggerKind,
+      status: row.status,
+      notificationId: row.notificationId,
+      transportId: row.transportId,
+      lastAttemptAt: row.lastAttemptAt,
+      deliveredAt: row.deliveredAt,
+      errorCode: row.errorCode,
+      message: row.message,
+    };
   }
 }

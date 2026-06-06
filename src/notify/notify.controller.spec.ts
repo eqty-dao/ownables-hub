@@ -1,29 +1,46 @@
-import { BadRequestException } from '@nestjs/common';
+import { NotFoundException } from '@nestjs/common';
 import { NotifyController } from './notify.controller.js';
 
 describe('NotifyController', () => {
-  it('returns registration result', async () => {
-    const notifyService = { register: jest.fn().mockResolvedValue({ status: 'created', catchUpAttempted: 1 }) };
+  it('returns the public limited delivery status response shape', async () => {
+    const notifyService = {
+      getDeliveryStatus: jest.fn().mockResolvedValue({
+        cid: 'cid-1',
+        ownerAccount: 'eip155:84532:0xabc',
+        ownerStateVersion: 2,
+        triggerKind: 'upload',
+        status: 'delivered',
+        notificationId: 'notify-1',
+        transportId: 'transport-1',
+        lastAttemptAt: '2026-06-06T00:00:00.000Z',
+        deliveredAt: '2026-06-06T00:00:01.000Z',
+        errorCode: null,
+        message: null,
+      }),
+    };
     const controller = new NotifyController(notifyService as any);
 
-    const result = await controller.register({ ownerAddress: '0xabc', topic: 'topic-a' }, { address: '0xabc' });
+    const result = await controller.getDeliveryStatus('cid-1', 'eip155:84532:0xabc');
 
-    expect(notifyService.register).toHaveBeenCalledWith({
-      ownerAddress: '0xabc',
-      topic: 'topic-a',
-      previousTopic: undefined,
-      ownerAccount: undefined,
-      signerAddress: '0xabc',
+    expect(result).toEqual({
+      cid: 'cid-1',
+      owner: 'eip155:84532:0xabc',
+      ownerStateVersion: 2,
+      triggerKind: 'upload',
+      status: 'delivered',
+      notificationId: 'notify-1',
+      transportId: 'transport-1',
+      lastAttemptAt: '2026-06-06T00:00:00.000Z',
+      deliveredAt: '2026-06-06T00:00:01.000Z',
+      errorCode: null,
+      message: null,
     });
-    expect(result).toEqual({ status: 'created', catchUpAttempted: 1 });
   });
 
-  it('surfaces signer mismatch rejection', async () => {
-    const notifyService = { register: jest.fn().mockRejectedValue(new BadRequestException('Signer and ownerAddress mismatch')) };
+  it('returns 404 semantics for unknown cid/owner combinations', async () => {
+    const notifyService = { getDeliveryStatus: jest.fn().mockResolvedValue(null) };
     const controller = new NotifyController(notifyService as any);
 
-    await expect(controller.register({ ownerAddress: '0xabc', topic: 'topic-a' }, { address: '0xdef' })).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
+    await expect(controller.getDeliveryStatus('cid-1', 'eip155:84532:0xmissing')).rejects.toBeInstanceOf(NotFoundException);
   });
 });

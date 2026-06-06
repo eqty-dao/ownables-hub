@@ -53,4 +53,35 @@ describe('ConfigService', () => {
     const secondService = new ConfigService();
     expect(() => secondService.getIndexerSlots()).toThrow('Invalid TESTNET_ANCHOR_START_BLOCK: not-a-number');
   });
+
+  it('treats missing Reown notify config as a non-boot issue', () => {
+    const service = new ConfigService();
+
+    expect(service.getReownConfig()).toBeNull();
+    expect(service.getReownConfigIssue()).toEqual({
+      code: 'missing_reown_config',
+      message:
+        'Reown notify is disabled because REOWN_PROJECT_ID, REOWN_NOTIFY_API_SECRET, REOWN_NOTIFICATION_TYPE_ID, and REOWN_APP_DOMAIN are not configured.',
+    });
+  });
+
+  it('validates Reown domain alignment when notify config is enabled', () => {
+    process.env.PUBLIC_BASE_URL = 'https://hub.example.com';
+    process.env.REOWN_PROJECT_ID = 'proj';
+    process.env.REOWN_NOTIFY_API_SECRET = 'secret';
+    process.env.REOWN_NOTIFICATION_TYPE_ID = 'type-id';
+    process.env.REOWN_APP_DOMAIN = 'notify.example.com';
+
+    const service = new ConfigService();
+    expect(service.getReownConfig()).toEqual({
+      projectId: 'proj',
+      notifyApiSecret: 'secret',
+      notificationTypeId: 'type-id',
+      appDomain: 'notify.example.com',
+    });
+    expect(service.getReownConfigIssue()).toEqual({
+      code: 'domain_mismatch',
+      message: 'PUBLIC_BASE_URL host hub.example.com does not match REOWN_APP_DOMAIN notify.example.com.',
+    });
+  });
 });

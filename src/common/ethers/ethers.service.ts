@@ -1,6 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { ethers } from 'ethers';
 import { ConfigService, RuntimeNetworkProfile } from '../config/config.service.js';
+import { resolveEvmNetwork } from '../config/evm-network.util.js';
 import * as abis from './abi/index.js';
 // import { throwError } from 'rxjs';
 // import { Networkish } from '@ethersproject/networks';
@@ -60,25 +61,22 @@ export class EthersService implements OnModuleInit {
     const profile = this.networkProfile;
     switch (networkName) {
       case 'eip155:ethereum':
-        if (profile === 'testnet')
-          return ['sepolia', 11155111, this.config.getRpcUrl('testnet', 'eip155:ethereum')];
-        return ['mainnet', 1, this.config.getRpcUrl('mainnet', 'eip155:ethereum')];
+        return this.getResolvedNetworkTuple('eip155:ethereum', profile);
       case 'eip155:arbitrum':
-        if (profile === 'testnet')
-          return ['arbitrum-sepolia', 421614, this.config.getRpcUrl('testnet', 'eip155:arbitrum')];
-        return ['arbitrum', 42161, this.config.getRpcUrl('mainnet', 'eip155:arbitrum')];
+        return this.getResolvedNetworkTuple('eip155:arbitrum', profile);
       case 'eip155:polygon':
-        if (profile === 'testnet')
-          return ['matic-amoy', 80002, this.config.getRpcUrl('testnet', 'eip155:polygon')];
-        return ['matic', 137, this.config.getRpcUrl('mainnet', 'eip155:polygon')];
+        return this.getResolvedNetworkTuple('eip155:polygon', profile);
       case 'eip155:base':
-        if (profile === 'testnet')
-          return ['base-sepolia', 84532, this.config.getRpcUrl('testnet', 'eip155:base')];
-        return ['base', 8453, this.config.getRpcUrl('mainnet', 'eip155:base')];
+        return this.getResolvedNetworkTuple('eip155:base', profile);
     }
     throw new Error(
       `Incorrect network name. Supported network names: eip155:ethereum eip155:arbitrum eip155:polygon eip155:base`,
     );
+  }
+
+  private getResolvedNetworkTuple(networkName: 'eip155:ethereum' | 'eip155:arbitrum' | 'eip155:polygon' | 'eip155:base', profile: RuntimeNetworkProfile) {
+    const resolved = resolveEvmNetwork(networkName, profile);
+    return [resolved.rpcName, resolved.chainId, this.config.getRpcUrl(profile, networkName)] as [string, number, string];
   }
 
   private getProviderForNetwork(networkName: string): ethers.JsonRpcProvider {

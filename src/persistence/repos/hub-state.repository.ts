@@ -64,34 +64,23 @@ export interface OwnerStateRow {
   latestAppliedPublicEventId: string | null;
 }
 
-export interface NotifyRegistrationRow {
-  id: string;
-  ownerAddress: string;
-  ownerAccount: string;
-  topic: string;
-  status: 'active' | 'stale' | 'replaced';
-}
-
 export interface NotifyDeliveryStateRow {
   id: string;
-  registrationId: string;
   ownableId: string;
+  cid?: string;
+  ownerAddress: string;
+  ownerAccount: string;
   ownerStateVersion: number;
   triggerKind: string;
   status: string;
+  notificationType: string | null;
+  notificationId: string | null;
+  transportId: string | null;
   attemptCount: number;
-}
-
-export interface AvailableOwnableRow {
-  ownableId: string;
-  cid: string;
-  ownerAddress: string;
-  ownerStateVersion: number;
-  latestAppliedPublicEventId: string | null;
-  prevOwnerAddress: string;
-  nftNetwork: string | null;
-  nftContractAddress: string | null;
-  nftTokenId: string | null;
+  lastAttemptAt: string | null;
+  deliveredAt: string | null;
+  errorCode: string | null;
+  message: string | null;
 }
 
 @Injectable()
@@ -274,144 +263,143 @@ export class HubStateRepository {
     );
   }
 
-  async upsertNotifyRegistration(input: {
+  async upsertNotifyDeliveryState(input: {
+    ownableId: string;
     ownerAddress: string;
     ownerAccount: string;
-    topic: string;
-    status?: 'active' | 'stale' | 'replaced';
-  }): Promise<NotifyRegistrationRow> {
-    const result = await this.db.query<NotifyRegistrationRow>(
-      `INSERT INTO notify_registrations (owner_address, owner_account, topic, status, last_seen_at)
-       VALUES (LOWER($1), $2, $3, $4, NOW())
-       ON CONFLICT (owner_address, topic) DO UPDATE SET
-         owner_account = EXCLUDED.owner_account,
-         status = EXCLUDED.status,
-         stale_reason = NULL,
-         replaced_by_registration_id = NULL,
-         last_seen_at = NOW(),
-         updated_at = NOW()
-       RETURNING id, owner_address AS "ownerAddress", owner_account AS "ownerAccount", topic, status`,
-      [input.ownerAddress, input.ownerAccount, input.topic, input.status ?? 'active'],
-    );
-    return result.rows[0] as NotifyRegistrationRow;
-  }
-
-  async upsertNotifyDeliveryState(input: {
-    registrationId: string;
-    ownableId: string;
     ownerStateVersion: number;
     triggerKind: string;
     status?: string;
+    notificationType?: string | null;
+    notificationId?: string | null;
+    transportId?: string | null;
     attemptCount?: number;
+    errorCode?: string | null;
     lastError?: string | null;
   }): Promise<NotifyDeliveryStateRow> {
     const result = await this.db.query<NotifyDeliveryStateRow>(
       `INSERT INTO notify_delivery_state (
-         registration_id,
          ownable_id,
+         owner_address,
+         owner_account,
          owner_state_version,
          trigger_kind,
          status,
+         notification_type,
+         notification_id,
+         transport_id,
          attempt_count,
+         error_code,
          last_error,
          last_attempt_at,
          delivered_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), CASE WHEN $5 = 'delivered' THEN NOW() ELSE NULL END)
-       ON CONFLICT (registration_id, ownable_id, owner_state_version, trigger_kind) DO UPDATE SET
+       ) VALUES ($1, LOWER($2), $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), CASE WHEN $6 = 'delivered' THEN NOW() ELSE NULL END, $12)
+       ON CONFLICT (ownable_id, owner_account, owner_state_version, trigger_kind) DO UPDATE SET
+         owner_address = EXCLUDED.owner_address,
          status = EXCLUDED.status,
+         notification_type = EXCLUDED.notification_type,
+         notification_id = EXCLUDED.notification_id,
+         transport_id = EXCLUDED.transport_id,
          attempt_count = EXCLUDED.attempt_count,
+         error_code = EXCLUDED.error_code,
          last_error = EXCLUDED.last_error,
          last_attempt_at = NOW(),
-         delivered_at = CASE WHEN EXCLUDED.status = 'delivered' THEN NOW() ELSE notify_delivery_state.delivered_at END
-       RETURNING id, registration_id AS "registrationId", ownable_id AS "ownableId", owner_state_version AS "ownerStateVersion", trigger_kind AS "triggerKind", status, attempt_count AS "attemptCount"`,
+         delivered_at = CASE WHEN EXCLUDED.status = 'delivered' THEN NOW() ELSE notify_delivery_state.delivered_at END,
+         updated_at = NOW()
+       RETURNING id,
+         ownable_id AS "ownableId",
+         owner_address AS "ownerAddress",
+         owner_account AS "ownerAccount",
+         owner_state_version AS "ownerStateVersion",
+         trigger_kind AS "triggerKind",
+         status,
+         notification_type AS "notificationType",
+         notification_id AS "notificationId",
+         transport_id AS "transportId",
+         attempt_count AS "attemptCount",
+         last_attempt_at AS "lastAttemptAt",
+         delivered_at AS "deliveredAt",
+         error_code AS "errorCode",
+         last_error AS "message"`,
       [
-        input.registrationId,
         input.ownableId,
+        input.ownerAddress,
+        input.ownerAccount,
         input.ownerStateVersion,
         input.triggerKind,
         input.status ?? 'pending',
+        input.notificationType ?? null,
+        input.notificationId ?? null,
+        input.transportId ?? null,
         input.attemptCount ?? 0,
+        input.errorCode ?? null,
         input.lastError ?? null,
       ],
     );
     return result.rows[0] as NotifyDeliveryStateRow;
   }
 
-  async listActiveNotifyRegistrationsByOwner(ownerAddress: string): Promise<NotifyRegistrationRow[]> {
-    const result = await this.db.query<NotifyRegistrationRow>(
-      `SELECT id, owner_address AS "ownerAddress", owner_account AS "ownerAccount", topic, status
-       FROM notify_registrations
-       WHERE owner_address = LOWER($1) AND status = 'active'
-       ORDER BY created_at ASC`,
-      [ownerAddress],
-    );
-    return result.rows;
-  }
-
-  async markNotifyRegistrationReplaced(ownerAddress: string, topic: string, replacedByRegistrationId: string): Promise<boolean> {
-    const result = await this.db.query(
-      `UPDATE notify_registrations
-       SET status = 'replaced',
-           replaced_by_registration_id = $3,
-           updated_at = NOW()
-       WHERE owner_address = LOWER($1)
-         AND topic = $2
-         AND status = 'active'
-         AND id <> $3`,
-      [ownerAddress, topic, replacedByRegistrationId],
-    );
-    return result.rowCount > 0;
-  }
-
-  async markNotifyRegistrationStale(registrationId: string, reason: string): Promise<void> {
-    await this.db.query(
-      `UPDATE notify_registrations
-       SET status = 'stale',
-           stale_reason = $2,
-           updated_at = NOW()
-       WHERE id = $1`,
-      [registrationId, reason],
-    );
-  }
-
-  async getNotifyDeliveryState(input: {
-    registrationId: string;
+  async getNotifyDeliveryStateByDedupKey(input: {
     ownableId: string;
+    ownerAccount: string;
     ownerStateVersion: number;
     triggerKind: string;
   }): Promise<NotifyDeliveryStateRow | null> {
     const result = await this.db.query<NotifyDeliveryStateRow>(
-      `SELECT id, registration_id AS "registrationId", ownable_id AS "ownableId", owner_state_version AS "ownerStateVersion", trigger_kind AS "triggerKind", status, attempt_count AS "attemptCount"
+      `SELECT id,
+         ownable_id AS "ownableId",
+         owner_address AS "ownerAddress",
+         owner_account AS "ownerAccount",
+         owner_state_version AS "ownerStateVersion",
+         trigger_kind AS "triggerKind",
+         status,
+         notification_type AS "notificationType",
+         notification_id AS "notificationId",
+         transport_id AS "transportId",
+         attempt_count AS "attemptCount",
+         last_attempt_at AS "lastAttemptAt",
+         delivered_at AS "deliveredAt",
+         error_code AS "errorCode",
+         last_error AS "message"
        FROM notify_delivery_state
-       WHERE registration_id = $1
-         AND ownable_id = $2
+       WHERE ownable_id = $1
+         AND owner_account = $2
          AND owner_state_version = $3
          AND trigger_kind = $4
        LIMIT 1`,
-      [input.registrationId, input.ownableId, input.ownerStateVersion, input.triggerKind],
+      [input.ownableId, input.ownerAccount, input.ownerStateVersion, input.triggerKind],
     );
     return result.rows[0] ?? null;
   }
 
-  async listAvailableOwnablesByOwner(ownerAddress: string): Promise<AvailableOwnableRow[]> {
-    const result = await this.db.query<AvailableOwnableRow>(
+  async getNotifyDeliveryStateByOwnableAndOwner(cid: string, ownerAccount: string): Promise<NotifyDeliveryStateRow | null> {
+    const result = await this.db.query<NotifyDeliveryStateRow>(
       `SELECT
-         o.id AS "ownableId",
+         s.id,
          o.cid AS "cid",
-         s.current_owner_address AS "ownerAddress",
+         s.ownable_id AS "ownableId",
+         s.owner_address AS "ownerAddress",
+         s.owner_account AS "ownerAccount",
          s.owner_state_version AS "ownerStateVersion",
-         s.last_applied_public_event_id AS "latestAppliedPublicEventId",
-         o.prev_owner_address AS "prevOwnerAddress",
-         o.nft_network AS "nftNetwork",
-         o.nft_contract_address AS "nftContractAddress",
-         o.nft_token_id AS "nftTokenId"
-       FROM ownable_owner_state s
+         s.trigger_kind AS "triggerKind",
+         s.status,
+         s.notification_type AS "notificationType",
+         s.notification_id AS "notificationId",
+         s.transport_id AS "transportId",
+         s.attempt_count AS "attemptCount",
+         s.last_attempt_at AS "lastAttemptAt",
+         s.delivered_at AS "deliveredAt",
+         s.error_code AS "errorCode",
+         s.last_error AS "message"
+       FROM notify_delivery_state s
        INNER JOIN ownable_records o ON o.id = s.ownable_id
-       WHERE s.current_owner_address = LOWER($1)
-       ORDER BY o.created_at ASC`,
-      [ownerAddress],
+       WHERE o.cid = $1
+         AND s.owner_account = $2
+       ORDER BY s.owner_state_version DESC, s.last_attempt_at DESC NULLS LAST, s.created_at DESC
+       LIMIT 1`,
+      [cid, ownerAccount],
     );
-    return result.rows;
+    return result.rows[0] ?? null;
   }
 
   async upsertIndexedAnchorEvent(input: {

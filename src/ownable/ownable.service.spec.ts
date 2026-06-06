@@ -169,7 +169,7 @@ describe('OwnableService', () => {
       listWalletEventsByCid: jest.fn().mockResolvedValue([]),
     };
     const notifyService = {
-      notifyOwnableAvailability: jest.fn().mockResolvedValue(undefined),
+      notifyOwnableAvailability: jest.fn().mockResolvedValue({ status: 'delivered', ownerAccount: ownerWallet.address.toLowerCase() }),
     };
 
     const service = new OwnableService(buildConfig() as any, nft as any, storage as any, hubState as any, notifyService as any);
@@ -205,12 +205,18 @@ describe('OwnableService', () => {
   it('accepts upload without SIWE signer ownership gating', async () => {
     const { service, storage, hubState, nft, notifyService } = await buildService();
     const chain = await createChain();
+    const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
 
     const zip = new JSZip();
     zip.file('eventChain.json', JSON.stringify(chain.toJSON()));
     zip.file('package.json', JSON.stringify({ name: 'test' }));
     zip.file('ownable_bg.wasm', Buffer.from([0x00]));
     const buffer = await zip.generateAsync({ type: 'uint8array' });
+    const packageZip = new JSZip();
+    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
+    packageZip.file('package.json', JSON.stringify({ name: 'test' }));
+    storage.getEventChain.mockResolvedValue(chainBuffer);
+    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
 
     const result = await service.uploadOwnable(buffer, undefined, false);
 
@@ -219,8 +225,14 @@ describe('OwnableService', () => {
     expect(storage.storeEventChain).toHaveBeenCalledTimes(1);
     expect(hubState.upsertOwnableRecord).toHaveBeenCalledTimes(1);
     expect(nft.getOwnerOfNFT).not.toHaveBeenCalled();
+    expect(hubState.setOwnerState).toHaveBeenCalledWith('id-1', '0x6465aa5c80764b174606094decaa4ee9560a2e43', null);
     expect(notifyService.notifyOwnableAvailability).toHaveBeenCalledWith(
-      expect.objectContaining({ triggerKind: 'upload', cid: result.cid }),
+      expect.objectContaining({
+        triggerKind: 'upload',
+        cid: result.cid,
+        ownerAddress: '0x6465aa5c80764b174606094decaa4ee9560a2e43',
+        ownerNetwork: 'eip155:base',
+      }),
     );
   });
 
@@ -273,7 +285,12 @@ describe('OwnableService', () => {
     expect(replaySpy).toHaveBeenCalled();
     expect(hubState.setOwnerState).toHaveBeenCalledWith('id-1', '0x6465aa5c80764b174606094decaa4ee9560a2e43', 'evt-1');
     expect(notifyService.notifyOwnableAvailability).toHaveBeenCalledWith(
-      expect.objectContaining({ triggerKind: 'download_replay', cid: 'cid-1' }),
+      expect.objectContaining({
+        triggerKind: 'download_replay',
+        cid: 'cid-1',
+        ownerAddress: '0x6465aa5c80764b174606094decaa4ee9560a2e43',
+        ownerNetwork: 'eip155:base',
+      }),
     );
   });
 
@@ -340,6 +357,35 @@ describe('OwnableService', () => {
     ]);
 
     await expect(service.downloadOwnable('cid-1')).rejects.toThrow('STALE_OWNABLE');
+  });
+
+  it('keeps download successful when notify returns a warning status', async () => {
+    const { service, storage, hubState, notifyService } = await buildService();
+    const chain = await createChain();
+
+    storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
+    const packageZip = new JSZip();
+    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
+    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
+    hubState.listWalletEventsByCid.mockResolvedValue([]);
+    hubState.getOwnerStateByCid
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        owner: '0x6465aa5c80764b174606094decaa4ee9560a2e43',
+        version: 2,
+        latestAppliedPublicEventId: null,
+      });
+    notifyService.notifyOwnableAvailability.mockResolvedValue({
+      status: 'not_subscribed',
+      ownerAccount: 'eip155:84532:0x6465aa5c80764b174606094decaa4ee9560a2e43',
+      warningCode: 'reown_not_subscribed',
+      warningMessage: 'not subscribed',
+    });
+
+    const file = await service.downloadOwnable('cid-1');
+
+    expect(file).toBeTruthy();
+    expect(notifyService.notifyOwnableAvailability).toHaveBeenCalledWith(expect.objectContaining({ triggerKind: 'download_replay' }));
   });
 
   it('preserves archive shape without synthesizing authority_claim_msg.json', async () => {

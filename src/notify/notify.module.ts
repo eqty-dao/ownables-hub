@@ -1,16 +1,19 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '../common/config/config.module.js';
+import { ConfigService } from '../common/config/config.service.js';
 import { PersistenceModule } from '../persistence/persistence.module.js';
 import { NotifyController } from './notify.controller.js';
-import { LocalNotifyTransport } from './local-notify.transport.js';
 import { NOTIFY_PUBLISHER_TRANSPORT, NotifyService } from './notify.service.js';
+import { ReownNotifyTransport } from './reown-notify.transport.js';
 
 @Module({
-  imports: [PersistenceModule],
+  imports: [ConfigModule, PersistenceModule],
   providers: [
     NotifyService,
     {
       provide: NOTIFY_PUBLISHER_TRANSPORT,
-      useFactory: () => new LocalNotifyTransport(),
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => new ReownNotifyTransport(config),
     },
   ],
   controllers: [NotifyController],

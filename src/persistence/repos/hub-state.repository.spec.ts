@@ -52,22 +52,6 @@ describe('HubStateRepository', () => {
     expect(state).toEqual({ owner: '0xowner', version: 3 });
   });
 
-  it('marks prior topic replaced only when an active row was updated', async () => {
-    query.mockResolvedValueOnce({ rowCount: 1 });
-    query.mockResolvedValueOnce({ rowCount: 0 });
-
-    const replaced = await repo.markNotifyRegistrationReplaced('0xowner', 'topic-a', 'reg-new');
-    const missing = await repo.markNotifyRegistrationReplaced('0xowner', 'topic-stale', 'reg-new');
-
-    expect(replaced).toBe(true);
-    expect(missing).toBe(false);
-    expect(query).toHaveBeenNthCalledWith(
-      1,
-      expect.stringContaining("AND status = 'active'"),
-      ['0xowner', 'topic-a', 'reg-new'],
-    );
-  });
-
   it('upserts and reads indexer cursor state including tx index', async () => {
     query.mockResolvedValueOnce({ rows: [] });
     query.mockResolvedValueOnce({
@@ -455,39 +439,25 @@ describe('HubStateRepository', () => {
     expect(clientQuery).toHaveBeenNthCalledWith(1, 'BEGIN');
     expect(clientQuery).toHaveBeenLastCalledWith('ROLLBACK');
   });
-  it('upserts and lists active notify registrations by owner', async () => {
-    query.mockResolvedValueOnce({ rows: [{ id: 'reg-1', ownerAddress: '0xowner', ownerAccount: 'eip155:1:0xowner', topic: 'topic-a', status: 'active' }] });
-    query.mockResolvedValueOnce({ rows: [{ id: 'reg-1', ownerAddress: '0xowner', ownerAccount: 'eip155:1:0xowner', topic: 'topic-a', status: 'active' }] });
-
-    const reg = await repo.upsertNotifyRegistration({ ownerAddress: '0xOwner', ownerAccount: 'eip155:1:0xowner', topic: 'topic-a' });
-    const rows = await repo.listActiveNotifyRegistrationsByOwner('0xowner');
-
-    expect(reg.id).toBe('reg-1');
-    expect(rows).toHaveLength(1);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('WHERE owner_address = LOWER($1) AND status = \'active\''), ['0xowner']);
-  });
-
-  it('marks notify registration replaced and stale', async () => {
-    query.mockResolvedValue({ rows: [] });
-
-    await repo.markNotifyRegistrationReplaced('0xowner', 'topic-a', 'reg-2');
-    await repo.markNotifyRegistrationStale('reg-1', 'bad topic');
-
-    expect(query).toHaveBeenNthCalledWith(1, expect.stringContaining("SET status = 'replaced'"), ['0xowner', 'topic-a', 'reg-2']);
-    expect(query).toHaveBeenNthCalledWith(2, expect.stringContaining("SET status = 'stale'"), ['reg-1', 'bad topic']);
-  });
-
-  it('reads and writes notify delivery-state with dedupe key', async () => {
+  it('reads and writes account-targeted notify delivery-state with dedupe key', async () => {
     query.mockResolvedValueOnce({
       rows: [
         {
           id: 'del-1',
-          registrationId: 'reg-1',
           ownableId: 'own-1',
+          ownerAddress: '0xowner',
+          ownerAccount: 'eip155:84532:0xowner',
           ownerStateVersion: 2,
           triggerKind: 'upload',
           status: 'delivered',
+          notificationType: 'type-id',
+          notificationId: 'notify-1',
+          transportId: 'transport-1',
           attemptCount: 1,
+          lastAttemptAt: '2026-06-06T00:00:00.000Z',
+          deliveredAt: '2026-06-06T00:00:01.000Z',
+          errorCode: null,
+          message: null,
         },
       ],
     });
@@ -495,50 +465,80 @@ describe('HubStateRepository', () => {
       rows: [
         {
           id: 'del-1',
-          registrationId: 'reg-1',
           ownableId: 'own-1',
+          ownerAddress: '0xowner',
+          ownerAccount: 'eip155:84532:0xowner',
           ownerStateVersion: 2,
           triggerKind: 'upload',
           status: 'delivered',
+          notificationType: 'type-id',
+          notificationId: 'notify-1',
+          transportId: 'transport-1',
           attemptCount: 1,
+          lastAttemptAt: '2026-06-06T00:00:00.000Z',
+          deliveredAt: '2026-06-06T00:00:01.000Z',
+          errorCode: null,
+          message: null,
         },
       ],
     });
 
     const written = await repo.upsertNotifyDeliveryState({
-      registrationId: 'reg-1',
       ownableId: 'own-1',
+      ownerAddress: '0xOwner',
+      ownerAccount: 'eip155:84532:0xowner',
       ownerStateVersion: 2,
       triggerKind: 'upload',
       status: 'delivered',
+      notificationType: 'type-id',
+      notificationId: 'notify-1',
+      transportId: 'transport-1',
       attemptCount: 1,
+      errorCode: null,
     });
-    const read = await repo.getNotifyDeliveryState({ registrationId: 'reg-1', ownableId: 'own-1', ownerStateVersion: 2, triggerKind: 'upload' });
+    const read = await repo.getNotifyDeliveryStateByDedupKey({
+      ownableId: 'own-1',
+      ownerAccount: 'eip155:84532:0xowner',
+      ownerStateVersion: 2,
+      triggerKind: 'upload',
+    });
 
     expect(written.id).toBe('del-1');
     expect(read?.status).toBe('delivered');
+    expect(query).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('ON CONFLICT (ownable_id, owner_account, owner_state_version, trigger_kind) DO UPDATE SET'),
+      ['own-1', '0xOwner', 'eip155:84532:0xowner', 2, 'upload', 'delivered', 'type-id', 'notify-1', 'transport-1', 1, null, null],
+    );
   });
 
-  it('lists available ownables by owner from owner-state join', async () => {
+  it('reads latest notify delivery-state by cid and owner account', async () => {
     query.mockResolvedValueOnce({
       rows: [
         {
-          ownableId: 'own-1',
           cid: 'cid-1',
+          ownableId: 'own-1',
           ownerAddress: '0xowner',
+          ownerAccount: 'eip155:84532:0xowner',
           ownerStateVersion: 3,
-          latestAppliedPublicEventId: 'evt-1',
-          prevOwnerAddress: '0xissuer',
-          nftNetwork: 'eip155:base',
-          nftContractAddress: '0xnft',
-          nftTokenId: '1',
+          triggerKind: 'download_replay',
+          status: 'not_subscribed',
+          notificationType: 'type-id',
+          notificationId: 'notify-2',
+          transportId: null,
+          attemptCount: 2,
+          lastAttemptAt: '2026-06-06T00:00:00.000Z',
+          deliveredAt: null,
+          errorCode: 'reown_not_subscribed',
+          message: 'Account is not subscribed to the configured notification type.',
         },
       ],
     });
 
-    const rows = await repo.listAvailableOwnablesByOwner('0xowner');
+    const row = await repo.getNotifyDeliveryStateByOwnableAndOwner('cid-1', 'eip155:84532:0xowner');
 
-    expect(rows[0]?.cid).toBe('cid-1');
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM ownable_owner_state s'), ['0xowner']);
+    expect(row?.cid).toBe('cid-1');
+    expect(row?.status).toBe('not_subscribed');
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM notify_delivery_state s'), ['cid-1', 'eip155:84532:0xowner']);
   });
 });

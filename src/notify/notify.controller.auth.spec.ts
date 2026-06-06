@@ -2,7 +2,6 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../app.module.js';
-import { SIWEService } from '../common/siwe/siwe.service.js';
 import { NotifyService } from './notify.service.js';
 
 jest.mock('@ownables/core', () => ({
@@ -17,12 +16,9 @@ jest.mock('@ownables/platform-node', () => ({
   NodeSandboxOwnableRPC: jest.fn(),
 }));
 
-describe('NotifyController auth path', () => {
+describe('NotifyController route behavior', () => {
   const notifyService = {
-    register: jest.fn().mockResolvedValue({ status: 'created', catchUpAttempted: 0 }),
-  };
-  const siweService = {
-    verifySIWEMessage: jest.fn().mockResolvedValue({ isValid: true, address: '0xAbC' }),
+    getDeliveryStatus: jest.fn(),
   };
 
   let app: INestApplication;
@@ -36,8 +32,6 @@ describe('NotifyController auth path', () => {
     })
       .overrideProvider(NotifyService)
       .useValue(notifyService)
-      .overrideProvider(SIWEService)
-      .useValue(siweService)
       .compile();
 
     app = moduleRef.createNestApplication();
@@ -49,54 +43,48 @@ describe('NotifyController auth path', () => {
   });
 
   afterEach(() => {
-    notifyService.register.mockClear();
-    siweService.verifySIWEMessage.mockClear();
+    notifyService.getDeliveryStatus.mockReset();
   });
 
-  function buildBearerToken(messageAddress = '0xAbC'): string {
-    const payload = {
-      message: {
-        domain: 'localhost',
-        address: messageAddress,
-        statement: '',
-        uri: 'http://localhost',
-        version: '1',
-        chainId: 1,
-        nonce: 'nonce',
-        issuedAt: new Date().toISOString(),
-      },
-      signature: '0xdeadbeef',
-    };
-    return Buffer.from(JSON.stringify(payload)).toString('base64');
-  }
-
-  it('rejects unauthenticated registration on the real route', async () => {
-    await request(app.getHttpServer())
-      .post('/notify/registrations')
-      .send({ ownerAddress: '0xabc', topic: 'topic-a' })
-      .expect(401);
-
-    expect(notifyService.register).not.toHaveBeenCalled();
-    expect(siweService.verifySIWEMessage).not.toHaveBeenCalled();
+  it('removes the old registration route', async () => {
+    await request(app.getHttpServer()).post('/notify/registrations').send({ ownerAddress: '0xabc', topic: 'topic-a' }).expect(404);
   });
 
-  it('uses SIWE signer identity for authenticated registration on the real route', async () => {
+  it('serves delivery status without SIWE auth on the real route', async () => {
+    notifyService.getDeliveryStatus.mockResolvedValue({
+      cid: 'cid-1',
+      ownerAccount: 'eip155:84532:0xabc',
+      ownerStateVersion: 2,
+      triggerKind: 'upload',
+      status: 'delivered',
+      notificationId: 'notify-1',
+      transportId: 'transport-1',
+      lastAttemptAt: '2026-06-06T00:00:00.000Z',
+      deliveredAt: '2026-06-06T00:00:01.000Z',
+      errorCode: null,
+      message: null,
+    });
+
     await request(app.getHttpServer())
-      .post('/notify/registrations')
-      .set('Authorization', `Bearer ${buildBearerToken('0xAbC')}`)
-      .send({ ownerAddress: '0xabc', topic: 'topic-a' })
-      .expect(201)
+      .get('/notify/delivery-status')
+      .query({ cid: 'cid-1', owner: 'eip155:84532:0xabc' })
+      .expect(200)
       .expect(({ body }) => {
-        expect(body).toEqual({ status: 'created', catchUpAttempted: 0 });
+        expect(body).toEqual({
+          cid: 'cid-1',
+          owner: 'eip155:84532:0xabc',
+          ownerStateVersion: 2,
+          triggerKind: 'upload',
+          status: 'delivered',
+          notificationId: 'notify-1',
+          transportId: 'transport-1',
+          lastAttemptAt: '2026-06-06T00:00:00.000Z',
+          deliveredAt: '2026-06-06T00:00:01.000Z',
+          errorCode: null,
+          message: null,
+        });
       });
 
-    expect(siweService.verifySIWEMessage).toHaveBeenCalledTimes(1);
-    expect(notifyService.register).toHaveBeenCalledWith({
-      ownerAddress: '0xabc',
-      topic: 'topic-a',
-      previousTopic: undefined,
-      ownerAccount: undefined,
-      signerAddress: '0xAbC',
-    });
+    expect(notifyService.getDeliveryStatus).toHaveBeenCalledWith('cid-1', 'eip155:84532:0xabc');
   });
 });
