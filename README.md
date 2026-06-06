@@ -94,6 +94,7 @@ DATABASE_URL=postgres://user:pass@127.0.0.1:5432/db yarn db:migrate:down
 ```bash
 DATABASE_URL=postgres://ownables:ownables@127.0.0.1:54329/ownables_hub \
 OWNABLES_STORAGE=file://storage \
+CORS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173 \
 yarn start:dev
 ```
 
@@ -103,6 +104,7 @@ Set these env vars for local runtime:
 
 - `DATABASE_URL`
 - `OWNABLES_STORAGE` (optional; defaults to `file://storage`, set to override)
+- `CORS_ORIGINS` (optional; comma-separated browser origins allowed to call Hub. Outside production the default allowlist is `http://127.0.0.1:5173,http://localhost:5173` for local SDK smoke; production defaults to no allowed origins until explicitly configured.)
 
 Additional runtime configuration (feature-dependent):
 

@@ -14,6 +14,7 @@ export interface AppConfig {
   databaseUrl: string;
   ownablesStorage: string;
   siweDomain: string;
+  corsOrigins: string[];
 }
 
 export interface ReownConfig {
@@ -93,6 +94,19 @@ function parseOptionalBoolean(name: string): boolean {
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
+function parseCorsOrigins(env: AppEnv): string[] {
+  const raw = readEnv('CORS_ORIGINS', '');
+  if (raw) {
+    return [...new Set(raw.split(',').map((value) => value.trim()).filter(Boolean))];
+  }
+
+  if (env === 'production') {
+    return [];
+  }
+
+  return ['http://127.0.0.1:5173', 'http://localhost:5173'];
+}
+
 function parseRequiredNonNegativeBigInt(name: string): bigint {
   const raw = parseRequiredEnv(name);
   if (!/^\d+$/.test(raw)) {
@@ -142,6 +156,7 @@ function buildConfig(): AppConfig {
     databaseUrl,
     ownablesStorage,
     siweDomain: readEnv('SIWE_DOMAIN', 'localhost'),
+    corsOrigins: parseCorsOrigins(env),
   };
 }
 

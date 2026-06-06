@@ -26,6 +26,24 @@ describe('ConfigService', () => {
     expect(service.getAppConfig().env).toBe('test');
   });
 
+  it('defaults localhost SDK dev origins outside production', () => {
+    process.env.NODE_ENV = 'development';
+    delete process.env.CORS_ORIGINS;
+
+    const service = new ConfigService();
+
+    expect(service.getAppConfig().corsOrigins).toEqual(['http://127.0.0.1:5173', 'http://localhost:5173']);
+  });
+
+  it('parses explicit CORS origins from env and disables implicit defaults', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.CORS_ORIGINS = 'https://sdk.example.com, http://127.0.0.1:5173 ,https://sdk.example.com';
+
+    const service = new ConfigService();
+
+    expect(service.getAppConfig().corsOrigins).toEqual(['https://sdk.example.com', 'http://127.0.0.1:5173']);
+  });
+
   it('throws when DATABASE_URL is missing', () => {
     delete process.env.DATABASE_URL;
     expect(() => new ConfigService()).toThrow('DATABASE_URL is required');
