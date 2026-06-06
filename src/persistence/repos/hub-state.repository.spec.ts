@@ -296,7 +296,10 @@ describe('HubStateRepository', () => {
     );
   });
 
-  it('queries current local discovery rows for one owner from failed_configuration state only', async () => {
+  it('queries current local discovery rows for one owner from failed_configuration state only on account-targeted schema', async () => {
+    query.mockResolvedValueOnce({
+      rows: [{ columnName: 'owner_account' }],
+    });
     query.mockResolvedValueOnce({
       rows: [
         {
@@ -321,7 +324,7 @@ describe('HubStateRepository', () => {
       ],
     });
 
-    const rows = await repo.listLocalNotifyDiscoveryByOwnerAccount('eip155:84532:0xowner');
+    const rows = await repo.listLocalNotifyDiscoveryByOwnerAccount('eip155:84532:0xowner', '0xowner');
 
     expect(rows).toEqual([
       expect.objectContaining({
@@ -333,13 +336,66 @@ describe('HubStateRepository', () => {
     ]);
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('SELECT DISTINCT ON (s.ownable_id, s.owner_account, s.owner_state_version)'),
-      ['eip155:84532:0xowner'],
+      ['eip155:84532:0xowner', '0xowner'],
     );
-    expect(query).toHaveBeenCalledWith(expect.stringContaining("s.status = 'failed_configuration'"), ['eip155:84532:0xowner']);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('os.owner_state_version = s.owner_state_version'), ['eip155:84532:0xowner']);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('LOWER(os.current_owner_address) = s.owner_address'), ['eip155:84532:0xowner']);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("s.status = 'failed_configuration'"), ['eip155:84532:0xowner', '0xowner']);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('os.owner_state_version = s.owner_state_version'), ['eip155:84532:0xowner', '0xowner']);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('LOWER(os.current_owner_address) = s.owner_address'), ['eip155:84532:0xowner', '0xowner']);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('s.owner_address = LOWER($2)'), ['eip155:84532:0xowner', '0xowner']);
     expect(query).toHaveBeenCalledWith(expect.stringContaining('ORDER BY "ownerStateVersion" DESC, "lastAttemptAt" DESC NULLS LAST, "createdAt" DESC'), [
       'eip155:84532:0xowner',
+      '0xowner',
+    ]);
+  });
+
+  it('queries current local discovery rows against legacy registration-backed schema', async () => {
+    query.mockResolvedValueOnce({
+      rows: [{ columnName: 'registration_id' }],
+    });
+    query.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'notify-row-legacy-1',
+          cid: 'cid-1',
+          ownableId: 'own-1',
+          ownerAddress: '0xowner',
+          ownerAccount: 'eip155:84532:0xowner',
+          ownerStateVersion: 3,
+          triggerKind: 'download_replay',
+          status: 'failed_configuration',
+          notificationId: null,
+          errorCode: null,
+          message: 'notify disabled',
+          createdAt: '2026-06-06T10:00:00.000Z',
+          lastAttemptAt: '2026-06-06T10:01:00.000Z',
+          prevOwnerAddress: '0xissuer',
+          nftNetwork: 'eip155:base',
+          nftContractAddress: '0xnft',
+          nftTokenId: '1',
+        },
+      ],
+    });
+
+    const rows = await repo.listLocalNotifyDiscoveryByOwnerAccount('eip155:84532:0xowner', '0xowner');
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        ownableId: 'own-1',
+        ownerStateVersion: 3,
+        notificationId: null,
+        errorCode: null,
+      }),
+    ]);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('INNER JOIN notify_registrations r ON r.id = s.registration_id'), [
+      'eip155:84532:0xowner',
+      '0xowner',
+    ]);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('r.owner_account = $1'), ['eip155:84532:0xowner', '0xowner']);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('LOWER(r.owner_address) = LOWER($2)'), ['eip155:84532:0xowner', '0xowner']);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('NULL::text AS "notificationId"'), ['eip155:84532:0xowner', '0xowner']);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('COALESCE(s.last_attempt_at, s.delivered_at, o.created_at) AS "createdAt"'), [
+      'eip155:84532:0xowner',
+      '0xowner',
     ]);
   });
 

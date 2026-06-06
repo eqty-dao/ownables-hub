@@ -252,7 +252,7 @@ describe('NotifyService', () => {
 
     const result = await service.getLocalDiscoveryEntries('eip155:84532:0x6465AA5C80764B174606094DECAA4EE9560A2E43');
 
-    expect(repo.listLocalNotifyDiscoveryByOwnerAccount).toHaveBeenCalledWith(`eip155:84532:${ownerAddress}`);
+    expect(repo.listLocalNotifyDiscoveryByOwnerAccount).toHaveBeenCalledWith(`eip155:84532:${ownerAddress}`, ownerAddress);
     expect(result).toEqual({
       ownerAccount: `eip155:84532:${ownerAddress}`,
       entries: [

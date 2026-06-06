@@ -2,6 +2,7 @@ import { BadRequestException, Inject, Injectable, NotFoundException, Optional } 
 import { createHash } from 'node:crypto';
 import {
   OwnablesNotificationBuilderService,
+  parseCaip10Account,
   normalizeCaip10Account,
   type OwnablesNotificationEnvelope,
   type OwnablesNotifyAvailableV1,
@@ -199,7 +200,7 @@ export class NotifyService {
     }
 
     const normalizedOwner = this.normalizeOwnerAccount(ownerAccount);
-    const rows = await this.hubState.listLocalNotifyDiscoveryByOwnerAccount(normalizedOwner);
+    const rows = await this.hubState.listLocalNotifyDiscoveryByOwnerAccount(normalizedOwner, parseCaip10Account(normalizedOwner).address);
 
     return {
       ownerAccount: normalizedOwner,
