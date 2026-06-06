@@ -47,6 +47,7 @@ Base path for hub routes: `/ownables`
 - `GET /ownables/chains` list available NFT chain setup
 - `GET /ownables/serverinfo` inspect wallet balances and hub info
 - `GET /notify/delivery-status?cid=<cid>&owner=<caip10-account>` inspect the latest public notify delivery status for one owner/account pair
+- `GET /notify/local/discovery?owner=<caip10-account>` list local/dev-only failed notification availability entries for one owner/account when explicitly enabled
 
 Swagger: `http://localhost:3000/api-docs`
 
@@ -110,6 +111,7 @@ Additional runtime configuration (feature-dependent):
 - `TESTNET_*_RPC_URL` / `MAINNET_*_RPC_URL` overrides
 - `SIWE_DOMAIN`
 - `PUBLIC_BASE_URL` for absolute download URLs in notifications
+- `LOCAL_DEV_NOTIFICATION_DISCOVERY_ENABLED=true` to expose `GET /notify/local/discovery` outside production for localhost receive/import testing without Reown
 
 Optional Reown notify publishing configuration:
 

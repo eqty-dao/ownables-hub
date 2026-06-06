@@ -88,6 +88,11 @@ function parseRequiredEnv(name: string): string {
   return value;
 }
 
+function parseOptionalBoolean(name: string): boolean {
+  const raw = readEnv(name, '').toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
 function parseRequiredNonNegativeBigInt(name: string): bigint {
   const raw = parseRequiredEnv(name);
   if (!/^\d+$/.test(raw)) {
@@ -238,6 +243,10 @@ export class ConfigService {
     }
 
     return null;
+  }
+
+  isLocalDevNotificationDiscoveryEnabled(): boolean {
+    return this.config.env !== 'production' && parseOptionalBoolean('LOCAL_DEV_NOTIFICATION_DISCOVERY_ENABLED');
   }
 
   private parseIndexerSlot(prefix: 'TESTNET' | 'MAINNET', slotName: IndexerSlotName): IndexerSlotConfig {

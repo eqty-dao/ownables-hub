@@ -83,6 +83,26 @@ export interface NotifyDeliveryStateRow {
   message: string | null;
 }
 
+export interface LocalNotifyDiscoveryRow {
+  id: string;
+  cid: string;
+  ownableId: string;
+  ownerAddress: string;
+  ownerAccount: string;
+  ownerStateVersion: number;
+  triggerKind: string;
+  status: string;
+  notificationId: string | null;
+  errorCode: string | null;
+  message: string | null;
+  createdAt: string;
+  lastAttemptAt: string | null;
+  prevOwnerAddress: string;
+  nftNetwork: string | null;
+  nftContractAddress: string | null;
+  nftTokenId: string | null;
+}
+
 @Injectable()
 export class HubStateRepository {
   constructor(private readonly db: PostgresService) {}
@@ -400,6 +420,49 @@ export class HubStateRepository {
       [cid, ownerAccount],
     );
     return result.rows[0] ?? null;
+  }
+
+  async listLocalNotifyDiscoveryByOwnerAccount(ownerAccount: string): Promise<LocalNotifyDiscoveryRow[]> {
+    const result = await this.db.query<LocalNotifyDiscoveryRow>(
+      `SELECT *
+       FROM (
+         SELECT DISTINCT ON (s.ownable_id, s.owner_account, s.owner_state_version)
+           s.id,
+           o.cid AS "cid",
+           s.ownable_id AS "ownableId",
+           s.owner_address AS "ownerAddress",
+           s.owner_account AS "ownerAccount",
+           s.owner_state_version AS "ownerStateVersion",
+           s.trigger_kind AS "triggerKind",
+           s.status,
+           s.notification_id AS "notificationId",
+           s.error_code AS "errorCode",
+           s.last_error AS "message",
+           s.created_at AS "createdAt",
+           s.last_attempt_at AS "lastAttemptAt",
+           o.prev_owner_address AS "prevOwnerAddress",
+           o.nft_network AS "nftNetwork",
+           o.nft_contract_address AS "nftContractAddress",
+           o.nft_token_id AS "nftTokenId"
+         FROM notify_delivery_state s
+         INNER JOIN ownable_owner_state os
+           ON os.ownable_id = s.ownable_id
+          AND os.owner_state_version = s.owner_state_version
+          AND LOWER(os.current_owner_address) = s.owner_address
+         INNER JOIN ownable_records o ON o.id = s.ownable_id
+         WHERE s.owner_account = $1
+           AND s.status = 'failed_configuration'
+         ORDER BY
+           s.ownable_id,
+           s.owner_account,
+           s.owner_state_version,
+           s.last_attempt_at DESC NULLS LAST,
+           s.created_at DESC
+       ) current_entries
+       ORDER BY "ownerStateVersion" DESC, "lastAttemptAt" DESC NULLS LAST, "createdAt" DESC`,
+      [ownerAccount],
+    );
+    return result.rows;
   }
 
   async upsertIndexedAnchorEvent(input: {

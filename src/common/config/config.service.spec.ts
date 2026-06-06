@@ -84,4 +84,14 @@ describe('ConfigService', () => {
       message: 'PUBLIC_BASE_URL host hub.example.com does not match REOWN_APP_DOMAIN notify.example.com.',
     });
   });
+
+  it('enables local discovery only outside production when the env flag is truthy', () => {
+    process.env.LOCAL_DEV_NOTIFICATION_DISCOVERY_ENABLED = 'true';
+
+    process.env.NODE_ENV = 'test';
+    expect(new ConfigService().isLocalDevNotificationDiscoveryEnabled()).toBe(true);
+
+    process.env.NODE_ENV = 'production';
+    expect(new ConfigService().isLocalDevNotificationDiscoveryEnabled()).toBe(false);
+  });
 });

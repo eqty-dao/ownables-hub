@@ -296,6 +296,53 @@ describe('HubStateRepository', () => {
     );
   });
 
+  it('queries current local discovery rows for one owner from failed_configuration state only', async () => {
+    query.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'notify-row-1',
+          cid: 'cid-1',
+          ownableId: 'own-1',
+          ownerAddress: '0xowner',
+          ownerAccount: 'eip155:84532:0xowner',
+          ownerStateVersion: 3,
+          triggerKind: 'download_replay',
+          status: 'failed_configuration',
+          notificationId: 'ownables_123',
+          errorCode: 'missing_reown_config',
+          message: 'notify disabled',
+          createdAt: '2026-06-06T10:00:00.000Z',
+          lastAttemptAt: '2026-06-06T10:01:00.000Z',
+          prevOwnerAddress: '0xissuer',
+          nftNetwork: 'eip155:base',
+          nftContractAddress: '0xnft',
+          nftTokenId: '1',
+        },
+      ],
+    });
+
+    const rows = await repo.listLocalNotifyDiscoveryByOwnerAccount('eip155:84532:0xowner');
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        ownableId: 'own-1',
+        ownerStateVersion: 3,
+        notificationId: 'ownables_123',
+        errorCode: 'missing_reown_config',
+      }),
+    ]);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('SELECT DISTINCT ON (s.ownable_id, s.owner_account, s.owner_state_version)'),
+      ['eip155:84532:0xowner'],
+    );
+    expect(query).toHaveBeenCalledWith(expect.stringContaining("s.status = 'failed_configuration'"), ['eip155:84532:0xowner']);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('os.owner_state_version = s.owner_state_version'), ['eip155:84532:0xowner']);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('LOWER(os.current_owner_address) = s.owner_address'), ['eip155:84532:0xowner']);
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('ORDER BY "ownerStateVersion" DESC, "lastAttemptAt" DESC NULLS LAST, "createdAt" DESC'), [
+      'eip155:84532:0xowner',
+    ]);
+  });
+
   it('commits transaction after persisting events and cursor', async () => {
     const clientQuery = jest.fn().mockResolvedValue({ rows: [] });
     withClient.mockImplementation(async (fn: (client: any) => Promise<void>) => fn({ query: clientQuery }));

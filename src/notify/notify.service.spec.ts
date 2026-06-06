@@ -1,3 +1,4 @@
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { NotifyService } from './notify.service.js';
 import { ReownTransportError } from './reown-notify.transport.js';
 
@@ -7,6 +8,7 @@ describe('NotifyService', () => {
   const buildRepo = () => ({
     getNotifyDeliveryStateByDedupKey: jest.fn(),
     getNotifyDeliveryStateByOwnableAndOwner: jest.fn(),
+    listLocalNotifyDiscoveryByOwnerAccount: jest.fn(),
     upsertNotifyDeliveryState: jest.fn(),
   });
 
@@ -20,6 +22,7 @@ describe('NotifyService', () => {
       appDomain: 'hub.example.com',
     }),
     getReownConfigIssue: jest.fn().mockReturnValue(null),
+    isLocalDevNotificationDiscoveryEnabled: jest.fn().mockReturnValue(true),
     ...overrides,
   });
 
@@ -207,5 +210,121 @@ describe('NotifyService', () => {
       'cid-1',
       'eip155:84532:0xabcdefabcdefabcdefabcdefabcdefabcdefabcd',
     );
+  });
+
+  it('returns 404 semantics for local discovery when the gate is disabled', async () => {
+    const repo = buildRepo();
+    const service = new NotifyService(
+      repo as any,
+      buildConfig({ isLocalDevNotificationDiscoveryEnabled: jest.fn().mockReturnValue(false) }) as any,
+      buildTransport() as any,
+    );
+
+    await expect(service.getLocalDiscoveryEntries('eip155:84532:0xabcdefabcdefabcdefabcdefabcdefabcdefabcd')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
+  it('normalizes owner input and rebuilds local discovery entries with the shared notification contract', async () => {
+    const repo = buildRepo();
+    repo.listLocalNotifyDiscoveryByOwnerAccount.mockResolvedValue([
+      {
+        id: 'row-1',
+        cid: 'cid-1',
+        ownableId: 'own-1',
+        ownerAddress,
+        ownerAccount: `eip155:84532:${ownerAddress}`,
+        ownerStateVersion: 3,
+        triggerKind: 'download_replay',
+        status: 'failed_configuration',
+        notificationId: 'ownables_fixed',
+        errorCode: 'missing_reown_config',
+        message: 'notify disabled',
+        createdAt: '2026-06-06T00:00:00.000Z',
+        lastAttemptAt: '2026-06-06T00:01:00.000Z',
+        prevOwnerAddress: '0x1234567890abcdef1234567890abcdef12345678',
+        nftNetwork: 'eip155:base',
+        nftContractAddress: '0xnft',
+        nftTokenId: '1',
+      },
+    ]);
+    const service = new NotifyService(repo as any, buildConfig() as any, buildTransport() as any);
+
+    const result = await service.getLocalDiscoveryEntries('eip155:84532:0x6465AA5C80764B174606094DECAA4EE9560A2E43');
+
+    expect(repo.listLocalNotifyDiscoveryByOwnerAccount).toHaveBeenCalledWith(`eip155:84532:${ownerAddress}`);
+    expect(result).toEqual({
+      ownerAccount: `eip155:84532:${ownerAddress}`,
+      entries: [
+        {
+          id: 'local:ownables_fixed',
+          source: 'hub-local-dev',
+          deliveryStatus: 'failed_configuration',
+          warningCode: 'missing_reown_config',
+          warningMessage: 'notify disabled',
+          triggerKind: 'download_replay',
+          ownerStateVersion: 3,
+          notification: {
+            type: 'ownables.v1.available',
+            eventId: 'ownables_fixed',
+            createdAt: '2026-06-06T00:01:00.000Z',
+            ownableId: 'own-1',
+            cid: 'cid-1',
+            scope: 'direct',
+            issuerAddress: '0x1234567890abcdef1234567890abcdef12345678',
+            ownerAccount: `eip155:84532:${ownerAddress}`,
+            ownerAddress,
+            url: 'https://hub.example.com/ownables/cid-1/download',
+            nft: {
+              network: 'eip155:base',
+              contract: '0xnft',
+              tokenId: '1',
+            },
+          },
+          title: 'New Ownable available',
+          body: 'Issued by 0x1234...5678. Open to review and download.',
+        },
+      ],
+    });
+  });
+
+  it('requires PUBLIC_BASE_URL to rebuild local discovery notification links', async () => {
+    const repo = buildRepo();
+    repo.listLocalNotifyDiscoveryByOwnerAccount.mockResolvedValue([
+      {
+        id: 'row-1',
+        cid: 'cid-1',
+        ownableId: 'own-1',
+        ownerAddress,
+        ownerAccount: `eip155:84532:${ownerAddress}`,
+        ownerStateVersion: 3,
+        triggerKind: 'upload',
+        status: 'failed_configuration',
+        notificationId: 'ownables_fixed',
+        errorCode: 'missing_reown_config',
+        message: 'notify disabled',
+        createdAt: '2026-06-06T00:00:00.000Z',
+        lastAttemptAt: null,
+        prevOwnerAddress: '0x1234567890abcdef1234567890abcdef12345678',
+        nftNetwork: null,
+        nftContractAddress: null,
+        nftTokenId: null,
+      },
+    ]);
+    const service = new NotifyService(
+      repo as any,
+      buildConfig({ getAppConfig: jest.fn().mockReturnValue({ publicBaseUrl: '' }) }) as any,
+      buildTransport() as any,
+    );
+
+    await expect(service.getLocalDiscoveryEntries(`eip155:84532:${ownerAddress}`)).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('rejects local discovery owner input when missing or malformed', async () => {
+    const repo = buildRepo();
+    const service = new NotifyService(repo as any, buildConfig() as any, buildTransport() as any);
+
+    await expect(service.getLocalDiscoveryEntries('')).rejects.toThrow('owner is required');
+    await expect(service.getLocalDiscoveryEntries('not-caip10')).rejects.toThrow('owner must be a valid CAIP-10 account');
   });
 });

@@ -1,11 +1,16 @@
-import { BadRequestException, Inject, Injectable, Optional } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
-import { normalizeCaip10Account } from '@ownables/notify-core';
+import {
+  OwnablesNotificationBuilderService,
+  normalizeCaip10Account,
+  type OwnablesNotificationEnvelope,
+  type OwnablesNotifyAvailableV1,
+} from '@ownables/notify-core';
 import { NotifyPublisherService, type NotifyPublisherTransport } from '@ownables/notify-publisher';
 import { ethers } from 'ethers';
 import { ConfigService } from '../common/config/config.service.js';
 import { resolveCaip2Reference } from '../common/config/evm-network.util.js';
-import { HubStateRepository, type NotifyDeliveryStateRow } from '../persistence/repos/hub-state.repository.js';
+import { HubStateRepository, type LocalNotifyDiscoveryRow, type NotifyDeliveryStateRow } from '../persistence/repos/hub-state.repository.js';
 import { ReownNotifyTransport, ReownTransportError } from './reown-notify.transport.js';
 
 export type NotifyTriggerKind = 'upload' | 'download_replay';
@@ -33,10 +38,29 @@ export interface NotifyOwnableResult {
   warningMessage?: string;
 }
 
+export interface LocalNotifyDiscoveryEntry {
+  id: string;
+  source: 'hub-local-dev';
+  deliveryStatus: 'failed_configuration';
+  warningCode: string | null;
+  warningMessage: string | null;
+  triggerKind: string;
+  ownerStateVersion: number;
+  notification: OwnablesNotifyAvailableV1;
+  title: string;
+  body: string;
+}
+
+export interface LocalNotifyDiscoveryResponse {
+  ownerAccount: string;
+  entries: LocalNotifyDiscoveryEntry[];
+}
+
 @Injectable()
 export class NotifyService {
   private readonly publisher: NotifyPublisherService;
   private readonly transport: ReownNotifyTransport;
+  private readonly notificationBuilder = new OwnablesNotificationBuilderService();
 
   constructor(
     private readonly hubState: HubStateRepository,
@@ -79,7 +103,18 @@ export class NotifyService {
       });
     }
 
-    const downloadUrl = this.buildDownloadUrl(input.cid);
+    const envelope = this.buildAvailabilityEnvelope({
+      cid: input.cid,
+      ownableId: input.ownableId,
+      notificationId,
+      createdAt: new Date().toISOString(),
+      issuerAddress: input.issuerAddress,
+      ownerAccount,
+      ownerAddress: input.ownerAddress,
+      nftNetwork: input.nftNetwork,
+      nftContractAddress: input.nftContractAddress,
+      nftTokenId: input.nftTokenId,
+    });
     const reownConfig = this.config.getReownConfig();
     if (!reownConfig) {
       return this.persistWarning(input, ownerAccount, 'failed_configuration', 'missing_reown_config', 'Reown notify configuration is unavailable.', {
@@ -112,11 +147,12 @@ export class NotifyService {
         target: { account: ownerAccount },
         ownableId: input.ownableId,
         cid: input.cid,
-        scope: 'direct',
+        createdAt: envelope.payload.createdAt,
+        scope: envelope.payload.scope,
         issuerAddress: input.issuerAddress,
         ownerAccount,
         ownerAddress: input.ownerAddress,
-        url: downloadUrl,
+        url: envelope.payload.url,
         ...(input.nftNetwork && input.nftContractAddress && input.nftTokenId
           ? { nft: { network: input.nftNetwork, contract: input.nftContractAddress, tokenId: input.nftTokenId } }
           : {}),
@@ -149,22 +185,26 @@ export class NotifyService {
 
   async getDeliveryStatus(cid: string, ownerAccount: string): Promise<NotifyDeliveryStateRow | null> {
     const trimmedCid = cid.trim();
-    const trimmedOwner = ownerAccount.trim();
     if (!trimmedCid) {
       throw new BadRequestException('cid is required');
     }
-    if (!trimmedOwner) {
-      throw new BadRequestException('owner is required');
-    }
-
-    let normalizedOwner: string;
-    try {
-      normalizedOwner = normalizeCaip10Account(trimmedOwner);
-    } catch {
-      throw new BadRequestException('owner must be a valid CAIP-10 account');
-    }
+    const normalizedOwner = this.normalizeOwnerAccount(ownerAccount);
 
     return this.hubState.getNotifyDeliveryStateByOwnableAndOwner(trimmedCid, normalizedOwner);
+  }
+
+  async getLocalDiscoveryEntries(ownerAccount: string): Promise<LocalNotifyDiscoveryResponse> {
+    if (!this.config.isLocalDevNotificationDiscoveryEnabled()) {
+      throw new NotFoundException();
+    }
+
+    const normalizedOwner = this.normalizeOwnerAccount(ownerAccount);
+    const rows = await this.hubState.listLocalNotifyDiscoveryByOwnerAccount(normalizedOwner);
+
+    return {
+      ownerAccount: normalizedOwner,
+      entries: rows.map((row) => this.buildLocalDiscoveryEntry(row)),
+    };
   }
 
   private async persistWarning(
@@ -213,11 +253,101 @@ export class NotifyService {
     return new URL(`ownables/${encodeURIComponent(cid)}/download`, normalizedBase).toString();
   }
 
+  private normalizeOwnerAccount(ownerAccount: string): string {
+    const trimmedOwner = ownerAccount.trim();
+    if (!trimmedOwner) {
+      throw new BadRequestException('owner is required');
+    }
+
+    try {
+      return normalizeCaip10Account(trimmedOwner);
+    } catch {
+      throw new BadRequestException('owner must be a valid CAIP-10 account');
+    }
+  }
+
   private buildNotificationId(input: NotifyOwnableInput, ownerAccount: string): string {
     const digest = createHash('sha256')
       .update(`${input.ownableId}|${ownerAccount}|${input.ownerStateVersion}|${input.triggerKind}`)
       .digest('hex');
     return `ownables_${digest}`;
+  }
+
+  private buildNotificationIdFromRow(row: LocalNotifyDiscoveryRow): string {
+    if (row.notificationId) {
+      return row.notificationId;
+    }
+
+    const digest = createHash('sha256')
+      .update(`${row.ownableId}|${row.ownerAccount}|${row.ownerStateVersion}|${row.triggerKind}`)
+      .digest('hex');
+    return `ownables_${digest}`;
+  }
+
+  private buildAvailabilityEnvelope(input: {
+    cid: string;
+    ownableId: string;
+    notificationId: string;
+    createdAt: string;
+    issuerAddress: string;
+    ownerAccount: string;
+    ownerAddress: string;
+    nftNetwork?: string | null;
+    nftContractAddress?: string | null;
+    nftTokenId?: string | null;
+  }): OwnablesNotificationEnvelope {
+    const payload: OwnablesNotifyAvailableV1 = {
+      type: 'ownables.v1.available',
+      eventId: input.notificationId,
+      createdAt: input.createdAt,
+      ownableId: input.ownableId,
+      cid: input.cid,
+      scope: 'direct',
+      issuerAddress: input.issuerAddress,
+      ownerAccount: input.ownerAccount,
+      ownerAddress: input.ownerAddress,
+      url: this.buildDownloadUrl(input.cid),
+      ...(input.nftNetwork && input.nftContractAddress && input.nftTokenId
+        ? {
+            nft: {
+              network: input.nftNetwork,
+              contract: input.nftContractAddress,
+              tokenId: input.nftTokenId,
+            },
+          }
+        : {}),
+    };
+
+    return this.notificationBuilder.build(payload);
+  }
+
+  private buildLocalDiscoveryEntry(row: LocalNotifyDiscoveryRow): LocalNotifyDiscoveryEntry {
+    const notificationId = this.buildNotificationIdFromRow(row);
+    const envelope = this.buildAvailabilityEnvelope({
+      cid: row.cid,
+      ownableId: row.ownableId,
+      notificationId,
+      createdAt: row.lastAttemptAt ?? row.createdAt,
+      issuerAddress: row.prevOwnerAddress,
+      ownerAccount: row.ownerAccount,
+      ownerAddress: row.ownerAddress,
+      nftNetwork: row.nftNetwork,
+      nftContractAddress: row.nftContractAddress,
+      nftTokenId: row.nftTokenId,
+    });
+
+    return {
+      id: `local:${notificationId}`,
+      source: 'hub-local-dev',
+      deliveryStatus: 'failed_configuration',
+      warningCode: row.errorCode,
+      warningMessage: row.message,
+      triggerKind: row.triggerKind,
+      ownerStateVersion: row.ownerStateVersion,
+      notification: envelope.payload,
+      title: envelope.title,
+      body: envelope.body,
+    };
   }
 
   private deriveOwnerAccount(ownerAddress: string, ownerNetwork: string | null): string | null {
