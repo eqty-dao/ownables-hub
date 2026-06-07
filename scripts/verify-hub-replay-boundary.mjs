@@ -161,6 +161,12 @@ async function buildPackageZip() {
   };
 }
 
+async function buildUploadArchive(packageArchive, chainBuffer) {
+  const zip = await new JSZip().loadAsync(packageArchive, { createFolders: true });
+  zip.file('chain.json', chainBuffer);
+  return zip.generateAsync({ type: 'uint8array' });
+}
+
 async function main() {
   const wallet = ethers.Wallet.createRandom();
   const expectedOwner = wallet.address.toLowerCase();
@@ -168,6 +174,7 @@ async function main() {
 
   const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
   const packageFixture = await buildPackageZip();
+  const uploadArchive = await buildUploadArchive(packageFixture.archive, chainBuffer);
 
   const config = {
     getRuntimeNetworkProfile: () => 'testnet',
@@ -183,16 +190,27 @@ async function main() {
     GetServerETHBalance: async () => '0',
   };
 
+  const storedArtifacts = {
+    eventChain: chainBuffer,
+    packageZip: packageFixture.archive,
+  };
   const storage = {
+    storePackageArtifacts: async (_cid, zipData) => {
+      storedArtifacts.packageZip = Buffer.from(zipData);
+    },
+    storeEventChain: async (_cid, eventChainData) => {
+      storedArtifacts.eventChain = Buffer.from(eventChainData);
+    },
     hasEventChain: async () => true,
     hasPackage: async () => true,
-    getEventChain: async () => chainBuffer,
-    getPackageZip: async () => packageFixture.archive,
+    getEventChain: async () => storedArtifacts.eventChain,
+    getPackageZip: async () => storedArtifacts.packageZip,
   };
 
   const ownerStateCalls = [];
   const ownerStateByCid = new Map();
   const hubState = {
+    upsertOwnableRecord: async () => ({ id: 'ownable-1', cid: 'cid-1', prevOwnerAddress: expectedOwner }),
     getOwnableByCid: async () => ({ id: 'ownable-1', cid: 'cid-1' }),
     listWalletEventsByCid: async () => [
       {
@@ -238,24 +256,31 @@ async function main() {
     const service = new OwnableService(config, nft, storage, hubState, notifyService);
     await service.onModuleInit();
 
+    const uploadResult = await service.uploadOwnable(uploadArchive, undefined, false);
+    assert.equal(uploadResult.owner, expectedOwner, 'Expected upload replay to derive current owner');
+    assert.equal(ownerStateCalls.length, 1, 'Expected upload to persist owner state before download');
+    assert.equal(ownerStateCalls[0].id, 'ownable-1');
+    assert.equal(ownerStateCalls[0].owner, expectedOwner);
+    assert.equal(ownerStateCalls[0].latestAppliedPublicEventId, 'evt-1');
+
     const file = await service.downloadOwnable('cid-1');
     const buffer = await toBuffer(file.getStream());
     const outputZip = await new JSZip().loadAsync(buffer);
 
-    assert.ok(outputZip.file('eventChain.json'), 'Expected eventChain.json in archive');
+    assert.ok(outputZip.file('chain.json'), 'Expected chain.json in archive');
+    assert.equal(outputZip.file('eventChain.json'), null, 'eventChain.json should not be emitted in archive');
     assert.equal(outputZip.file('authority_claim_msg.json'), null, 'authority_claim_msg.json should not be synthesized');
-    assert.equal(ownerStateCalls.length, 1, 'Expected replay-derived owner state to be persisted once');
-    assert.equal(ownerStateCalls[0].id, 'ownable-1');
-    assert.equal(ownerStateCalls[0].owner, expectedOwner);
-    assert.equal(ownerStateCalls[0].latestAppliedPublicEventId, 'evt-1');
-    assert.equal(wasmShim.calls.instantiate, 1, 'Expected real NodeSandboxOwnableRPC instantiate path');
-    assert.equal(wasmShim.calls.register, 1, 'Expected real core replay to register one public event');
-    assert.equal(wasmShim.calls.query, 1, 'Expected real core replay to query owner state');
+    assert.equal(ownerStateCalls.length, 2, 'Expected download replay to persist owner state after upload');
+    assert.equal(wasmShim.calls.instantiate, 2, 'Expected replay runtime to instantiate for upload and download checks');
+    assert.equal(wasmShim.calls.register, 2, 'Expected real core replay to register one public event per replay pass');
+    assert.equal(wasmShim.calls.query, 2, 'Expected real core replay to query owner state per replay pass');
     assert.equal(wasmShim.calls.wasmByteLength, packageFixture.wasmByteLength);
 
     console.log(
       JSON.stringify({
         ownerState: ownerStateCalls[0],
+        ownerStateCallCount: ownerStateCalls.length,
+        uploadResult,
         archivedEntries: Object.keys(outputZip.files).sort(),
         rpcCalls: wasmShim.calls,
       }),

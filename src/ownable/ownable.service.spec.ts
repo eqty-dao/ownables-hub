@@ -203,16 +203,26 @@ describe('OwnableService', () => {
     return Buffer.concat(chunks);
   };
 
+  const createUploadBuffer = async (
+    chain: EventChain,
+    filenames: string[] = ['chain.json'],
+    overrides: Record<string, string> = {},
+  ) => {
+    const zip = new JSZip();
+    const chainJson = JSON.stringify(chain.toJSON());
+    for (const filename of filenames) {
+      zip.file(filename, overrides[filename] ?? chainJson);
+    }
+    zip.file('package.json', JSON.stringify({ name: 'test' }));
+    zip.file('ownable_bg.wasm', Buffer.from([0x00]));
+    return zip.generateAsync({ type: 'uint8array' });
+  };
+
   it('accepts upload without SIWE signer ownership gating', async () => {
     const { service, storage, hubState, nft, notifyService } = await buildService();
     const chain = await createChain();
     const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
-
-    const zip = new JSZip();
-    zip.file('eventChain.json', JSON.stringify(chain.toJSON()));
-    zip.file('package.json', JSON.stringify({ name: 'test' }));
-    zip.file('ownable_bg.wasm', Buffer.from([0x00]));
-    const buffer = await zip.generateAsync({ type: 'uint8array' });
+    const buffer = await createUploadBuffer(chain);
     const packageZip = new JSZip();
     packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
     packageZip.file('package.json', JSON.stringify({ name: 'test' }));
@@ -222,6 +232,7 @@ describe('OwnableService', () => {
     const result = await service.uploadOwnable(buffer, undefined, false);
 
     expect(result.cid).toEqual(expect.any(String));
+    expect(result.ownerAccount).toEqual(REPLAY_OWNER_WALLET.address.toLowerCase());
     expect(storage.storePackageArtifacts).toHaveBeenCalledTimes(1);
     expect(storage.storeEventChain).toHaveBeenCalledTimes(1);
     expect(hubState.upsertOwnableRecord).toHaveBeenCalledTimes(1);
@@ -238,6 +249,51 @@ describe('OwnableService', () => {
     expect(notifyService.notifyOwnableAvailability).not.toHaveBeenCalledWith(
       expect.objectContaining({ ownerAddress: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase() }),
     );
+  });
+
+  it('accepts upload with legacy eventChain.json alias', async () => {
+    const { service, storage } = await buildService();
+    const chain = await createChain();
+    const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
+    const buffer = await createUploadBuffer(chain, ['eventChain.json']);
+
+    const packageZip = new JSZip();
+    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
+    storage.getEventChain.mockResolvedValue(chainBuffer);
+    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
+
+    const result = await service.uploadOwnable(buffer, undefined, false);
+
+    expect(result.cid).toEqual(expect.any(String));
+    expect(storage.storeEventChain).toHaveBeenCalledWith(result.cid, expect.any(Buffer));
+  });
+
+  it('normalizes matching chain file aliases to the same CID', async () => {
+    const { service, storage } = await buildService();
+    const chain = await createChain();
+    const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
+
+    const packageZip = new JSZip();
+    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
+    storage.getEventChain.mockResolvedValue(chainBuffer);
+    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
+
+    const canonicalResult = await service.uploadOwnable(await createUploadBuffer(chain, ['chain.json']), undefined, false);
+    const aliasResult = await service.uploadOwnable(await createUploadBuffer(chain, ['eventChain.json']), undefined, false);
+    const dualResult = await service.uploadOwnable(await createUploadBuffer(chain, ['chain.json', 'eventChain.json']), undefined, false);
+
+    expect(canonicalResult.cid).toEqual(aliasResult.cid);
+    expect(aliasResult.cid).toEqual(dualResult.cid);
+  });
+
+  it('rejects ambiguous archives when chain aliases differ', async () => {
+    const { service } = await buildService();
+    const chain = await createChain();
+    const buffer = await createUploadBuffer(chain, ['chain.json', 'eventChain.json'], {
+      'eventChain.json': JSON.stringify({ ...chain.toJSON(), id: `0x${'22'.repeat(32)}` }),
+    });
+
+    await expect(service.uploadOwnable(buffer, undefined, false)).rejects.toThrow("Invalid package: 'chain.json' and 'eventChain.json' differ");
   });
 
   it('delegates public replay to core service and persists replay-derived owner state', async () => {
@@ -407,7 +463,8 @@ describe('OwnableService', () => {
     const buffer = await toBuffer(file.getStream() as Readable);
     const outputZip = await new JSZip().loadAsync(buffer);
 
-    expect(outputZip.file('eventChain.json')).toBeTruthy();
+    expect(outputZip.file('chain.json')).toBeTruthy();
+    expect(outputZip.file('eventChain.json')).toBeNull();
     expect(outputZip.file('authority_claim_msg.json')).toBeNull();
   });
 

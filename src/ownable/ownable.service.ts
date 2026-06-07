@@ -31,6 +31,9 @@ interface ReplayDerivedState {
   latestAppliedPublicEventId: string | null;
 }
 
+const CANONICAL_CHAIN_FILENAME = 'chain.json';
+const LEGACY_CHAIN_FILENAME = 'eventChain.json';
+
 class InMemoryStateStore implements StateStore {
   private readonly stores = new Map<string, Map<any, any>>();
 
@@ -172,7 +175,7 @@ export class OwnableService implements OnModuleInit {
 
     const zipped = new JSZip();
     await zipped.loadAsync(await this.storage.getPackageZip(cid), { createFolders: true });
-    zipped.file('eventChain.json', eventChainBuffer);
+    zipped.file(CANONICAL_CHAIN_FILENAME, eventChainBuffer);
     const files = await this.unzip(await zipped.generateAsync({ type: 'uint8array' }));
 
     const stateStore = new InMemoryStateStore();
@@ -322,10 +325,28 @@ export class OwnableService implements OnModuleInit {
     const archive = await zip.loadAsync(data, { createFolders: true });
     const entries: Array<[string, Buffer]> = await Promise.all(
       Object.entries(archive.files)
-        .filter(([filename]) => filename !== 'chain.json')
+        .filter(([, file]) => !file.dir)
         .map(async ([filename, file]) => [filename, await file.async('nodebuffer')]),
     );
     return new Map(entries);
+  }
+
+  private resolveChainFile(files: Map<string, Buffer>): { buffer: Buffer; aliases: string[] } {
+    const canonical = files.get(CANONICAL_CHAIN_FILENAME);
+    const legacy = files.get(LEGACY_CHAIN_FILENAME);
+
+    if (!canonical && !legacy) {
+      throw new Error(`Invalid package: '${CANONICAL_CHAIN_FILENAME}' or '${LEGACY_CHAIN_FILENAME}' is missing`);
+    }
+
+    if (canonical && legacy && !canonical.equals(legacy)) {
+      throw new Error(`Invalid package: '${CANONICAL_CHAIN_FILENAME}' and '${LEGACY_CHAIN_FILENAME}' differ`);
+    }
+
+    return {
+      buffer: canonical ?? (legacy as Buffer),
+      aliases: [CANONICAL_CHAIN_FILENAME, LEGACY_CHAIN_FILENAME].filter((filename) => files.has(filename)),
+    };
   }
 
   public async isUnlockProofValid(network: string, address: string, id: string, proof: string): Promise<boolean> {
@@ -383,10 +404,7 @@ export class OwnableService implements OnModuleInit {
   async uploadOwnable(buffer: Uint8Array, signer?: SignerIdentity, verbose = false): Promise<any> {
     if (verbose) console.log('unzipping Zip files into memory');
     const files = await this.unzip(buffer);
-
-    if (!files.has('eventChain.json')) throw new Error("Invalid package: 'eventChain.json' is missing");
-
-    const eventChainBuffer = files.get('eventChain.json') as Buffer;
+    const { buffer: eventChainBuffer, aliases: chainAliases } = this.resolveChainFile(files);
     const eventChainJson = JSON.parse(eventChainBuffer.toString());
     const chain = EventChain.from(eventChainJson);
     this.validateEventChain(chain);
@@ -394,13 +412,13 @@ export class OwnableService implements OnModuleInit {
     const nftInfo = this.parseNftInfoFromChain(chain);
     const ownerFromPrivateState = chain.events.at(-1)?.signerAddress?.toLowerCase() ?? signer?.address?.toLowerCase() ?? '';
 
-    if (verbose) console.log('removing eventChain.json from files to create CID');
-    files.delete('eventChain.json');
+    if (verbose) console.log(`removing ${chainAliases.join(', ')} from files to create CID`);
+    for (const alias of chainAliases) files.delete(alias);
     const cid = await this.getCid(files);
 
     const newZip = new JSZip();
     await newZip.loadAsync(buffer, { createFolders: true });
-    newZip.remove('eventChain.json');
+    for (const alias of chainAliases) newZip.remove(alias);
     const content = await newZip.generateAsync({ type: 'uint8array' });
 
     await this.storage.storePackageArtifacts(cid, content, files);
@@ -418,9 +436,10 @@ export class OwnableService implements OnModuleInit {
     const replayState = await this.replayStoredOwnable(cid);
     await this.hubState.setOwnerState(record.id, replayState.owner, replayState.latestAppliedPublicEventId);
     const ownerState = await this.hubState.getOwnerStateByCid(cid);
+    let ownerAccount: string | null = null;
     if (ownerState) {
       try {
-        await this.notifyService.notifyOwnableAvailability({
+        const notifyResult = await this.notifyService.notifyOwnableAvailability({
           ownerAddress: replayState.owner,
           ownerNetwork: replayState.nftInfo.network,
           ownableId: record.id,
@@ -433,6 +452,7 @@ export class OwnableService implements OnModuleInit {
           nftTokenId: replayState.nftInfo.id,
           triggerKind: 'upload',
         });
+        ownerAccount = notifyResult?.ownerAccount ?? null;
       } catch (error) {
         console.warn('notifyOwnableAvailability warning during upload', error);
       }
@@ -441,6 +461,7 @@ export class OwnableService implements OnModuleInit {
     return {
       cid: cid.toString(),
       owner: replayState.owner,
+      ownerAccount,
       nftNetwork: replayState.nftInfo.network,
       smartContractAddress: replayState.nftInfo.address,
       NftId: replayState.nftInfo.id,
@@ -489,7 +510,8 @@ export class OwnableService implements OnModuleInit {
     const zipped = new JSZip();
     const zipFile = await this.storage.getPackageZip(cid);
     await zipped.loadAsync(zipFile, { createFolders: true });
-    zipped.file('eventChain.json', await this.storage.getEventChain(cid));
+    zipped.remove(LEGACY_CHAIN_FILENAME);
+    zipped.file(CANONICAL_CHAIN_FILENAME, await this.storage.getEventChain(cid));
 
     const content = await zipped.generateAsync({ type: 'uint8array' });
     return new StreamableFile(Readable.from(Buffer.from(content)));
