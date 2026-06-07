@@ -310,14 +310,14 @@ export class HubStateRepository {
          trigger_kind,
          status,
          notification_type,
-         notification_id,
-         transport_id,
-         attempt_count,
-         error_code,
-         last_error,
-         last_attempt_at,
-         delivered_at
-       ) VALUES ($1, LOWER($2), $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), CASE WHEN $6 = 'delivered' THEN NOW() ELSE NULL END, $12)
+       notification_id,
+       transport_id,
+       attempt_count,
+       error_code,
+       last_error,
+       last_attempt_at,
+       delivered_at
+      ) VALUES ($1, LOWER($2), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), CASE WHEN $6 = 'delivered' THEN NOW() ELSE NULL END)
        ON CONFLICT (ownable_id, owner_account, owner_state_version, trigger_kind) DO UPDATE SET
          owner_address = EXCLUDED.owner_address,
          status = EXCLUDED.status,

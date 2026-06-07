@@ -169,4 +169,59 @@ describeWithDatabase('HubStateRepository local discovery postgres integration', 
       ]);
     });
   });
+
+  it('persists failed_configuration inserts with last_error, last_attempt_at, and null delivered_at via repository upsert', async () => {
+    await withSchema(null, async (repo, client) => {
+      await client.query(
+        `INSERT INTO ownable_records (id, cid, prev_owner_address)
+         VALUES ('00000000-0000-0000-0000-000000000201', 'cid-current-2', '0xissuer')`,
+      );
+
+      const written = await repo.upsertNotifyDeliveryState({
+        ownableId: '00000000-0000-0000-0000-000000000201',
+        ownerAddress: '0xOwner',
+        ownerAccount: 'eip155:84532:0xowner',
+        ownerStateVersion: 5,
+        triggerKind: 'upload',
+        status: 'failed_configuration',
+        attemptCount: 1,
+        errorCode: 'missing_reown_config',
+        lastError: 'notify disabled',
+      });
+
+      const persisted = await client.query<{
+        status: string;
+        errorCode: string | null;
+        lastError: string | null;
+        lastAttemptAt: Date | null;
+        deliveredAt: Date | null;
+      }>(
+        `SELECT
+           status,
+           error_code AS "errorCode",
+           last_error AS "lastError",
+           last_attempt_at AS "lastAttemptAt",
+           delivered_at AS "deliveredAt"
+         FROM notify_delivery_state
+         WHERE ownable_id = $1
+           AND owner_account = $2
+           AND owner_state_version = $3
+           AND trigger_kind = $4`,
+        ['00000000-0000-0000-0000-000000000201', 'eip155:84532:0xowner', 5, 'upload'],
+      );
+
+      expect(written.status).toBe('failed_configuration');
+      expect(written.message).toBe('notify disabled');
+      expect(written.deliveredAt).toBeNull();
+      expect(persisted.rows).toEqual([
+        expect.objectContaining({
+          status: 'failed_configuration',
+          errorCode: 'missing_reown_config',
+          lastError: 'notify disabled',
+          deliveredAt: null,
+        }),
+      ]);
+      expect(persisted.rows[0]?.lastAttemptAt).toBeInstanceOf(Date);
+    });
+  });
 });

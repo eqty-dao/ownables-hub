@@ -615,6 +615,60 @@ describe('HubStateRepository', () => {
     );
   });
 
+  it('maps failed_configuration notify insert values to last_error and non-delivered timestamps correctly', async () => {
+    query.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'del-2',
+          ownableId: 'own-2',
+          ownerAddress: '0xowner',
+          ownerAccount: 'eip155:84532:0xowner',
+          ownerStateVersion: 3,
+          triggerKind: 'upload',
+          status: 'failed_configuration',
+          notificationType: null,
+          notificationId: null,
+          transportId: null,
+          attemptCount: 1,
+          lastAttemptAt: '2026-06-06T00:00:00.000Z',
+          deliveredAt: null,
+          errorCode: 'missing_reown_config',
+          message: 'notify disabled',
+        },
+      ],
+    });
+
+    await repo.upsertNotifyDeliveryState({
+      ownableId: 'own-2',
+      ownerAddress: '0xOwner',
+      ownerAccount: 'eip155:84532:0xowner',
+      ownerStateVersion: 3,
+      triggerKind: 'upload',
+      status: 'failed_configuration',
+      attemptCount: 1,
+      errorCode: 'missing_reown_config',
+      lastError: 'notify disabled',
+    });
+
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining(") VALUES ($1, LOWER($2), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), CASE WHEN $6 = 'delivered' THEN NOW() ELSE NULL END)"),
+      [
+        'own-2',
+        '0xOwner',
+        'eip155:84532:0xowner',
+        3,
+        'upload',
+        'failed_configuration',
+        null,
+        null,
+        null,
+        1,
+        'missing_reown_config',
+        'notify disabled',
+      ],
+    );
+  });
+
   it('reads latest notify delivery-state by cid and owner account', async () => {
     query.mockResolvedValueOnce({
       rows: [
