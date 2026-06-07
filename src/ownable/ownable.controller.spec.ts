@@ -1,5 +1,10 @@
+import { INestApplication, StreamableFile } from '@nestjs/common';
+import { Test, TestingModule } from '@nestjs/testing';
+import JSZip from 'jszip';
+import request from 'supertest';
 import { OwnableController } from './ownable.controller.js';
 import { UserError } from '../interfaces/error.js';
+import { OwnableService } from './ownable.service.js';
 
 jest.mock('eqty-core', () => require('../test-mocks/eqty-core.ts'));
 jest.mock('@ownables/core', () => ({
@@ -14,6 +19,13 @@ jest.mock('@ownables/platform-node', () => ({
 }));
 
 describe('OwnableController', () => {
+  const binaryParser = (res: any, callback: (err: Error | null, body: Buffer) => void) => {
+    const chunks: Buffer[] = [];
+    res.on('data', (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    res.on('end', () => callback(null, Buffer.concat(chunks)));
+    res.on('error', (err: Error) => callback(err, Buffer.alloc(0)));
+  };
+
   const buildRes = () => {
     const res: any = {};
     res.status = jest.fn(() => res);
@@ -135,5 +147,43 @@ describe('OwnableController', () => {
     const claimRes = buildRes();
     await controller.claim('cid-1', claimRes);
     expect(ownableService.downloadOwnable).toHaveBeenCalledWith('cid-1');
+  });
+
+  it('streams a non-empty zip body for GET /ownables/:cid/download over HTTP', async () => {
+    const zip = new JSZip();
+    zip.file('chain.json', JSON.stringify({ cid: 'cid-1' }));
+    const zipBuffer = Buffer.from(await zip.generateAsync({ type: 'uint8array' }));
+    const ownableService = {
+      downloadOwnable: jest.fn().mockResolvedValue(new StreamableFile(zipBuffer)),
+    } as any;
+
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      controllers: [OwnableController],
+      providers: [{ provide: OwnableService, useValue: ownableService }],
+    }).compile();
+
+    let app: INestApplication | undefined;
+
+    try {
+      app = moduleFixture.createNestApplication();
+      await app.init();
+
+      const response = await request(app.getHttpServer())
+        .get('/ownables/cid-1/download')
+        .buffer(true)
+        .parse(binaryParser)
+        .expect(200)
+        .expect('Content-Type', /application\/zip/);
+
+      expect(ownableService.downloadOwnable).toHaveBeenCalledWith('cid-1');
+      expect(response.body).toBeInstanceOf(Buffer);
+      expect(response.body.length).toBeGreaterThan(0);
+
+      const archive = await new JSZip().loadAsync(response.body);
+      expect(archive.file('chain.json')).toBeTruthy();
+      expect(archive.file('eventChain.json')).toBeNull();
+    } finally {
+      await app?.close();
+    }
   });
 });
