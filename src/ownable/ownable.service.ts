@@ -336,11 +336,11 @@ export class OwnableService implements OnModuleInit {
     const legacy = files.get(LEGACY_CHAIN_FILENAME);
 
     if (!canonical && !legacy) {
-      throw new Error(`Invalid package: '${CANONICAL_CHAIN_FILENAME}' or '${LEGACY_CHAIN_FILENAME}' is missing`);
+      throw new UserError(`Invalid package: '${CANONICAL_CHAIN_FILENAME}' or '${LEGACY_CHAIN_FILENAME}' is missing`);
     }
 
     if (canonical && legacy && !canonical.equals(legacy)) {
-      throw new Error(`Invalid package: '${CANONICAL_CHAIN_FILENAME}' and '${LEGACY_CHAIN_FILENAME}' differ`);
+      throw new UserError(`Invalid package: '${CANONICAL_CHAIN_FILENAME}' and '${LEGACY_CHAIN_FILENAME}' differ`);
     }
 
     return {
