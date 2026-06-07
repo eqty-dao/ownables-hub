@@ -543,39 +543,11 @@ export class OwnableService implements OnModuleInit {
   }
 
   async downloadOwnable(cid: string): Promise<StreamableFile> {
-    const record = await this.hubState.getOwnableByCid(cid);
-    if (!record) throw new UserError(`Event chain with cid ${cid} not available on this hub`);
+    if (!(await this.hubState.getOwnableByCid(cid))) throw new UserError(`Event chain with cid ${cid} not available on this hub`);
     if (!(await this.existsCid(cid))) throw new UserError(`Event chain with cid ${cid} not available on this hub`);
     if (!(await this.existsPkg(cid))) throw new UserError(`Ownable package with cid ${cid} not available on this hub`);
 
-    const ownerStateBefore = await this.hubState.getOwnerStateByCid(cid);
-    const replayState = await this.replayStoredOwnable(cid);
-    await this.hubState.setOwnerState(record.id, replayState.owner, replayState.latestAppliedPublicEventId);
-    const ownerStateAfter = await this.hubState.getOwnerStateByCid(cid);
-    const shouldNotify =
-      ownerStateAfter &&
-      (!ownerStateBefore ||
-        ownerStateBefore.owner !== ownerStateAfter.owner ||
-        ownerStateBefore.latestAppliedPublicEventId !== ownerStateAfter.latestAppliedPublicEventId);
-    if (shouldNotify && ownerStateAfter) {
-      try {
-        await this.notifyService.notifyOwnableAvailability({
-          ownerAddress: replayState.owner,
-          ownerNetwork: replayState.nftInfo.network,
-          ownableId: record.id,
-          cid: record.cid,
-          ownerStateVersion: ownerStateAfter.version,
-          latestAppliedPublicEventId: ownerStateAfter.latestAppliedPublicEventId,
-          issuerAddress: record.prevOwnerAddress,
-          nftNetwork: replayState.nftInfo.network,
-          nftContractAddress: replayState.nftInfo.address,
-          nftTokenId: replayState.nftInfo.id,
-          triggerKind: 'download_replay',
-        });
-      } catch (error) {
-        console.warn('notifyOwnableAvailability warning during download replay', error);
-      }
-    }
+    await this.replayStoredOwnable(cid);
 
     const zipped = new JSZip();
     const zipFile = await this.storage.getPackageZip(cid);

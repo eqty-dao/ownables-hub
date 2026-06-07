@@ -442,7 +442,7 @@ describe('OwnableService', () => {
     expect(notifyService.notifyOwnableAvailability).not.toHaveBeenCalled();
   });
 
-  it('delegates public replay to core service and persists replay-derived owner state', async () => {
+  it('delegates public replay to core service without persisting replay-derived owner state on download', async () => {
     const { service, storage, hubState, notifyService } = await buildService();
     const chain = await createChain();
     const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
@@ -478,29 +478,14 @@ describe('OwnableService', () => {
     ]);
 
     const replaySpy = jest.spyOn(CoreOwnableService.prototype, 'attemptReplayIndexedPublicEvents');
-    hubState.getOwnerStateByCid
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({
-        owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
-        version: 2,
-        latestAppliedPublicEventId: 'evt-1',
-      });
-
     await service.downloadOwnable('cid-1');
 
     expect(replaySpy).toHaveBeenCalled();
-    expect(hubState.setOwnerState).toHaveBeenCalledWith('id-1', REPLAY_OWNER_WALLET.address.toLowerCase(), 'evt-1');
-    expect(notifyService.notifyOwnableAvailability).toHaveBeenCalledWith(
-      expect.objectContaining({
-        triggerKind: 'download_replay',
-        cid: 'cid-1',
-        ownerAddress: REPLAY_OWNER_WALLET.address.toLowerCase(),
-        ownerNetwork: 'eip155:base',
-      }),
-    );
+    expect(hubState.setOwnerState).not.toHaveBeenCalled();
+    expect(notifyService.notifyOwnableAvailability).not.toHaveBeenCalled();
   });
 
-  it('does not publish replay notify when owner state is unchanged across download', async () => {
+  it('does not read or publish download replay notify state when the archive is fresh', async () => {
     const { service, storage, hubState, notifyService } = await buildService();
     const chain = await createChain();
 
@@ -509,23 +494,11 @@ describe('OwnableService', () => {
     packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
     hubState.listWalletEventsByCid.mockResolvedValue([]);
-    hubState.getOwnerStateByCid
-      .mockResolvedValueOnce({
-        owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
-        version: 2,
-        latestAppliedPublicEventId: null,
-      })
-      .mockResolvedValueOnce({
-        owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
-        version: 3,
-        latestAppliedPublicEventId: null,
-      });
 
     await service.downloadOwnable('cid-1');
 
-    expect(notifyService.notifyOwnableAvailability).not.toHaveBeenCalledWith(
-      expect.objectContaining({ triggerKind: 'download_replay' }),
-    );
+    expect(hubState.getOwnerStateByCid).not.toHaveBeenCalled();
+    expect(notifyService.notifyOwnableAvailability).not.toHaveBeenCalled();
   });
 
   it('rejects stale ownables with stable stale error contract', async () => {
@@ -563,35 +536,6 @@ describe('OwnableService', () => {
     ]);
 
     await expect(service.downloadOwnable('cid-1')).rejects.toThrow('STALE_OWNABLE');
-  });
-
-  it('keeps download successful when notify returns a warning status', async () => {
-    const { service, storage, hubState, notifyService } = await buildService();
-    const chain = await createChain();
-
-    storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
-    const packageZip = new JSZip();
-    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
-    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
-    hubState.listWalletEventsByCid.mockResolvedValue([]);
-    hubState.getOwnerStateByCid
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({
-        owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
-        version: 2,
-        latestAppliedPublicEventId: null,
-      });
-    notifyService.notifyOwnableAvailability.mockResolvedValue({
-      status: 'not_subscribed',
-      ownerAccount: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
-      warningCode: 'reown_not_subscribed',
-      warningMessage: 'not subscribed',
-    });
-
-    const file = await service.downloadOwnable('cid-1');
-
-    expect(file).toBeTruthy();
-    expect(notifyService.notifyOwnableAvailability).toHaveBeenCalledWith(expect.objectContaining({ triggerKind: 'download_replay' }));
   });
 
   it('preserves archive shape without synthesizing authority_claim_msg.json', async () => {

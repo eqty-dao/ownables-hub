@@ -64,7 +64,7 @@ export class OwnableController {
   @Get(':cid/download')
   @Header('Content-type', 'application/zip')
   @ApiProduces('application/zip')
-  async download(@Req() req: Request, @Res() res: Response): Promise<StreamableFile | Response> {
+  async download(@Req() req: Request, @Res({ passthrough: true }) res: Response): Promise<StreamableFile | Response> {
     try {
       const cid = String(req.params.cid ?? '');
       return await this.ownableService.downloadOwnable(cid);
@@ -76,7 +76,7 @@ export class OwnableController {
   @Get('claim')
   @Header('Content-type', 'application/zip')
   @ApiProduces('application/zip')
-  async claim(@Query('cid') cid: string, @Res() res: Response): Promise<StreamableFile | Response> {
+  async claim(@Query('cid') cid: string, @Res({ passthrough: true }) res: Response): Promise<StreamableFile | Response> {
     return this.download({ params: { cid } } as unknown as Request, res);
   }
 
