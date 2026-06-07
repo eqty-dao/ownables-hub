@@ -11,11 +11,13 @@ import {
 } from '@ownables/core';
 import { NodePackageAssetIO, NodeSandboxOwnableRPC } from '@ownables/platform-node';
 import { ConfigService, RuntimeNetworkProfile } from '../common/config/config.service.js';
+import { resolveCaip2Reference } from '../common/config/evm-network.util.js';
 import { NFTInfo } from '../interfaces/OwnableInfo.js';
 import { NFTService } from '../nft/nft.service.js';
 import { AuthError, UserError } from '../interfaces/error.js';
 import JSZip from 'jszip';
 import { EventChain } from 'eqty-core';
+import { normalizeCaip10Account } from '@ownables/notify-core';
 import { Readable } from 'stream';
 import { ArchiveStorageService } from '../storage/archive-storage.service.js';
 import { HubStateRepository, IndexedWalletEvent } from '../persistence/repos/hub-state.repository.js';
@@ -26,7 +28,9 @@ interface SignerIdentity {
 }
 
 interface ReplayDerivedState {
-  nftInfo: NFTInfo;
+  nftInfo: NFTInfo | null;
+  ownerNetwork: string | null;
+  ownerAccount: string | null;
   owner: string;
   latestAppliedPublicEventId: string | null;
 }
@@ -176,6 +180,124 @@ export class OwnableService implements OnModuleInit {
     return { network: parsed.nft.network, address: parsed.nft.address, id: String(parsed.nft.id) };
   }
 
+  private parseNftInfoFromOwnableInfo(info: unknown): NFTInfo | null {
+    const nft = (info as { nft?: { network?: string; address?: string; id?: string | number } } | null)?.nft;
+    if (!nft?.network || !nft.address || nft.id === undefined) {
+      return null;
+    }
+    return {
+      network: nft.network,
+      address: nft.address,
+      id: String(nft.id),
+    };
+  }
+
+  private parseNftInfoFromRecord(record: {
+    nftNetwork: string | null;
+    nftContractAddress: string | null;
+    nftTokenId: string | null;
+  } | null): NFTInfo | null {
+    if (!record?.nftNetwork || !record.nftContractAddress || record.nftTokenId === null) {
+      return null;
+    }
+    return {
+      network: record.nftNetwork,
+      address: record.nftContractAddress,
+      id: record.nftTokenId,
+    };
+  }
+
+  private async deriveNftInfo(chain: EventChain, replayInfo?: unknown): Promise<NFTInfo | null> {
+    try {
+      return this.parseNftInfoFromChain(chain);
+    } catch (error) {
+      if (!(error instanceof UserError) || error.message !== 'Invalid event chain: missing NFT metadata in first event') {
+        throw error;
+      }
+    }
+
+    const replayNftInfo = this.parseNftInfoFromOwnableInfo(replayInfo);
+    if (replayNftInfo) {
+      return replayNftInfo;
+    }
+
+    const persistedNftInfo = this.parseNftInfoFromRecord(await this.hubState.getOwnableBySubjectId(chain.id));
+    if (persistedNftInfo) {
+      return persistedNftInfo;
+    }
+
+    return null;
+  }
+
+  private deriveOwnerNetwork(chain: EventChain, nftInfo: NFTInfo | null): string | null {
+    const parsed = chain.events[0]?.parsedData as { network_id?: string | number } | undefined;
+    const networkId = parsed?.network_id;
+    if (typeof networkId === 'number' && Number.isInteger(networkId) && networkId > 0) {
+      return `eip155:${networkId}`;
+    }
+    if (typeof networkId === 'string') {
+      const trimmed = networkId.trim();
+      if (/^\d+$/.test(trimmed)) {
+        return `eip155:${trimmed}`;
+      }
+      if (/^eip155:\d+$/.test(trimmed)) {
+        return trimmed;
+      }
+    }
+
+    return nftInfo?.network ?? null;
+  }
+
+  private deriveOwnerAccount(ownerAddress: string, ownerNetwork: string | null): string | null {
+    if (!ownerNetwork) {
+      return null;
+    }
+
+    const reference = resolveCaip2Reference(ownerNetwork, this.config.getRuntimeNetworkProfile());
+    if (!reference) {
+      return null;
+    }
+
+    try {
+      return normalizeCaip10Account(`eip155:${reference}:${ownerAddress}`);
+    } catch {
+      return null;
+    }
+  }
+
+  private normalizeOwnerAccount(ownerAccount: string): string {
+    const trimmedOwner = ownerAccount.trim();
+    if (!trimmedOwner) {
+      throw new UserError('owner is required');
+    }
+
+    try {
+      return normalizeCaip10Account(trimmedOwner);
+    } catch {
+      throw new UserError('owner must be a valid CAIP-10 account');
+    }
+  }
+
+  private buildImportUrls(cid: string): { downloadUrl: string; eventsUrl: string; hubOrigin: string } {
+    const base = this.config.getAppConfig().publicBaseUrl.trim();
+    if (!base) {
+      throw new UserError('PUBLIC_BASE_URL is required for recipient discovery');
+    }
+
+    let normalizedBase: URL;
+    try {
+      normalizedBase = new URL(base.endsWith('/') ? base : `${base}/`);
+    } catch {
+      throw new UserError(`PUBLIC_BASE_URL is not a valid absolute URL: ${base}`);
+    }
+
+    return {
+      downloadUrl: new URL(`ownables/${encodeURIComponent(cid)}/download`, normalizedBase).toString(),
+      eventsUrl: new URL(`ownables/${encodeURIComponent(cid)}/events`, normalizedBase).toString(),
+      hubOrigin: normalizedBase.origin,
+    };
+  }
+
   private toIndexedPublicEvent(row: IndexedWalletEvent): IndexedPublicEvent | null {
     if (row.eventKind !== 'public' || !row.sourceAddress || !row.eventType || !row.dataHex) {
       return null;
@@ -321,10 +443,13 @@ export class OwnableService implements OnModuleInit {
               event.logIndex === latestAppliedPublicEvent.logIndex,
           )?.rowId ?? null;
 
+    const nftInfo = await this.deriveNftInfo(chain, info);
     coreOwnables.clearRpc(chain.id);
 
     return {
-      nftInfo: this.parseNftInfoFromChain(chain),
+      nftInfo,
+      ownerNetwork: this.deriveOwnerNetwork(chain, nftInfo),
+      ownerAccount: this.deriveOwnerAccount(owner, this.deriveOwnerNetwork(chain, nftInfo)),
       owner,
       latestAppliedPublicEventId: latestAppliedPublicEventId ?? null,
     };
@@ -446,6 +571,9 @@ export class OwnableService implements OnModuleInit {
     if (!(await this.existsPkg(cid))) throw new UserError('Ownable package with CID is not available on server.');
 
     const replayState = await this.replayStoredOwnable(cid);
+    if (!replayState.nftInfo) {
+      throw new UserError('NFT metadata is unavailable for this ownable');
+    }
     await this.requireNftOwner(replayState.nftInfo, signer);
 
     try {
@@ -479,7 +607,6 @@ export class OwnableService implements OnModuleInit {
     this.validateEventChain(chain);
     this.assertSupportedOwnableRuntime(files);
 
-    const nftInfo = this.parseNftInfoFromChain(chain);
     const ownerFromPrivateState = chain.events.at(-1)?.signerAddress?.toLowerCase() ?? signer?.address?.toLowerCase() ?? '';
 
     if (verbose) console.log(`removing ${chainAliases.join(', ')} from files to create CID`);
@@ -494,35 +621,32 @@ export class OwnableService implements OnModuleInit {
     await this.storage.storePackageArtifacts(cid, content, files);
     await this.storage.storeEventChain(cid, eventChainBuffer);
 
+    const replayState = await this.replayStoredOwnable(cid);
     const record = await this.hubState.upsertOwnableRecord({
       cid,
       prevOwnerAddress: ownerFromPrivateState || '0x0000000000000000000000000000000000000000',
       subjectId: chain.id,
-      nftNetwork: nftInfo.network,
-      nftContractAddress: nftInfo.address,
-      nftTokenId: nftInfo.id,
+      nftNetwork: replayState.nftInfo?.network,
+      nftContractAddress: replayState.nftInfo?.address,
+      nftTokenId: replayState.nftInfo?.id,
     });
-
-    const replayState = await this.replayStoredOwnable(cid);
-    await this.hubState.setOwnerState(record.id, replayState.owner, replayState.latestAppliedPublicEventId);
+    await this.hubState.setOwnerState(record.id, replayState.owner, replayState.ownerAccount, replayState.latestAppliedPublicEventId);
     const ownerState = await this.hubState.getOwnerStateByCid(cid);
-    let ownerAccount: string | null = null;
     if (ownerState) {
       try {
-        const notifyResult = await this.notifyService.notifyOwnableAvailability({
+        await this.notifyService.notifyOwnableAvailability({
           ownerAddress: replayState.owner,
-          ownerNetwork: replayState.nftInfo.network,
+          ownerNetwork: replayState.ownerNetwork,
           ownableId: record.id,
           cid,
           ownerStateVersion: ownerState.version,
           latestAppliedPublicEventId: ownerState.latestAppliedPublicEventId,
           issuerAddress: record.prevOwnerAddress,
-          nftNetwork: replayState.nftInfo.network,
-          nftContractAddress: replayState.nftInfo.address,
-          nftTokenId: replayState.nftInfo.id,
+          nftNetwork: replayState.nftInfo?.network,
+          nftContractAddress: replayState.nftInfo?.address,
+          nftTokenId: replayState.nftInfo?.id,
           triggerKind: 'upload',
         });
-        ownerAccount = notifyResult?.ownerAccount ?? null;
       } catch (error) {
         console.warn('notifyOwnableAvailability warning during upload', error);
       }
@@ -531,10 +655,14 @@ export class OwnableService implements OnModuleInit {
     return {
       cid: cid.toString(),
       owner: replayState.owner,
-      ownerAccount,
-      nftNetwork: replayState.nftInfo.network,
-      smartContractAddress: replayState.nftInfo.address,
-      NftId: replayState.nftInfo.id,
+      ownerAccount: replayState.ownerAccount,
+      ...(replayState.nftInfo
+        ? {
+            nftNetwork: replayState.nftInfo.network,
+            smartContractAddress: replayState.nftInfo.address,
+            NftId: replayState.nftInfo.id,
+          }
+        : {}),
     };
   }
 
@@ -569,5 +697,48 @@ export class OwnableService implements OnModuleInit {
       throw new UserError(`Event chain with cid ${cid} not available on this hub`);
     }
     return this.hubState.listWalletEventsByCid(cid);
+  }
+
+  async getAvailableOwnables(ownerAccount: string): Promise<{
+    ownerAccount: string;
+    entries: Array<{
+      availabilityKey: string;
+      subjectId: string;
+      cid: string;
+      ownerStateVersion: number;
+      availableAt: string;
+      issuerAddress: string;
+      nft?: { network: string; contract: string; tokenId: string };
+      import: { downloadUrl: string; eventsUrl: string; hubOrigin: string };
+    }>;
+  }> {
+    if (!this.config.isLocalDevRecipientDiscoveryEnabled()) {
+      throw new UserError('RECIPIENT_DISCOVERY_DISABLED');
+    }
+
+    const normalizedOwnerAccount = this.normalizeOwnerAccount(ownerAccount);
+    const rows = await this.hubState.listAvailableOwnablesByOwnerAccount(normalizedOwnerAccount);
+
+    return {
+      ownerAccount: normalizedOwnerAccount,
+      entries: rows.map((row) => ({
+        availabilityKey: `avail:${row.ownableId}:${row.ownerStateVersion}`,
+        subjectId: row.subjectId ?? '',
+        cid: row.cid,
+        ownerStateVersion: row.ownerStateVersion,
+        availableAt: row.availableAt,
+        issuerAddress: row.issuerAddress,
+        ...(row.nftNetwork && row.nftContractAddress && row.nftTokenId
+          ? {
+              nft: {
+                network: row.nftNetwork,
+                contract: row.nftContractAddress,
+                tokenId: row.nftTokenId,
+              },
+            }
+          : {}),
+        import: this.buildImportUrls(row.cid),
+      })).filter((entry) => entry.subjectId),
+    };
   }
 }

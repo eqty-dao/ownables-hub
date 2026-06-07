@@ -2,6 +2,7 @@ import { INestApplication, StreamableFile } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import JSZip from 'jszip';
 import request from 'supertest';
+import { AppModule } from '../app.module.js';
 import { OwnableController } from './ownable.controller.js';
 import { UserError } from '../interfaces/error.js';
 import { OwnableService } from './ownable.service.js';
@@ -107,6 +108,18 @@ describe('OwnableController', () => {
     expect(res.json).toHaveBeenCalledWith({ cid: 'cid-1', events: ordered });
   });
 
+  it('maps disabled recipient discovery to 404', async () => {
+    const ownableService = {
+      getAvailableOwnables: jest.fn().mockRejectedValue(new UserError('RECIPIENT_DISCOVERY_DISABLED')),
+    } as any;
+    const controller = new OwnableController(ownableService);
+    const res = buildRes();
+
+    await controller.available('eip155:84532:0xabc', res);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+  });
+
   it('maps stale download to explicit stale client contract', async () => {
     const ownableService = {
       downloadOwnable: jest.fn().mockRejectedValue(new UserError('STALE_OWNABLE missingReplayKeys=0xaaa:1')),
@@ -185,5 +198,103 @@ describe('OwnableController', () => {
     } finally {
       await app?.close();
     }
+  });
+});
+
+describe('OwnableController recipient discovery route behavior', () => {
+  const ownableService = {
+    getAvailableOwnables: jest.fn(),
+  };
+
+  let app: INestApplication;
+
+  beforeAll(async () => {
+    process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://planner:planner@127.0.0.1:5432/ownables_hub_test';
+    process.env.ACCOUNT_MNEMONIC = process.env.ACCOUNT_MNEMONIC || 'test test test test test test test test test test test junk';
+
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppModule],
+    })
+      .overrideProvider(OwnableService)
+      .useValue(ownableService)
+      .compile();
+
+    app = moduleRef.createNestApplication();
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app?.close();
+  });
+
+  afterEach(() => {
+    ownableService.getAvailableOwnables.mockReset();
+  });
+
+  it('serves recipient discovery without SIWE auth on the canonical route', async () => {
+    ownableService.getAvailableOwnables.mockResolvedValue({
+      ownerAccount: 'eip155:84532:0xabc',
+      entries: [
+        {
+          availabilityKey: 'avail:own-1:4',
+          subjectId: '0x11',
+          cid: 'cid-1',
+          ownerStateVersion: 4,
+          availableAt: '2026-06-07T10:02:00.000Z',
+          issuerAddress: '0xissuer',
+          import: {
+            downloadUrl: 'http://127.0.0.1:8000/ownables/cid-1/download',
+            eventsUrl: 'http://127.0.0.1:8000/ownables/cid-1/events',
+            hubOrigin: 'http://127.0.0.1:8000',
+          },
+        },
+      ],
+    });
+
+    await request(app.getHttpServer())
+      .get('/ownables/available')
+      .query({ owner: 'eip155:84532:0xabc' })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toEqual({
+          ownerAccount: 'eip155:84532:0xabc',
+          entries: [
+            {
+              availabilityKey: 'avail:own-1:4',
+              subjectId: '0x11',
+              cid: 'cid-1',
+              ownerStateVersion: 4,
+              availableAt: '2026-06-07T10:02:00.000Z',
+              issuerAddress: '0xissuer',
+              import: {
+                downloadUrl: 'http://127.0.0.1:8000/ownables/cid-1/download',
+                eventsUrl: 'http://127.0.0.1:8000/ownables/cid-1/events',
+                hubOrigin: 'http://127.0.0.1:8000',
+              },
+            },
+          ],
+        });
+        expect(body.entries[0]).not.toHaveProperty('notification');
+        expect(body.entries[0]).not.toHaveProperty('title');
+        expect(body.entries[0]).not.toHaveProperty('body');
+        expect(body.entries[0]).not.toHaveProperty('deliveryStatus');
+        expect(body.entries[0]).not.toHaveProperty('notificationId');
+      });
+
+    expect(ownableService.getAvailableOwnables).toHaveBeenCalledWith('eip155:84532:0xabc');
+  });
+
+  it('returns 404 when recipient discovery is disabled', async () => {
+    ownableService.getAvailableOwnables.mockRejectedValue(new UserError('RECIPIENT_DISCOVERY_DISABLED'));
+
+    await request(app.getHttpServer()).get('/ownables/available').query({ owner: 'eip155:84532:0xabc' }).expect(404);
+  });
+
+  it('returns 400 when owner is missing or malformed', async () => {
+    ownableService.getAvailableOwnables.mockRejectedValueOnce(new UserError('owner is required'));
+    await request(app.getHttpServer()).get('/ownables/available').expect(400);
+
+    ownableService.getAvailableOwnables.mockRejectedValueOnce(new UserError('owner must be a valid CAIP-10 account'));
+    await request(app.getHttpServer()).get('/ownables/available').query({ owner: 'not-caip10' }).expect(400);
   });
 });

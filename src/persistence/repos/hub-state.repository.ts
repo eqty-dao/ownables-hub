@@ -60,8 +60,23 @@ export interface IndexerCursorState {
 
 export interface OwnerStateRow {
   owner: string;
+  ownerAccount: string | null;
   version: number;
   latestAppliedPublicEventId: string | null;
+  updatedAt: string;
+}
+
+export interface AvailableOwnableRow {
+  ownableId: string;
+  cid: string;
+  subjectId: string | null;
+  ownerAccount: string;
+  ownerStateVersion: number;
+  availableAt: string;
+  issuerAddress: string;
+  nftNetwork: string | null;
+  nftContractAddress: string | null;
+  nftTokenId: string | null;
 }
 
 export interface NotifyDeliveryStateRow {
@@ -83,32 +98,8 @@ export interface NotifyDeliveryStateRow {
   message: string | null;
 }
 
-export interface LocalNotifyDiscoveryRow {
-  id: string;
-  cid: string;
-  ownableId: string;
-  ownerAddress: string;
-  ownerAccount: string;
-  ownerStateVersion: number;
-  triggerKind: string;
-  status: string;
-  notificationId: string | null;
-  errorCode: string | null;
-  message: string | null;
-  createdAt: string;
-  lastAttemptAt: string | null;
-  prevOwnerAddress: string;
-  nftNetwork: string | null;
-  nftContractAddress: string | null;
-  nftTokenId: string | null;
-}
-
-type LocalNotifyDiscoverySchema = 'account-targeted' | 'legacy-registration';
-
 @Injectable()
 export class HubStateRepository {
-  private localNotifyDiscoverySchemaPromise: Promise<LocalNotifyDiscoverySchema> | null = null;
-
   constructor(private readonly db: PostgresService) {}
 
   async upsertOwnableRecord(input: OwnableRecordInput): Promise<OwnableRecord> {
@@ -166,6 +157,19 @@ export class HubStateRepository {
     return result.rows[0] ?? null;
   }
 
+  async getOwnableBySubjectId(subjectId: string): Promise<OwnableRecord | null> {
+    const result = await this.db.query<OwnableRecord>(
+      `SELECT id, cid, prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
+       FROM ownable_records
+       WHERE subject_id = LOWER($1)
+       ORDER BY updated_at DESC, created_at DESC
+       LIMIT 1`,
+      [subjectId],
+    );
+
+    return result.rows[0] ?? null;
+  }
+
   async listOwnableCidsByPrevOwner(address: string): Promise<string[]> {
     const result = await this.db.query<{ cid: string }>(
       'SELECT cid FROM ownable_records WHERE prev_owner_address = LOWER($1) ORDER BY created_at ASC',
@@ -175,22 +179,45 @@ export class HubStateRepository {
     return result.rows.map((row) => row.cid);
   }
 
-  async setOwnerState(ownableId: string, currentOwnerAddress: string, lastAppliedPublicEventId?: string | null): Promise<void> {
+  async setOwnerState(
+    ownableId: string,
+    currentOwnerAddress: string,
+    currentOwnerAccount: string | null,
+    lastAppliedPublicEventId?: string | null,
+  ): Promise<void> {
     await this.db.query(
-      `INSERT INTO ownable_owner_state (ownable_id, current_owner_address, last_applied_public_event_id, owner_state_version)
-       VALUES ($1, LOWER($2), $3, 1)
+      `INSERT INTO ownable_owner_state (ownable_id, current_owner_address, current_owner_account, last_applied_public_event_id, owner_state_version)
+       VALUES ($1, LOWER($2), $3, $4, 1)
        ON CONFLICT (ownable_id) DO UPDATE SET
          current_owner_address = EXCLUDED.current_owner_address,
+         current_owner_account = EXCLUDED.current_owner_account,
          last_applied_public_event_id = EXCLUDED.last_applied_public_event_id,
-         owner_state_version = ownable_owner_state.owner_state_version + 1,
-         updated_at = NOW()`,
-      [ownableId, currentOwnerAddress, lastAppliedPublicEventId ?? null],
+         owner_state_version = CASE
+           WHEN ownable_owner_state.current_owner_address IS DISTINCT FROM EXCLUDED.current_owner_address
+             OR ownable_owner_state.current_owner_account IS DISTINCT FROM EXCLUDED.current_owner_account
+             OR ownable_owner_state.last_applied_public_event_id IS DISTINCT FROM EXCLUDED.last_applied_public_event_id
+           THEN ownable_owner_state.owner_state_version + 1
+           ELSE ownable_owner_state.owner_state_version
+         END,
+         updated_at = CASE
+           WHEN ownable_owner_state.current_owner_address IS DISTINCT FROM EXCLUDED.current_owner_address
+             OR ownable_owner_state.current_owner_account IS DISTINCT FROM EXCLUDED.current_owner_account
+             OR ownable_owner_state.last_applied_public_event_id IS DISTINCT FROM EXCLUDED.last_applied_public_event_id
+           THEN NOW()
+           ELSE ownable_owner_state.updated_at
+         END`,
+      [ownableId, currentOwnerAddress, currentOwnerAccount, lastAppliedPublicEventId ?? null],
     );
   }
 
   async getOwnerStateByCid(cid: string): Promise<OwnerStateRow | null> {
     const result = await this.db.query<OwnerStateRow>(
-      `SELECT s.current_owner_address AS owner, s.owner_state_version AS version, s.last_applied_public_event_id AS "latestAppliedPublicEventId"
+      `SELECT
+         s.current_owner_address AS owner,
+         s.current_owner_account AS "ownerAccount",
+         s.owner_state_version AS version,
+         s.last_applied_public_event_id AS "latestAppliedPublicEventId",
+         s.updated_at AS "updatedAt"
        FROM ownable_owner_state s
        INNER JOIN ownable_records o ON o.id = s.ownable_id
        WHERE o.cid = $1`,
@@ -426,117 +453,26 @@ export class HubStateRepository {
     return result.rows[0] ?? null;
   }
 
-  async listLocalNotifyDiscoveryByOwnerAccount(ownerAccount: string, ownerAddress: string): Promise<LocalNotifyDiscoveryRow[]> {
-    const schema = await this.getLocalNotifyDiscoverySchema();
-    const query =
-      schema === 'account-targeted'
-        ? `SELECT *
-           FROM (
-             SELECT DISTINCT ON (s.ownable_id, s.owner_account, s.owner_state_version)
-               s.id,
-               o.cid AS "cid",
-               s.ownable_id AS "ownableId",
-               s.owner_address AS "ownerAddress",
-               s.owner_account AS "ownerAccount",
-               s.owner_state_version AS "ownerStateVersion",
-               s.trigger_kind AS "triggerKind",
-               s.status,
-               s.notification_id AS "notificationId",
-               s.error_code AS "errorCode",
-               s.last_error AS "message",
-               s.created_at AS "createdAt",
-               s.last_attempt_at AS "lastAttemptAt",
-               o.prev_owner_address AS "prevOwnerAddress",
-               o.nft_network AS "nftNetwork",
-               o.nft_contract_address AS "nftContractAddress",
-               o.nft_token_id AS "nftTokenId"
-             FROM notify_delivery_state s
-             INNER JOIN ownable_owner_state os
-               ON os.ownable_id = s.ownable_id
-              AND os.owner_state_version = s.owner_state_version
-              AND LOWER(os.current_owner_address) = s.owner_address
-             INNER JOIN ownable_records o ON o.id = s.ownable_id
-             WHERE s.owner_account = $1
-               AND s.owner_address = LOWER($2)
-               AND s.status = 'failed_configuration'
-             ORDER BY
-               s.ownable_id,
-               s.owner_account,
-               s.owner_state_version,
-               s.last_attempt_at DESC NULLS LAST,
-               s.created_at DESC
-           ) current_entries
-           ORDER BY "ownerStateVersion" DESC, "lastAttemptAt" DESC NULLS LAST, "createdAt" DESC`
-        : `SELECT *
-           FROM (
-             SELECT DISTINCT ON (s.ownable_id, r.owner_account, s.owner_state_version)
-               s.id,
-               o.cid AS "cid",
-               s.ownable_id AS "ownableId",
-               LOWER(r.owner_address) AS "ownerAddress",
-               r.owner_account AS "ownerAccount",
-               s.owner_state_version AS "ownerStateVersion",
-               s.trigger_kind AS "triggerKind",
-               s.status,
-               NULL::text AS "notificationId",
-               NULL::text AS "errorCode",
-               s.last_error AS "message",
-               COALESCE(s.last_attempt_at, s.delivered_at, o.created_at) AS "createdAt",
-               s.last_attempt_at AS "lastAttemptAt",
-               o.prev_owner_address AS "prevOwnerAddress",
-               o.nft_network AS "nftNetwork",
-               o.nft_contract_address AS "nftContractAddress",
-               o.nft_token_id AS "nftTokenId"
-             FROM notify_delivery_state s
-             INNER JOIN notify_registrations r ON r.id = s.registration_id
-             INNER JOIN ownable_owner_state os
-               ON os.ownable_id = s.ownable_id
-              AND os.owner_state_version = s.owner_state_version
-              AND LOWER(os.current_owner_address) = LOWER(r.owner_address)
-             INNER JOIN ownable_records o ON o.id = s.ownable_id
-             WHERE r.owner_account = $1
-               AND LOWER(r.owner_address) = LOWER($2)
-               AND s.status = 'failed_configuration'
-             ORDER BY
-               s.ownable_id,
-               r.owner_account,
-               s.owner_state_version,
-               s.last_attempt_at DESC NULLS LAST,
-               COALESCE(s.delivered_at, o.created_at) DESC
-           ) current_entries
-           ORDER BY "ownerStateVersion" DESC, "lastAttemptAt" DESC NULLS LAST, "createdAt" DESC`;
-    const result = await this.db.query<LocalNotifyDiscoveryRow>(
-      query,
-      [ownerAccount, ownerAddress],
+  async listAvailableOwnablesByOwnerAccount(ownerAccount: string): Promise<AvailableOwnableRow[]> {
+    const result = await this.db.query<AvailableOwnableRow>(
+      `SELECT
+         os.ownable_id AS "ownableId",
+         o.cid AS "cid",
+         o.subject_id AS "subjectId",
+         os.current_owner_account AS "ownerAccount",
+         os.owner_state_version AS "ownerStateVersion",
+         os.updated_at AS "availableAt",
+         o.prev_owner_address AS "issuerAddress",
+         o.nft_network AS "nftNetwork",
+         o.nft_contract_address AS "nftContractAddress",
+         o.nft_token_id AS "nftTokenId"
+       FROM ownable_owner_state os
+       INNER JOIN ownable_records o ON o.id = os.ownable_id
+       WHERE os.current_owner_account = $1
+       ORDER BY os.updated_at DESC, os.ownable_id ASC, os.owner_state_version ASC`,
+      [ownerAccount],
     );
     return result.rows;
-  }
-
-  private async getLocalNotifyDiscoverySchema(): Promise<LocalNotifyDiscoverySchema> {
-    if (!this.localNotifyDiscoverySchemaPromise) {
-      this.localNotifyDiscoverySchemaPromise = this.loadLocalNotifyDiscoverySchema();
-    }
-
-    return this.localNotifyDiscoverySchemaPromise;
-  }
-
-  private async loadLocalNotifyDiscoverySchema(): Promise<LocalNotifyDiscoverySchema> {
-    const result = await this.db.query<{ columnName: string }>(
-      `SELECT column_name AS "columnName"
-       FROM information_schema.columns
-       WHERE table_schema = current_schema()
-         AND table_name = 'notify_delivery_state'`,
-    );
-    const columns = new Set(result.rows.map((row) => row.columnName));
-
-    if (columns.has('owner_account')) {
-      return 'account-targeted';
-    }
-    if (columns.has('registration_id')) {
-      return 'legacy-registration';
-    }
-
-    throw new Error('notify_delivery_state is missing both owner_account and registration_id columns');
   }
 
   async upsertIndexedAnchorEvent(input: {

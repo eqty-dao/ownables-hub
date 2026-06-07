@@ -103,13 +103,24 @@ describe('ConfigService', () => {
     });
   });
 
-  it('enables local discovery only outside production when the env flag is truthy', () => {
-    process.env.LOCAL_DEV_NOTIFICATION_DISCOVERY_ENABLED = 'true';
+  it('enables recipient discovery only outside production when the env flag is truthy', () => {
+    process.env.LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED = 'true';
 
     process.env.NODE_ENV = 'test';
-    expect(new ConfigService().isLocalDevNotificationDiscoveryEnabled()).toBe(true);
+    process.env.PUBLIC_BASE_URL = 'http://127.0.0.1:8000';
+    expect(new ConfigService().isLocalDevRecipientDiscoveryEnabled()).toBe(true);
 
     process.env.NODE_ENV = 'production';
-    expect(new ConfigService().isLocalDevNotificationDiscoveryEnabled()).toBe(false);
+    expect(new ConfigService().isLocalDevRecipientDiscoveryEnabled()).toBe(false);
+  });
+
+  it('fails fast when recipient discovery is enabled without PUBLIC_BASE_URL', () => {
+    process.env.NODE_ENV = 'test';
+    process.env.LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED = 'true';
+    delete process.env.PUBLIC_BASE_URL;
+
+    expect(() => new ConfigService()).toThrow(
+      'PUBLIC_BASE_URL is required when LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED is enabled',
+    );
   });
 });

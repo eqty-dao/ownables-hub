@@ -1,8 +1,7 @@
-import { BadRequestException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import {
   OwnablesNotificationBuilderService,
-  parseCaip10Account,
   normalizeCaip10Account,
   type OwnablesNotificationEnvelope,
   type OwnablesNotifyAvailableV1,
@@ -11,7 +10,7 @@ import { NotifyPublisherService, type NotifyPublisherTransport } from '@ownables
 import { ethers } from 'ethers';
 import { ConfigService } from '../common/config/config.service.js';
 import { resolveCaip2Reference } from '../common/config/evm-network.util.js';
-import { HubStateRepository, type LocalNotifyDiscoveryRow, type NotifyDeliveryStateRow } from '../persistence/repos/hub-state.repository.js';
+import { HubStateRepository, type NotifyDeliveryStateRow } from '../persistence/repos/hub-state.repository.js';
 import { ReownNotifyTransport, ReownTransportError } from './reown-notify.transport.js';
 
 export type NotifyTriggerKind = 'upload' | 'download_replay';
@@ -37,24 +36,6 @@ export interface NotifyOwnableResult {
   ownerAccount: string | null;
   warningCode?: string;
   warningMessage?: string;
-}
-
-export interface LocalNotifyDiscoveryEntry {
-  id: string;
-  source: 'hub-local-dev';
-  deliveryStatus: 'failed_configuration';
-  warningCode: string | null;
-  warningMessage: string | null;
-  triggerKind: string;
-  ownerStateVersion: number;
-  notification: OwnablesNotifyAvailableV1;
-  title: string;
-  body: string;
-}
-
-export interface LocalNotifyDiscoveryResponse {
-  ownerAccount: string;
-  entries: LocalNotifyDiscoveryEntry[];
 }
 
 @Injectable()
@@ -194,20 +175,6 @@ export class NotifyService {
     return this.hubState.getNotifyDeliveryStateByOwnableAndOwner(trimmedCid, normalizedOwner);
   }
 
-  async getLocalDiscoveryEntries(ownerAccount: string): Promise<LocalNotifyDiscoveryResponse> {
-    if (!this.config.isLocalDevNotificationDiscoveryEnabled()) {
-      throw new NotFoundException();
-    }
-
-    const normalizedOwner = this.normalizeOwnerAccount(ownerAccount);
-    const rows = await this.hubState.listLocalNotifyDiscoveryByOwnerAccount(normalizedOwner, parseCaip10Account(normalizedOwner).address);
-
-    return {
-      ownerAccount: normalizedOwner,
-      entries: rows.map((row) => this.buildLocalDiscoveryEntry(row)),
-    };
-  }
-
   private async persistWarning(
     input: NotifyOwnableInput,
     ownerAccount: string | null,
@@ -274,17 +241,6 @@ export class NotifyService {
     return `ownables_${digest}`;
   }
 
-  private buildNotificationIdFromRow(row: LocalNotifyDiscoveryRow): string {
-    if (row.notificationId) {
-      return row.notificationId;
-    }
-
-    const digest = createHash('sha256')
-      .update(`${row.ownableId}|${row.ownerAccount}|${row.ownerStateVersion}|${row.triggerKind}`)
-      .digest('hex');
-    return `ownables_${digest}`;
-  }
-
   private buildAvailabilityEnvelope(input: {
     cid: string;
     ownableId: string;
@@ -320,35 +276,6 @@ export class NotifyService {
     };
 
     return this.notificationBuilder.build(payload);
-  }
-
-  private buildLocalDiscoveryEntry(row: LocalNotifyDiscoveryRow): LocalNotifyDiscoveryEntry {
-    const notificationId = this.buildNotificationIdFromRow(row);
-    const envelope = this.buildAvailabilityEnvelope({
-      cid: row.cid,
-      ownableId: row.ownableId,
-      notificationId,
-      createdAt: row.lastAttemptAt ?? row.createdAt,
-      issuerAddress: row.prevOwnerAddress,
-      ownerAccount: row.ownerAccount,
-      ownerAddress: row.ownerAddress,
-      nftNetwork: row.nftNetwork,
-      nftContractAddress: row.nftContractAddress,
-      nftTokenId: row.nftTokenId,
-    });
-
-    return {
-      id: `local:${notificationId}`,
-      source: 'hub-local-dev',
-      deliveryStatus: 'failed_configuration',
-      warningCode: row.errorCode,
-      warningMessage: row.message,
-      triggerKind: row.triggerKind,
-      ownerStateVersion: row.ownerStateVersion,
-      notification: envelope.payload,
-      title: envelope.title,
-      body: envelope.body,
-    };
   }
 
   private deriveOwnerAccount(ownerAddress: string, ownerNetwork: string | null): string | null {

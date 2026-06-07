@@ -12,7 +12,8 @@ describe('HubStateRepository', () => {
     repo = new HubStateRepository(db as any);
   });
 
-  it('upserts and resolves ownable lookups by cid and nft', async () => {
+  it('upserts and resolves ownable lookups by cid, nft, and subject', async () => {
+    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
     query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
     query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
     query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
@@ -28,9 +29,11 @@ describe('HubStateRepository', () => {
 
     const byCid = await repo.getOwnableByCid('cid-1');
     const byNft = await repo.getOwnableByNft('eip155:base', '0xNFT', '1');
+    const bySubject = await repo.getOwnableBySubjectId('0x11');
 
     expect(byCid?.cid).toBe('cid-1');
     expect(byNft?.id).toBe('own-1');
+    expect(bySubject?.subjectId).toBe('0x11');
   });
 
   it('reads bridged cid list by previous owner', async () => {
@@ -44,12 +47,17 @@ describe('HubStateRepository', () => {
 
   it('writes owner state with versioning increment path and reads by cid', async () => {
     query.mockResolvedValueOnce({ rows: [] });
-    query.mockResolvedValueOnce({ rows: [{ owner: '0xowner', version: 3 }] });
+    query.mockResolvedValueOnce({ rows: [{ owner: '0xowner', ownerAccount: 'eip155:84532:0xowner', version: 3, updatedAt: '2026-06-08T12:00:00.000Z' }] });
 
-    await repo.setOwnerState('own-1', '0xOWNER', 'evt-1');
+    await repo.setOwnerState('own-1', '0xOWNER', 'eip155:84532:0xowner', 'evt-1');
     const state = await repo.getOwnerStateByCid('cid-1');
 
-    expect(state).toEqual({ owner: '0xowner', version: 3 });
+    expect(state).toEqual({
+      owner: '0xowner',
+      ownerAccount: 'eip155:84532:0xowner',
+      version: 3,
+      updatedAt: '2026-06-08T12:00:00.000Z',
+    });
   });
 
   it('upserts and reads indexer cursor state including tx index', async () => {
@@ -296,27 +304,17 @@ describe('HubStateRepository', () => {
     );
   });
 
-  it('queries current local discovery rows for one owner from failed_configuration state only on account-targeted schema', async () => {
-    query.mockResolvedValueOnce({
-      rows: [{ columnName: 'owner_account' }],
-    });
+  it('queries available ownables by persisted current owner account with stable ordering', async () => {
     query.mockResolvedValueOnce({
       rows: [
         {
-          id: 'notify-row-1',
+          ownableId: '00000000-0000-0000-0000-000000000101',
           cid: 'cid-1',
-          ownableId: 'own-1',
-          ownerAddress: '0xowner',
           ownerAccount: 'eip155:84532:0xowner',
+          subjectId: '0x11',
           ownerStateVersion: 3,
-          triggerKind: 'download_replay',
-          status: 'failed_configuration',
-          notificationId: 'ownables_123',
-          errorCode: 'missing_reown_config',
-          message: 'notify disabled',
-          createdAt: '2026-06-06T10:00:00.000Z',
-          lastAttemptAt: '2026-06-06T10:01:00.000Z',
-          prevOwnerAddress: '0xissuer',
+          availableAt: '2026-06-06T10:01:00.000Z',
+          issuerAddress: '0xissuer',
           nftNetwork: 'eip155:base',
           nftContractAddress: '0xnft',
           nftTokenId: '1',
@@ -324,79 +322,24 @@ describe('HubStateRepository', () => {
       ],
     });
 
-    const rows = await repo.listLocalNotifyDiscoveryByOwnerAccount('eip155:84532:0xowner', '0xowner');
+    const rows = await repo.listAvailableOwnablesByOwnerAccount('eip155:84532:0xowner');
 
     expect(rows).toEqual([
       expect.objectContaining({
-        ownableId: 'own-1',
+        ownableId: '00000000-0000-0000-0000-000000000101',
+        subjectId: '0x11',
         ownerStateVersion: 3,
-        notificationId: 'ownables_123',
-        errorCode: 'missing_reown_config',
+        availableAt: '2026-06-06T10:01:00.000Z',
       }),
     ]);
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('SELECT DISTINCT ON (s.ownable_id, s.owner_account, s.owner_state_version)'),
-      ['eip155:84532:0xowner', '0xowner'],
+      expect.stringContaining('WHERE os.current_owner_account = $1'),
+      ['eip155:84532:0xowner'],
     );
-    expect(query).toHaveBeenCalledWith(expect.stringContaining("s.status = 'failed_configuration'"), ['eip155:84532:0xowner', '0xowner']);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('os.owner_state_version = s.owner_state_version'), ['eip155:84532:0xowner', '0xowner']);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('LOWER(os.current_owner_address) = s.owner_address'), ['eip155:84532:0xowner', '0xowner']);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('s.owner_address = LOWER($2)'), ['eip155:84532:0xowner', '0xowner']);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('ORDER BY "ownerStateVersion" DESC, "lastAttemptAt" DESC NULLS LAST, "createdAt" DESC'), [
-      'eip155:84532:0xowner',
-      '0xowner',
-    ]);
-  });
-
-  it('queries current local discovery rows against legacy registration-backed schema', async () => {
-    query.mockResolvedValueOnce({
-      rows: [{ columnName: 'registration_id' }],
-    });
-    query.mockResolvedValueOnce({
-      rows: [
-        {
-          id: 'notify-row-legacy-1',
-          cid: 'cid-1',
-          ownableId: 'own-1',
-          ownerAddress: '0xowner',
-          ownerAccount: 'eip155:84532:0xowner',
-          ownerStateVersion: 3,
-          triggerKind: 'download_replay',
-          status: 'failed_configuration',
-          notificationId: null,
-          errorCode: null,
-          message: 'notify disabled',
-          createdAt: '2026-06-06T10:00:00.000Z',
-          lastAttemptAt: '2026-06-06T10:01:00.000Z',
-          prevOwnerAddress: '0xissuer',
-          nftNetwork: 'eip155:base',
-          nftContractAddress: '0xnft',
-          nftTokenId: '1',
-        },
-      ],
-    });
-
-    const rows = await repo.listLocalNotifyDiscoveryByOwnerAccount('eip155:84532:0xowner', '0xowner');
-
-    expect(rows).toEqual([
-      expect.objectContaining({
-        ownableId: 'own-1',
-        ownerStateVersion: 3,
-        notificationId: null,
-        errorCode: null,
-      }),
-    ]);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('INNER JOIN notify_registrations r ON r.id = s.registration_id'), [
-      'eip155:84532:0xowner',
-      '0xowner',
-    ]);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('r.owner_account = $1'), ['eip155:84532:0xowner', '0xowner']);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('LOWER(r.owner_address) = LOWER($2)'), ['eip155:84532:0xowner', '0xowner']);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('NULL::text AS "notificationId"'), ['eip155:84532:0xowner', '0xowner']);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('COALESCE(s.last_attempt_at, s.delivered_at, o.created_at) AS "createdAt"'), [
-      'eip155:84532:0xowner',
-      '0xowner',
-    ]);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('ORDER BY os.updated_at DESC, os.ownable_id ASC, os.owner_state_version ASC'),
+      ['eip155:84532:0xowner'],
+    );
   });
 
   it('commits transaction after persisting events and cursor', async () => {

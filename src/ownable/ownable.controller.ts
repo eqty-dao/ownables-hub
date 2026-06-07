@@ -91,8 +91,19 @@ export class OwnableController {
     }
   }
 
+  @Get('available')
+  async available(@Query('owner') owner: string, @Res() res: Response): Promise<Response> {
+    try {
+      const availableOwnables = await this.ownableService.getAvailableOwnables(owner);
+      return res.status(200).json(availableOwnables);
+    } catch (err) {
+      return this.errorResponse(res, err);
+    }
+  }
+
   private errorResponse(res: Response, err: any) {
     if (err instanceof AuthError) return res.status(403).json({ code: 'AUTH_ERROR', message: err.message });
+    if (err instanceof UserError && err.message === 'RECIPIENT_DISCOVERY_DISABLED') return res.status(404).send('Not Found');
     if (err instanceof UserError && err.message.startsWith('STALE_OWNABLE')) {
       return res.status(409).json({ code: 'STALE_OWNABLE', message: err.message });
     }

@@ -10,12 +10,8 @@ const migrationsDir = path.join(repoRoot, 'migrations');
 
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
 
-describeWithDatabase('HubStateRepository local discovery postgres integration', () => {
-  async function withSchema<T>(
-    migrationTimestamp: string | null,
-    run: (repo: HubStateRepository, client: Client) => Promise<T>,
-  ): Promise<T> {
-    const schema = `hub_local_discovery_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+describeWithDatabase('HubStateRepository recipient discovery postgres integration', () => {
+  function runMigrationsForSchema(schema: string, migrationTimestamp: string | null): void {
     const migrationArgs = [
       migrateBin,
       'up',
@@ -37,6 +33,14 @@ describeWithDatabase('HubStateRepository local discovery postgres integration', 
       env: { ...process.env, DATABASE_URL: databaseUrl },
       stdio: 'pipe',
     });
+  }
+
+  async function withSchema<T>(
+    migrationTimestamp: string | null,
+    run: (repo: HubStateRepository, client: Client) => Promise<T>,
+  ): Promise<T> {
+    const schema = `hub_local_discovery_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    runMigrationsForSchema(schema, migrationTimestamp);
 
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
@@ -62,68 +66,108 @@ describeWithDatabase('HubStateRepository local discovery postgres integration', 
     }
   }
 
-  it('returns legacy registration-backed discovery rows on the persisted localhost schema shape', async () => {
-    await withSchema('1717192000000', async (repo, client) => {
+  it('returns available ownables by persisted current owner account on the migrated schema', async () => {
+    await withSchema(null, async (repo, client) => {
       await client.query(
-        `INSERT INTO ownable_records (id, cid, prev_owner_address)
-         VALUES ('00000000-0000-0000-0000-000000000001', 'cid-legacy-1', '0xissuer')`,
-      );
-      await client.query(
-        `INSERT INTO ownable_owner_state (ownable_id, current_owner_address, owner_state_version)
-         VALUES ('00000000-0000-0000-0000-000000000001', '0xowner', 3)`,
-      );
-      await client.query(
-        `INSERT INTO notify_registrations (id, owner_address, owner_account, topic)
-         VALUES ('00000000-0000-0000-0000-000000000011', '0xowner', 'eip155:84532:0xowner', 'topic-1')`,
-      );
-      await client.query(
-        `INSERT INTO notify_delivery_state (
-           id,
-           registration_id,
-           ownable_id,
-           owner_state_version,
-           trigger_kind,
-           status,
-           attempt_count,
-           last_attempt_at,
-           last_error
-         ) VALUES (
-           '00000000-0000-0000-0000-000000000021',
-           '00000000-0000-0000-0000-000000000011',
+        `INSERT INTO ownable_records (id, cid, prev_owner_address, subject_id, nft_network, nft_contract_address, nft_token_id)
+         VALUES (
            '00000000-0000-0000-0000-000000000001',
+           'cid-available-1',
+           '0xissuer',
+           '0x11',
+           'eip155:base',
+           '0xnft',
+           '1'
+         )`,
+      );
+      await client.query(
+        `INSERT INTO ownable_owner_state (
+           ownable_id,
+           current_owner_address,
+           current_owner_account,
+           owner_state_version,
+           updated_at
+         ) VALUES (
+           '00000000-0000-0000-0000-000000000001',
+           '0xowner',
+           'eip155:84532:0xowner',
            3,
-           'upload',
-           'failed_configuration',
-           1,
-           '2026-06-06T10:01:00.000Z',
-           'notify disabled'
+           '2026-06-06T10:01:00.000Z'
          )`,
       );
 
-      const rows = await repo.listLocalNotifyDiscoveryByOwnerAccount('eip155:84532:0xowner', '0xowner');
+      const rows = await repo.listAvailableOwnablesByOwnerAccount('eip155:84532:0xowner');
 
       expect(rows).toEqual([
         expect.objectContaining({
           ownableId: '00000000-0000-0000-0000-000000000001',
+          cid: 'cid-available-1',
           ownerAccount: 'eip155:84532:0xowner',
-          ownerAddress: '0xowner',
-          notificationId: null,
-          errorCode: null,
-          message: 'notify disabled',
+          subjectId: '0x11',
+          ownerStateVersion: 3,
+          issuerAddress: '0xissuer',
         }),
       ]);
     });
   });
 
-  it('returns account-targeted discovery rows on the migrated notify schema', async () => {
+  it('increments owner state version only when availability materially changes', async () => {
     await withSchema(null, async (repo, client) => {
       await client.query(
         `INSERT INTO ownable_records (id, cid, prev_owner_address)
          VALUES ('00000000-0000-0000-0000-000000000101', 'cid-current-1', '0xissuer')`,
       );
+
+      await repo.setOwnerState(
+        '00000000-0000-0000-0000-000000000101',
+        '0xowner',
+        'eip155:84532:0xowner',
+        '00000000-0000-0000-0000-000000000001',
+      );
+      await repo.setOwnerState(
+        '00000000-0000-0000-0000-000000000101',
+        '0xowner',
+        'eip155:84532:0xowner',
+        '00000000-0000-0000-0000-000000000001',
+      );
+      await repo.setOwnerState(
+        '00000000-0000-0000-0000-000000000101',
+        '0xowner',
+        'eip155:84532:0xowner',
+        '00000000-0000-0000-0000-000000000002',
+      );
+
+      const persisted = await client.query<{ ownerStateVersion: number; ownerAccount: string | null }>(
+        `SELECT owner_state_version AS "ownerStateVersion", current_owner_account AS "ownerAccount"
+         FROM ownable_owner_state
+         WHERE ownable_id = '00000000-0000-0000-0000-000000000101'`,
+      );
+
+      expect(persisted.rows).toEqual([{ ownerStateVersion: 2, ownerAccount: 'eip155:84532:0xowner' }]);
+    });
+  });
+
+  it('backfills current_owner_account on upgrade from the pre-recipient-discovery schema', async () => {
+    const schema = `hub_owner_account_upgrade_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    runMigrationsForSchema(schema, '1717193000000');
+
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    await client.query(`SET search_path TO "${schema}", public`);
+
+    try {
       await client.query(
-        `INSERT INTO ownable_owner_state (ownable_id, current_owner_address, owner_state_version)
-         VALUES ('00000000-0000-0000-0000-000000000101', '0xowner', 4)`,
+        `INSERT INTO ownable_records (id, cid, prev_owner_address)
+         VALUES ('00000000-0000-0000-0000-000000000301', 'cid-upgrade-1', '0xissuer')`,
+      );
+      await client.query(
+        `INSERT INTO ownable_owner_state (ownable_id, current_owner_address, owner_state_version, updated_at)
+         VALUES (
+           '00000000-0000-0000-0000-000000000301',
+           '0xowner',
+           4,
+           '2026-06-06T10:02:00.000Z'
+         )`,
       );
       await client.query(
         `INSERT INTO notify_delivery_state (
@@ -137,37 +181,42 @@ describeWithDatabase('HubStateRepository local discovery postgres integration', 
            notification_id,
            attempt_count,
            last_attempt_at,
-           error_code,
-           last_error
+           created_at
          ) VALUES (
-           '00000000-0000-0000-0000-000000000121',
-           '00000000-0000-0000-0000-000000000101',
+           '00000000-0000-0000-0000-000000000321',
+           '00000000-0000-0000-0000-000000000301',
            '0xowner',
            'eip155:84532:0xowner',
            4,
-           'download_replay',
+           'upload',
            'failed_configuration',
            'ownables_fixed',
            1,
-           '2026-06-06T10:02:00.000Z',
-           'missing_reown_config',
-           'notify disabled'
+           '2026-06-06T10:03:00.000Z',
+           '2026-06-06T10:01:00.000Z'
          )`,
       );
 
-      const rows = await repo.listLocalNotifyDiscoveryByOwnerAccount('eip155:84532:0xowner', '0xowner');
+      runMigrationsForSchema(schema, null);
 
-      expect(rows).toEqual([
-        expect.objectContaining({
-          ownableId: '00000000-0000-0000-0000-000000000101',
-          ownerAccount: 'eip155:84532:0xowner',
-          ownerAddress: '0xowner',
-          notificationId: 'ownables_fixed',
-          errorCode: 'missing_reown_config',
-          message: 'notify disabled',
-        }),
-      ]);
-    });
+      const persisted = await client.query<{ ownerAccount: string | null }>(
+        `SELECT current_owner_account AS "ownerAccount"
+         FROM ownable_owner_state
+         WHERE ownable_id = '00000000-0000-0000-0000-000000000301'`,
+      );
+
+      expect(persisted.rows).toEqual([{ ownerAccount: 'eip155:84532:0xowner' }]);
+    } finally {
+      await client.end();
+
+      const cleanupClient = new Client({ connectionString: databaseUrl });
+      await cleanupClient.connect();
+      try {
+        await cleanupClient.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      } finally {
+        await cleanupClient.end();
+      }
+    }
   });
 
   it('persists failed_configuration inserts with last_error, last_attempt_at, and null delivered_at via repository upsert', async () => {

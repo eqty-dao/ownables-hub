@@ -148,11 +148,16 @@ function buildConfig(): AppConfig {
     throw new Error('DATABASE_URL is required');
   }
 
+  const publicBaseUrl = readEnv('PUBLIC_BASE_URL', '');
+  if (env !== 'production' && parseOptionalBoolean('LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED') && !publicBaseUrl) {
+    throw new Error('PUBLIC_BASE_URL is required when LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED is enabled');
+  }
+
   return {
     env,
     port: parsePort('PORT'),
     logLevel: readEnv('LOG_LEVEL', ''),
-    publicBaseUrl: readEnv('PUBLIC_BASE_URL', ''),
+    publicBaseUrl,
     databaseUrl,
     ownablesStorage,
     siweDomain: readEnv('SIWE_DOMAIN', 'localhost'),
@@ -262,6 +267,10 @@ export class ConfigService {
 
   isLocalDevNotificationDiscoveryEnabled(): boolean {
     return this.config.env !== 'production' && parseOptionalBoolean('LOCAL_DEV_NOTIFICATION_DISCOVERY_ENABLED');
+  }
+
+  isLocalDevRecipientDiscoveryEnabled(): boolean {
+    return this.config.env !== 'production' && parseOptionalBoolean('LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED');
   }
 
   private parseIndexerSlot(prefix: 'TESTNET' | 'MAINNET', slotName: IndexerSlotName): IndexerSlotConfig {

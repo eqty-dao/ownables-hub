@@ -26,9 +26,4 @@ export class NotifyController {
       message: row.message,
     };
   }
-
-  @Get('local/discovery')
-  async getLocalDiscovery(@Query('owner') owner: string) {
-    return this.notifyService.getLocalDiscoveryEntries(owner);
-  }
 }
