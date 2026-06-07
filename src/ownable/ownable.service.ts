@@ -33,6 +33,18 @@ interface ReplayDerivedState {
 
 const CANONICAL_CHAIN_FILENAME = 'chain.json';
 const LEGACY_CHAIN_FILENAME = 'eventChain.json';
+const OWNABLE_RUNTIME_FILENAME = 'ownable_bg.wasm';
+const REQUIRED_OWNABLE_RUNTIME_EXPORTS = [
+  'memory',
+  'ownable_alloc',
+  'ownable_free',
+  'ownable_instantiate',
+  'ownable_execute',
+  'ownable_query',
+  'ownable_register',
+  'ownable_ingest',
+  'ownable_encode_public_event',
+] as const;
 
 class InMemoryStateStore implements StateStore {
   private readonly stores = new Map<string, Map<any, any>>();
@@ -168,6 +180,39 @@ export class OwnableService implements OnModuleInit {
     };
   }
 
+  private unsupportedRuntimeError(reason: string): UserError {
+    return new UserError(
+      `Invalid package: unsupported Ownable runtime in '${OWNABLE_RUNTIME_FILENAME}'. Expected raw-ABI exports with no wasm imports; ${reason}`,
+    );
+  }
+
+  private assertSupportedOwnableRuntime(files: Map<string, Buffer>): void {
+    const wasm = files.get(OWNABLE_RUNTIME_FILENAME);
+    if (!wasm) {
+      throw new UserError(`Invalid package: '${OWNABLE_RUNTIME_FILENAME}' is missing`);
+    }
+
+    let runtimeModule: WebAssembly.Module;
+    try {
+      runtimeModule = new WebAssembly.Module(Uint8Array.from(wasm));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw this.unsupportedRuntimeError(`the wasm binary could not be compiled (${detail})`);
+    }
+
+    const imports = WebAssembly.Module.imports(runtimeModule);
+    if (imports.length > 0) {
+      const modules = Array.from(new Set(imports.map(({ module }) => module))).join(', ');
+      throw this.unsupportedRuntimeError(`found unsupported imports from module(s): ${modules}`);
+    }
+
+    const exportNames = new Set(WebAssembly.Module.exports(runtimeModule).map(({ name }) => name));
+    const missingExports = REQUIRED_OWNABLE_RUNTIME_EXPORTS.filter((name) => !exportNames.has(name));
+    if (missingExports.length > 0) {
+      throw this.unsupportedRuntimeError(`missing required raw-ABI exports: ${missingExports.join(', ')}`);
+    }
+  }
+
   private async replayStoredOwnable(cid: string): Promise<ReplayDerivedState> {
     const eventChainBuffer = await this.storage.getEventChain(cid);
     const chain = EventChain.from(JSON.parse(eventChainBuffer.toString('utf8')));
@@ -177,6 +222,7 @@ export class OwnableService implements OnModuleInit {
     await zipped.loadAsync(await this.storage.getPackageZip(cid), { createFolders: true });
     zipped.file(CANONICAL_CHAIN_FILENAME, eventChainBuffer);
     const files = await this.unzip(await zipped.generateAsync({ type: 'uint8array' }));
+    this.assertSupportedOwnableRuntime(files);
 
     const stateStore = new InMemoryStateStore();
     const anchorProvider: AnchorProvider = {
@@ -408,6 +454,7 @@ export class OwnableService implements OnModuleInit {
     const eventChainJson = JSON.parse(eventChainBuffer.toString());
     const chain = EventChain.from(eventChainJson);
     this.validateEventChain(chain);
+    this.assertSupportedOwnableRuntime(files);
 
     const nftInfo = this.parseNftInfoFromChain(chain);
     const ownerFromPrivateState = chain.events.at(-1)?.signerAddress?.toLowerCase() ?? signer?.address?.toLowerCase() ?? '';

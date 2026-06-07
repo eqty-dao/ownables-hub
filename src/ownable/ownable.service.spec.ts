@@ -1,6 +1,8 @@
 import JSZip from 'jszip';
 import { Readable } from 'stream';
 import { ethers } from 'ethers';
+import { readFile } from 'fs/promises';
+import { join } from 'path';
 import { Event, EventChain } from '../test-mocks/eqty-core.js';
 import { OwnableService } from './ownable.service.js';
 import { OwnableService as CoreOwnableService } from '@ownables/core';
@@ -174,9 +176,12 @@ describe('OwnableService', () => {
     };
 
     const service = new OwnableService(buildConfig() as any, nft as any, storage as any, hubState as any, notifyService as any);
+    const runtimeValidatorSpy = jest
+      .spyOn(service as any, 'assertSupportedOwnableRuntime')
+      .mockImplementation(() => undefined);
 
     await service.onModuleInit();
-    return { service, nft, storage, hubState, notifyService };
+    return { service, nft, storage, hubState, notifyService, runtimeValidatorSpy };
   };
 
   const createChain = async (nft = { network: 'eip155:base', address: '0xabc', id: '1' }) => {
@@ -207,6 +212,7 @@ describe('OwnableService', () => {
     chain: EventChain,
     filenames: string[] = ['chain.json'],
     overrides: Record<string, string> = {},
+    runtimeWasm: Buffer | Uint8Array = Buffer.from([0x00]),
   ) => {
     const zip = new JSZip();
     const chainJson = JSON.stringify(chain.toJSON());
@@ -214,7 +220,7 @@ describe('OwnableService', () => {
       zip.file(filename, overrides[filename] ?? chainJson);
     }
     zip.file('package.json', JSON.stringify({ name: 'test' }));
-    zip.file('ownable_bg.wasm', Buffer.from([0x00]));
+    zip.file('ownable_bg.wasm', runtimeWasm);
     return zip.generateAsync({ type: 'uint8array' });
   };
 
@@ -294,6 +300,22 @@ describe('OwnableService', () => {
     });
 
     await expect(service.uploadOwnable(buffer, undefined, false)).rejects.toThrow("Invalid package: 'chain.json' and 'eventChain.json' differ");
+  });
+
+  it('rejects wasm-bindgen runtime fixtures as invalid upload input', async () => {
+    const { service, storage, hubState, notifyService, runtimeValidatorSpy } = await buildService();
+    const chain = await createChain();
+    const wasmBindgenRuntime = await readFile(join(__dirname, '..', 'cosmwasm', '_test', 'ownable_bg.wasm'));
+    const buffer = await createUploadBuffer(chain, ['chain.json'], {}, wasmBindgenRuntime);
+    runtimeValidatorSpy.mockRestore();
+
+    await expect(service.uploadOwnable(buffer, undefined, false)).rejects.toThrow(
+      "Invalid package: unsupported Ownable runtime in 'ownable_bg.wasm'",
+    );
+    expect(storage.storePackageArtifacts).not.toHaveBeenCalled();
+    expect(storage.storeEventChain).not.toHaveBeenCalled();
+    expect(hubState.upsertOwnableRecord).not.toHaveBeenCalled();
+    expect(notifyService.notifyOwnableAvailability).not.toHaveBeenCalled();
   });
 
   it('delegates public replay to core service and persists replay-derived owner state', async () => {

@@ -54,6 +54,29 @@ describe('OwnableController', () => {
     expect(res.send).toHaveBeenCalledWith("Invalid package: 'chain.json' and 'eventChain.json' differ");
   });
 
+  it('maps unsupported runtime uploads to 400 client rejection', async () => {
+    const ownableService = {
+      uploadOwnable: jest
+        .fn()
+        .mockRejectedValue(
+          new UserError(
+            "Invalid package: unsupported Ownable runtime in 'ownable_bg.wasm'. Expected raw-ABI exports with no wasm imports; found unsupported imports from module(s): wbg",
+          ),
+        ),
+    } as any;
+    const controller = new OwnableController(ownableService);
+
+    const req: any = { file: { buffer: Buffer.from('zip') } };
+    const res = buildRes();
+
+    await controller.uploadOwnable(req, res, undefined);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.send).toHaveBeenCalledWith(
+      "Invalid package: unsupported Ownable runtime in 'ownable_bg.wasm'. Expected raw-ABI exports with no wasm imports; found unsupported imports from module(s): wbg",
+    );
+  });
+
   it('exports events endpoint deterministically as service ordered payload', async () => {
     const ordered = [
       { transactionHash: '0xa', transactionIndex: 0, logIndex: 1 },
