@@ -224,6 +224,115 @@ describe('OwnableService', () => {
     return zip.generateAsync({ type: 'uint8array' });
   };
 
+  const buildWrongKindRuntimeWasm = (): Uint8Array => {
+    const encodeU32 = (value: number): number[] => {
+      const bytes: number[] = [];
+      let remaining = value >>> 0;
+      do {
+        let byte = remaining & 0x7f;
+        remaining >>>= 7;
+        if (remaining > 0) byte |= 0x80;
+        bytes.push(byte);
+      } while (remaining > 0);
+      return bytes;
+    };
+
+    const encodeString = (value: string): number[] => {
+      const bytes = Array.from(Buffer.from(value, 'utf8'));
+      return [...encodeU32(bytes.length), ...bytes];
+    };
+
+    const section = (id: number, contents: number[]): number[] => [id, ...encodeU32(contents.length), ...contents];
+
+    const typeSection = section(1, [
+      ...encodeU32(3),
+      0x60,
+      ...encodeU32(1),
+      0x7f,
+      ...encodeU32(1),
+      0x7f,
+      0x60,
+      ...encodeU32(2),
+      0x7f,
+      0x7f,
+      ...encodeU32(0),
+      0x60,
+      ...encodeU32(2),
+      0x7f,
+      0x7f,
+      ...encodeU32(1),
+      0x7e,
+    ]);
+
+    const functionSection = section(3, [
+      ...encodeU32(8),
+      ...encodeU32(0),
+      ...encodeU32(1),
+      ...encodeU32(2),
+      ...encodeU32(2),
+      ...encodeU32(2),
+      ...encodeU32(2),
+      ...encodeU32(2),
+      ...encodeU32(2),
+    ]);
+
+    const globalSection = section(6, [
+      ...encodeU32(1),
+      0x7f,
+      0x00,
+      0x41,
+      0x00,
+      0x0b,
+    ]);
+
+    const exportEntries: Array<[string, number, number]> = [
+      ['memory', 0x03, 0],
+      ['ownable_alloc', 0x00, 0],
+      ['ownable_free', 0x00, 1],
+      ['ownable_instantiate', 0x00, 2],
+      ['ownable_execute', 0x00, 3],
+      ['ownable_query', 0x00, 4],
+      ['ownable_register', 0x00, 5],
+      ['ownable_ingest', 0x00, 6],
+      ['ownable_encode_public_event', 0x00, 7],
+    ];
+    const exportSection = section(7, [
+      ...encodeU32(exportEntries.length),
+      ...exportEntries.flatMap(([name, kind, index]) => [...encodeString(name), kind, ...encodeU32(index)]),
+    ]);
+
+    const functionBodies = [
+      [0x00, 0x20, 0x00, 0x0b],
+      [0x00, 0x0b],
+      [0x00, 0x42, 0x00, 0x0b],
+      [0x00, 0x42, 0x00, 0x0b],
+      [0x00, 0x42, 0x00, 0x0b],
+      [0x00, 0x42, 0x00, 0x0b],
+      [0x00, 0x42, 0x00, 0x0b],
+      [0x00, 0x42, 0x00, 0x0b],
+    ];
+    const codeSection = section(10, [
+      ...encodeU32(functionBodies.length),
+      ...functionBodies.flatMap((body) => [...encodeU32(body.length), ...body]),
+    ]);
+
+    return Uint8Array.from([
+      0x00,
+      0x61,
+      0x73,
+      0x6d,
+      0x01,
+      0x00,
+      0x00,
+      0x00,
+      ...typeSection,
+      ...functionSection,
+      ...globalSection,
+      ...exportSection,
+      ...codeSection,
+    ]);
+  };
+
   it('accepts upload without SIWE signer ownership gating', async () => {
     const { service, storage, hubState, nft, notifyService } = await buildService();
     const chain = await createChain();
@@ -311,6 +420,21 @@ describe('OwnableService', () => {
 
     await expect(service.uploadOwnable(buffer, undefined, false)).rejects.toThrow(
       "Invalid package: unsupported Ownable runtime in 'ownable_bg.wasm'",
+    );
+    expect(storage.storePackageArtifacts).not.toHaveBeenCalled();
+    expect(storage.storeEventChain).not.toHaveBeenCalled();
+    expect(hubState.upsertOwnableRecord).not.toHaveBeenCalled();
+    expect(notifyService.notifyOwnableAvailability).not.toHaveBeenCalled();
+  });
+
+  it('rejects wrong-kind raw-ABI exports before persistence', async () => {
+    const { service, storage, hubState, notifyService, runtimeValidatorSpy } = await buildService();
+    const chain = await createChain();
+    const buffer = await createUploadBuffer(chain, ['chain.json'], {}, buildWrongKindRuntimeWasm());
+    runtimeValidatorSpy.mockRestore();
+
+    await expect(service.uploadOwnable(buffer, undefined, false)).rejects.toThrow(
+      "Invalid package: unsupported Ownable runtime in 'ownable_bg.wasm'. Expected raw-ABI exports with no wasm imports; wrong raw-ABI export kinds: memory (expected memory, found global)",
     );
     expect(storage.storePackageArtifacts).not.toHaveBeenCalled();
     expect(storage.storeEventChain).not.toHaveBeenCalled();

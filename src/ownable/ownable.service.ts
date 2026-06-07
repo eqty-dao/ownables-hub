@@ -45,6 +45,18 @@ const REQUIRED_OWNABLE_RUNTIME_EXPORTS = [
   'ownable_ingest',
   'ownable_encode_public_event',
 ] as const;
+const REQUIRED_OWNABLE_RUNTIME_EXPORT_KINDS: Record<(typeof REQUIRED_OWNABLE_RUNTIME_EXPORTS)[number], WebAssembly.ImportExportKind> =
+  {
+    memory: 'memory',
+    ownable_alloc: 'function',
+    ownable_free: 'function',
+    ownable_instantiate: 'function',
+    ownable_execute: 'function',
+    ownable_query: 'function',
+    ownable_register: 'function',
+    ownable_ingest: 'function',
+    ownable_encode_public_event: 'function',
+  };
 
 class InMemoryStateStore implements StateStore {
   private readonly stores = new Map<string, Map<any, any>>();
@@ -206,10 +218,21 @@ export class OwnableService implements OnModuleInit {
       throw this.unsupportedRuntimeError(`found unsupported imports from module(s): ${modules}`);
     }
 
-    const exportNames = new Set(WebAssembly.Module.exports(runtimeModule).map(({ name }) => name));
-    const missingExports = REQUIRED_OWNABLE_RUNTIME_EXPORTS.filter((name) => !exportNames.has(name));
+    const runtimeExports = WebAssembly.Module.exports(runtimeModule);
+    const exportKinds = new Map(runtimeExports.map(({ name, kind }) => [name, kind]));
+    const missingExports = REQUIRED_OWNABLE_RUNTIME_EXPORTS.filter((name) => !exportKinds.has(name));
     if (missingExports.length > 0) {
       throw this.unsupportedRuntimeError(`missing required raw-ABI exports: ${missingExports.join(', ')}`);
+    }
+
+    const wrongKindExports = REQUIRED_OWNABLE_RUNTIME_EXPORTS.flatMap((name) => {
+      const actualKind = exportKinds.get(name);
+      const expectedKind = REQUIRED_OWNABLE_RUNTIME_EXPORT_KINDS[name];
+      if (actualKind === expectedKind) return [];
+      return [`${name} (expected ${expectedKind}, found ${actualKind ?? 'missing'})`];
+    });
+    if (wrongKindExports.length > 0) {
+      throw this.unsupportedRuntimeError(`wrong raw-ABI export kinds: ${wrongKindExports.join(', ')}`);
     }
   }
 
