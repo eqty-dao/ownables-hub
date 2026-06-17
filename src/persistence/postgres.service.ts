@@ -1,9 +1,10 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '../common/config/config.service.js';
 import { Pool, type PoolClient, type QueryResult } from 'pg';
 
 @Injectable()
 export class PostgresService implements OnModuleDestroy {
+  private static readonly logger = new Logger(PostgresService.name);
   private readonly pool: Pool;
 
   constructor(config: ConfigService) {
@@ -13,6 +14,12 @@ export class PostgresService implements OnModuleDestroy {
     }
     this.pool = new Pool({
       connectionString: databaseUrl,
+    });
+    this.pool.on('error', (error) => {
+      PostgresService.logger.error(
+        'Postgres pool reported an idle client error; keeping Hub alive and waiting for DB recovery',
+        error instanceof Error ? error.stack : String(error),
+      );
     });
   }
 
