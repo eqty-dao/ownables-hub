@@ -17,18 +17,6 @@ export interface AppConfig {
   corsOrigins: string[];
 }
 
-export interface ReownConfig {
-  projectId: string;
-  notifyApiSecret: string;
-  notificationTypeId: string;
-  appDomain: string;
-}
-
-export interface ReownConfigIssue {
-  code: 'missing_reown_config' | 'domain_mismatch';
-  message: string;
-}
-
 interface ChainRpcUrls {
   ethereum: string;
   arbitrum: string;
@@ -197,76 +185,6 @@ export class ConfigService {
 
   getIndexerSlots(): [IndexerSlotConfig, IndexerSlotConfig] {
     return [this.parseIndexerSlot('TESTNET', 'testnet'), this.parseIndexerSlot('MAINNET', 'mainnet')];
-  }
-
-  getReownConfig(): ReownConfig | null {
-    const projectId = readEnv('REOWN_PROJECT_ID', '');
-    const notifyApiSecret = readEnv('REOWN_NOTIFY_API_SECRET', '');
-    const notificationTypeId = readEnv('REOWN_NOTIFICATION_TYPE_ID', '');
-    const appDomain = readEnv('REOWN_APP_DOMAIN', '');
-
-    if (!projectId && !notifyApiSecret && !notificationTypeId && !appDomain) {
-      return null;
-    }
-
-    if (!projectId || !notifyApiSecret || !notificationTypeId || !appDomain) {
-      return null;
-    }
-
-    return { projectId, notifyApiSecret, notificationTypeId, appDomain };
-  }
-
-  getReownConfigIssue(): ReownConfigIssue | null {
-    const projectId = readEnv('REOWN_PROJECT_ID', '');
-    const notifyApiSecret = readEnv('REOWN_NOTIFY_API_SECRET', '');
-    const notificationTypeId = readEnv('REOWN_NOTIFICATION_TYPE_ID', '');
-    const appDomain = readEnv('REOWN_APP_DOMAIN', '');
-
-    const anySet = Boolean(projectId || notifyApiSecret || notificationTypeId || appDomain);
-    if (!anySet) {
-      return {
-        code: 'missing_reown_config',
-        message: 'Reown notify is disabled because REOWN_PROJECT_ID, REOWN_NOTIFY_API_SECRET, REOWN_NOTIFICATION_TYPE_ID, and REOWN_APP_DOMAIN are not configured.',
-      };
-    }
-
-    if (!projectId || !notifyApiSecret || !notificationTypeId || !appDomain) {
-      return {
-        code: 'missing_reown_config',
-        message: 'Reown notify is partially configured. REOWN_PROJECT_ID, REOWN_NOTIFY_API_SECRET, REOWN_NOTIFICATION_TYPE_ID, and REOWN_APP_DOMAIN must all be set together.',
-      };
-    }
-
-    const publicBaseUrl = readEnv('PUBLIC_BASE_URL', '');
-    if (!publicBaseUrl) {
-      return {
-        code: 'missing_reown_config',
-        message: 'Reown notify requires PUBLIC_BASE_URL so notification links can be absolute.',
-      };
-    }
-
-    let host: string;
-    try {
-      host = new URL(publicBaseUrl).host;
-    } catch {
-      return {
-        code: 'missing_reown_config',
-        message: `PUBLIC_BASE_URL is not a valid absolute URL: ${publicBaseUrl}`,
-      };
-    }
-
-    if (host !== appDomain) {
-      return {
-        code: 'domain_mismatch',
-        message: `PUBLIC_BASE_URL host ${host} does not match REOWN_APP_DOMAIN ${appDomain}.`,
-      };
-    }
-
-    return null;
-  }
-
-  isLocalDevNotificationDiscoveryEnabled(): boolean {
-    return this.config.env !== 'production' && parseOptionalBoolean('LOCAL_DEV_NOTIFICATION_DISCOVERY_ENABLED');
   }
 
   isLocalDevRecipientDiscoveryEnabled(): boolean {

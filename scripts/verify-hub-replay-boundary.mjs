@@ -106,12 +106,8 @@ function buildService() {
     listOwnableCidsByPrevOwner: async () => [],
     listWalletEventsByCid: async () => [],
   };
-  const notifyService = {
-    notifyOwnableAvailability: async () => undefined,
-  };
-
   return {
-    service: new OwnableService(config, nft, storage, hubState, notifyService),
+    service: new OwnableService(config, nft, storage, hubState),
     storageCalls,
     upsertCalls,
   };

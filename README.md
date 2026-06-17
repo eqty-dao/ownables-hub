@@ -111,21 +111,8 @@ Additional runtime configuration (feature-dependent):
 - `HUB_NETWORK_PROFILE` (`testnet` default, or `mainnet`)
 - `TESTNET_*_RPC_URL` / `MAINNET_*_RPC_URL` overrides
 - `SIWE_DOMAIN`
-- `PUBLIC_BASE_URL` for absolute download URLs in notifications
-- `LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED=true` to expose `GET /ownables/available` outside production for localhost receive/import testing without Reown
-
-Optional Reown notify publishing configuration:
-
-- `REOWN_PROJECT_ID`
-- `REOWN_NOTIFY_API_SECRET`
-- `REOWN_NOTIFICATION_TYPE_ID`
-- `REOWN_APP_DOMAIN`
-
-Reown notify stays non-blocking:
-
-- if the Reown env vars are unset or partially configured, upload/download still succeed and Hub records `failed_configuration`
-- if the owner account is not subscribed to the configured notification type, upload/download still succeed and Hub records `not_subscribed`
-- Hub no longer exposes a topic registration endpoint or stores local topic registrations
+- `PUBLIC_BASE_URL` for absolute package and chain URLs in Hub responses
+- `LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED=true` to expose `GET /ownables/available` outside production for localhost receive/import testing
 
 ## Tests
 

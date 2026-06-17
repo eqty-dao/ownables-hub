@@ -17,7 +17,6 @@ import { NFTService } from '../nft/nft.service.js';
 import { AuthError, UserError } from '../interfaces/error.js';
 import JSZip from 'jszip';
 import { EventChain } from 'eqty-core';
-import { normalizeCaip10Account } from '@ownables/notify-core';
 import { Readable } from 'stream';
 import { ArchiveStorageService } from '../storage/archive-storage.service.js';
 import { HubStateRepository, IndexedWalletEvent } from '../persistence/repos/hub-state.repository.js';
@@ -55,6 +54,8 @@ interface AvailableOwnableEntry {
 const CANONICAL_CHAIN_FILENAME = 'chain.json';
 const LEGACY_CHAIN_FILENAME = 'eventChain.json';
 const OWNABLE_RUNTIME_FILENAME = 'ownable_bg.wasm';
+const EVM_ADDRESS_REGEX = /^0x[a-f0-9]{40}$/i;
+const CAIP10_ACCOUNT_REGEX = /^([a-zA-Z0-9-]+):([a-zA-Z0-9-]+):([^:\s]+)$/;
 const REQUIRED_OWNABLE_RUNTIME_EXPORTS = [
   'memory',
   'ownable_alloc',
@@ -78,6 +79,35 @@ const REQUIRED_OWNABLE_RUNTIME_EXPORT_KINDS: Record<(typeof REQUIRED_OWNABLE_RUN
     ownable_ingest: 'function',
     ownable_encode_public_event: 'function',
   };
+
+function normalizeEvmAddress(address: string, errorMessage = 'Invalid EVM address'): string {
+  const normalized = address.trim().toLowerCase();
+  if (!EVM_ADDRESS_REGEX.test(normalized)) {
+    throw new Error(errorMessage);
+  }
+  return normalized;
+}
+
+function normalizeCaip10Account(account: string): string {
+  const trimmed = account.trim();
+  const match = CAIP10_ACCOUNT_REGEX.exec(trimmed);
+  if (!match) {
+    throw new Error('Invalid CAIP-10 account');
+  }
+
+  const namespaceRaw = match[1];
+  const referenceRaw = match[2];
+  const addressRaw = match[3];
+  if (!namespaceRaw || !referenceRaw || !addressRaw) {
+    throw new Error('Invalid CAIP-10 account');
+  }
+
+  const namespace = namespaceRaw.toLowerCase();
+  const reference = referenceRaw.toLowerCase();
+  const address = namespace === 'eip155' ? normalizeEvmAddress(addressRaw, 'Invalid CAIP-10 account') : addressRaw;
+
+  return `${namespace}:${reference}:${address}`;
+}
 
 class InMemoryStateStore implements StateStore {
   private readonly stores = new Map<string, Map<any, any>>();
