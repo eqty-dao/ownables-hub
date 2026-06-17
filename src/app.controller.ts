@@ -1,6 +1,6 @@
 import { Controller, Get, Res } from '@nestjs/common';
 import { Response } from 'express';
-import { AppService } from './app.service.js';
+import { AppHealth, AppService } from './app.service.js';
 import { ApiExcludeEndpoint } from '@nestjs/swagger';
 
 @Controller()
@@ -21,5 +21,14 @@ export class AppController {
     env: string;
   } {
     return this.appService.info;
+  }
+
+  @Get('/health')
+  async getHealth(@Res({ passthrough: true }) res: Response): Promise<AppHealth> {
+    const health = await this.appService.getHealth();
+    if (health.status !== 'ok') {
+      res.status(503);
+    }
+    return health;
   }
 }

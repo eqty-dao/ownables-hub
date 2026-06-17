@@ -9,7 +9,6 @@ import { OwnableService } from './ownable.service.js';
 import { HttpModule } from '@nestjs/axios';
 import { PersistenceModule } from '../persistence/persistence.module.js';
 import { StorageModule } from '../storage/storage.module.js';
-import { NotifyModule } from '../notify/notify.module.js';
 
 @Module({
   imports: [
@@ -21,7 +20,6 @@ import { NotifyModule } from '../notify/notify.module.js';
     HttpModule,
     PersistenceModule,
     StorageModule,
-    NotifyModule,
   ],
   providers: [OwnableService],
   controllers: [OwnableController],

@@ -46,7 +46,6 @@ Base path for hub routes: `/ownables`
 - `GET /ownables/cid?...` lookup CID by NFT
 - `GET /ownables/chains` list available NFT chain setup
 - `GET /ownables/serverinfo` inspect wallet balances and hub info
-- `GET /notify/delivery-status?cid=<cid>&owner=<caip10-account>` inspect the latest public notify delivery status for one owner/account pair
 - `GET /ownables/available?owner=<caip10-account>` list local/dev-only Hub-available ownables for one owner/account when explicitly enabled
 
 Swagger: `http://localhost:3000/api-docs`
@@ -108,7 +107,7 @@ Set these env vars for local runtime:
 
 Additional runtime configuration (feature-dependent):
 
-- `ACCOUNT_MNEMONIC`
+- `SIGNER_MNEMONIC`
 - `HUB_NETWORK_PROFILE` (`testnet` default, or `mainnet`)
 - `TESTNET_*_RPC_URL` / `MAINNET_*_RPC_URL` overrides
 - `SIWE_DOMAIN`

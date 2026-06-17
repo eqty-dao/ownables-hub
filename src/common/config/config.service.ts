@@ -286,7 +286,7 @@ export class ConfigService {
   private buildRuntimeConfig(): RuntimeConfig {
     return {
       networkProfile: parseRuntimeNetworkProfile('HUB_NETWORK_PROFILE'),
-      authoritySignerMnemonic: readEnv('SIGNER_MNEMONIC', readEnv('ACCOUNT_MNEMONIC', '')),
+      authoritySignerMnemonic: readEnv('SIGNER_MNEMONIC', ''),
       rpcUrls: {
         testnet: {
           ethereum: readEnv('TESTNET_ETHEREUM_RPC_URL', 'https://rpc.sepolia.org'),

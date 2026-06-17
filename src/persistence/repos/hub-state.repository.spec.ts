@@ -13,13 +13,13 @@ describe('HubStateRepository', () => {
   });
 
   it('upserts and resolves ownable lookups by cid, nft, and subject', async () => {
-    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
-    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
-    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
-    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
+    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', packageCid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
+    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', packageCid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
+    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', packageCid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
+    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', packageCid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
 
     await repo.upsertOwnableRecord({
-      cid: 'cid-1',
+      packageCid: 'cid-1',
       prevOwnerAddress: '0xABC',
       subjectId: '0x11',
       nftNetwork: 'eip155:base',
@@ -31,13 +31,13 @@ describe('HubStateRepository', () => {
     const byNft = await repo.getOwnableByNft('eip155:base', '0xNFT', '1');
     const bySubject = await repo.getOwnableBySubjectId('0x11');
 
-    expect(byCid?.cid).toBe('cid-1');
+    expect(byCid?.packageCid).toBe('cid-1');
     expect(byNft?.id).toBe('own-1');
     expect(bySubject?.subjectId).toBe('0x11');
   });
 
   it('reads bridged cid list by previous owner', async () => {
-    query.mockResolvedValueOnce({ rows: [{ cid: 'cid-1' }, { cid: 'cid-2' }] });
+    query.mockResolvedValueOnce({ rows: [{ packageCid: 'cid-1' }, { packageCid: 'cid-2' }] });
 
     const cids = await repo.listOwnableCidsByPrevOwner('0xOwner');
 
@@ -269,9 +269,9 @@ describe('HubStateRepository', () => {
       payloadJson: { key: 'value' },
     });
 
-    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', cid: 'cid-abc', prevOwnerAddress: '0xabc', subjectId: `0x${'5'.repeat(64)}` }] });
+    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', packageCid: 'cid-abc', prevOwnerAddress: '0xabc', subjectId: `0x${'5'.repeat(64)}` }] });
     await repo.upsertOwnableRecord({
-      cid: 'cid-abc',
+      packageCid: 'cid-abc',
       prevOwnerAddress: '0xABC',
       subjectId: `0x${'5'.repeat(64)}`,
     });
@@ -309,7 +309,7 @@ describe('HubStateRepository', () => {
       rows: [
         {
           ownableId: '00000000-0000-0000-0000-000000000101',
-          cid: 'cid-1',
+          packageCid: 'cid-1',
           ownerAccount: 'eip155:84532:0xowner',
           subjectId: '0x11',
           ownerStateVersion: 3,
@@ -484,161 +484,5 @@ describe('HubStateRepository', () => {
 
     expect(clientQuery).toHaveBeenNthCalledWith(1, 'BEGIN');
     expect(clientQuery).toHaveBeenLastCalledWith('ROLLBACK');
-  });
-  it('reads and writes account-targeted notify delivery-state with dedupe key', async () => {
-    query.mockResolvedValueOnce({
-      rows: [
-        {
-          id: 'del-1',
-          ownableId: 'own-1',
-          ownerAddress: '0xowner',
-          ownerAccount: 'eip155:84532:0xowner',
-          ownerStateVersion: 2,
-          triggerKind: 'upload',
-          status: 'delivered',
-          notificationType: 'type-id',
-          notificationId: 'notify-1',
-          transportId: 'transport-1',
-          attemptCount: 1,
-          lastAttemptAt: '2026-06-06T00:00:00.000Z',
-          deliveredAt: '2026-06-06T00:00:01.000Z',
-          errorCode: null,
-          message: null,
-        },
-      ],
-    });
-    query.mockResolvedValueOnce({
-      rows: [
-        {
-          id: 'del-1',
-          ownableId: 'own-1',
-          ownerAddress: '0xowner',
-          ownerAccount: 'eip155:84532:0xowner',
-          ownerStateVersion: 2,
-          triggerKind: 'upload',
-          status: 'delivered',
-          notificationType: 'type-id',
-          notificationId: 'notify-1',
-          transportId: 'transport-1',
-          attemptCount: 1,
-          lastAttemptAt: '2026-06-06T00:00:00.000Z',
-          deliveredAt: '2026-06-06T00:00:01.000Z',
-          errorCode: null,
-          message: null,
-        },
-      ],
-    });
-
-    const written = await repo.upsertNotifyDeliveryState({
-      ownableId: 'own-1',
-      ownerAddress: '0xOwner',
-      ownerAccount: 'eip155:84532:0xowner',
-      ownerStateVersion: 2,
-      triggerKind: 'upload',
-      status: 'delivered',
-      notificationType: 'type-id',
-      notificationId: 'notify-1',
-      transportId: 'transport-1',
-      attemptCount: 1,
-      errorCode: null,
-    });
-    const read = await repo.getNotifyDeliveryStateByDedupKey({
-      ownableId: 'own-1',
-      ownerAccount: 'eip155:84532:0xowner',
-      ownerStateVersion: 2,
-      triggerKind: 'upload',
-    });
-
-    expect(written.id).toBe('del-1');
-    expect(read?.status).toBe('delivered');
-    expect(query).toHaveBeenNthCalledWith(
-      1,
-      expect.stringContaining('ON CONFLICT (ownable_id, owner_account, owner_state_version, trigger_kind) DO UPDATE SET'),
-      ['own-1', '0xOwner', 'eip155:84532:0xowner', 2, 'upload', 'delivered', 'type-id', 'notify-1', 'transport-1', 1, null, null],
-    );
-  });
-
-  it('maps failed_configuration notify insert values to last_error and non-delivered timestamps correctly', async () => {
-    query.mockResolvedValueOnce({
-      rows: [
-        {
-          id: 'del-2',
-          ownableId: 'own-2',
-          ownerAddress: '0xowner',
-          ownerAccount: 'eip155:84532:0xowner',
-          ownerStateVersion: 3,
-          triggerKind: 'upload',
-          status: 'failed_configuration',
-          notificationType: null,
-          notificationId: null,
-          transportId: null,
-          attemptCount: 1,
-          lastAttemptAt: '2026-06-06T00:00:00.000Z',
-          deliveredAt: null,
-          errorCode: 'missing_reown_config',
-          message: 'notify disabled',
-        },
-      ],
-    });
-
-    await repo.upsertNotifyDeliveryState({
-      ownableId: 'own-2',
-      ownerAddress: '0xOwner',
-      ownerAccount: 'eip155:84532:0xowner',
-      ownerStateVersion: 3,
-      triggerKind: 'upload',
-      status: 'failed_configuration',
-      attemptCount: 1,
-      errorCode: 'missing_reown_config',
-      lastError: 'notify disabled',
-    });
-
-    expect(query).toHaveBeenCalledWith(
-      expect.stringContaining(") VALUES ($1, LOWER($2), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), CASE WHEN $6 = 'delivered' THEN NOW() ELSE NULL END)"),
-      [
-        'own-2',
-        '0xOwner',
-        'eip155:84532:0xowner',
-        3,
-        'upload',
-        'failed_configuration',
-        null,
-        null,
-        null,
-        1,
-        'missing_reown_config',
-        'notify disabled',
-      ],
-    );
-  });
-
-  it('reads latest notify delivery-state by cid and owner account', async () => {
-    query.mockResolvedValueOnce({
-      rows: [
-        {
-          cid: 'cid-1',
-          ownableId: 'own-1',
-          ownerAddress: '0xowner',
-          ownerAccount: 'eip155:84532:0xowner',
-          ownerStateVersion: 3,
-          triggerKind: 'download_replay',
-          status: 'not_subscribed',
-          notificationType: 'type-id',
-          notificationId: 'notify-2',
-          transportId: null,
-          attemptCount: 2,
-          lastAttemptAt: '2026-06-06T00:00:00.000Z',
-          deliveredAt: null,
-          errorCode: 'reown_not_subscribed',
-          message: 'Account is not subscribed to the configured notification type.',
-        },
-      ],
-    });
-
-    const row = await repo.getNotifyDeliveryStateByOwnableAndOwner('cid-1', 'eip155:84532:0xowner');
-
-    expect(row?.cid).toBe('cid-1');
-    expect(row?.status).toBe('not_subscribed');
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM notify_delivery_state s'), ['cid-1', 'eip155:84532:0xowner']);
   });
 });

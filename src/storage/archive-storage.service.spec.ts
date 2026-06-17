@@ -3,12 +3,14 @@ import { ArchiveStorageService } from './archive-storage.service.js';
 describe('ArchiveStorageService', () => {
   const put = jest.fn();
   const get = jest.fn();
-  const bucket = { put, get };
+  const list = jest.fn();
+  const bucket = { put, get, list };
   let service: ArchiveStorageService;
 
   beforeEach(() => {
     put.mockReset();
     get.mockReset();
+    list.mockReset();
     service = new ArchiveStorageService(bucket as any);
   });
 
@@ -34,5 +36,11 @@ describe('ArchiveStorageService', () => {
     get.mockResolvedValueOnce(new Uint8Array([4, 5]));
     const zip = await service.getPackageZip('cid-3');
     expect(zip).toEqual(Buffer.from([4, 5]));
+  });
+
+  it('probes storage with a non-mutating list call', async () => {
+    list.mockResolvedValueOnce([]);
+    await service.probe();
+    expect(list).toHaveBeenCalledWith();
   });
 });

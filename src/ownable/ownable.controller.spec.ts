@@ -210,7 +210,7 @@ describe('OwnableController recipient discovery route behavior', () => {
 
   beforeAll(async () => {
     process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://planner:planner@127.0.0.1:5432/ownables_hub_test';
-    process.env.ACCOUNT_MNEMONIC = process.env.ACCOUNT_MNEMONIC || 'test test test test test test test test test test test junk';
+    process.env.SIGNER_MNEMONIC = process.env.SIGNER_MNEMONIC || 'test test test test test test test test test test test junk';
 
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
@@ -233,19 +233,17 @@ describe('OwnableController recipient discovery route behavior', () => {
 
   it('serves recipient discovery without SIWE auth on the canonical route', async () => {
     ownableService.getAvailableOwnables.mockResolvedValue({
-      ownerAccount: 'eip155:84532:0xabc',
+      owner: 'eip155:84532:0xabc',
       entries: [
         {
-          availabilityKey: 'avail:own-1:4',
-          subjectId: '0x11',
-          cid: 'cid-1',
-          ownerStateVersion: 4,
+          id: '0x11',
+          title: 'Potion',
+          description: 'Recovered from the stored package.',
+          issuer: '0xissuer',
           availableAt: '2026-06-07T10:02:00.000Z',
-          issuerAddress: '0xissuer',
-          import: {
-            downloadUrl: 'http://127.0.0.1:8000/ownables/cid-1/download',
-            eventsUrl: 'http://127.0.0.1:8000/ownables/cid-1/events',
-            hubOrigin: 'http://127.0.0.1:8000',
+          package: {
+            cid: 'cid-1',
+            thumbnailUrl: 'https://example.com/potion.png',
           },
         },
       ],
@@ -257,28 +255,26 @@ describe('OwnableController recipient discovery route behavior', () => {
       .expect(200)
       .expect(({ body }) => {
         expect(body).toEqual({
-          ownerAccount: 'eip155:84532:0xabc',
+          owner: 'eip155:84532:0xabc',
           entries: [
             {
-              availabilityKey: 'avail:own-1:4',
-              subjectId: '0x11',
-              cid: 'cid-1',
-              ownerStateVersion: 4,
+              id: '0x11',
+              title: 'Potion',
+              description: 'Recovered from the stored package.',
+              issuer: '0xissuer',
               availableAt: '2026-06-07T10:02:00.000Z',
-              issuerAddress: '0xissuer',
-              import: {
-                downloadUrl: 'http://127.0.0.1:8000/ownables/cid-1/download',
-                eventsUrl: 'http://127.0.0.1:8000/ownables/cid-1/events',
-                hubOrigin: 'http://127.0.0.1:8000',
+              package: {
+                cid: 'cid-1',
+                thumbnailUrl: 'https://example.com/potion.png',
               },
             },
           ],
         });
-        expect(body.entries[0]).not.toHaveProperty('notification');
-        expect(body.entries[0]).not.toHaveProperty('title');
-        expect(body.entries[0]).not.toHaveProperty('body');
-        expect(body.entries[0]).not.toHaveProperty('deliveryStatus');
-        expect(body.entries[0]).not.toHaveProperty('notificationId');
+        expect(body).not.toHaveProperty('ownerAccount');
+        expect(body.entries[0]).not.toHaveProperty('import');
+        expect(body.entries[0]).not.toHaveProperty('availabilityKey');
+        expect(body.entries[0]).not.toHaveProperty('subjectId');
+        expect(body.entries[0]).not.toHaveProperty('ownerStateVersion');
       });
 
     expect(ownableService.getAvailableOwnables).toHaveBeenCalledWith('eip155:84532:0xabc');

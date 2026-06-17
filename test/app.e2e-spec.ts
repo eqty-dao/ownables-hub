@@ -15,7 +15,7 @@ describe('AppController (e2e)', () => {
   let app: INestApplication;
 
   beforeEach(async () => {
-    process.env.ACCOUNT_MNEMONIC = 'test test test test test test test test test test test junk';
+    process.env.SIGNER_MNEMONIC = 'test test test test test test test test test test test junk';
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],

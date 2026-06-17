@@ -1,7 +1,8 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleInit, StreamableFile } from '@nestjs/common';
 import { calculateOwnablePackageCid } from '@ownables/core';
 import JSZip from 'jszip';
 import { ArchiveStorageService } from '../storage/archive-storage.service.js';
+import { Readable } from 'stream';
 
 @Injectable()
 export class PackageService implements OnModuleInit {
@@ -45,6 +46,11 @@ export class PackageService implements OnModuleInit {
 
   async exists(cid: string): Promise<boolean> {
     return await this.storage.hasPackage(cid);
+  }
+
+  async download(cid: string): Promise<StreamableFile> {
+    const data = await this.storage.getPackageZip(cid);
+    return new StreamableFile(Readable.from(data));
   }
 
   file(cid: string, filename?: string): string {

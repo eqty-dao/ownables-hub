@@ -21,7 +21,6 @@ import { normalizeCaip10Account } from '@ownables/notify-core';
 import { Readable } from 'stream';
 import { ArchiveStorageService } from '../storage/archive-storage.service.js';
 import { HubStateRepository, IndexedWalletEvent } from '../persistence/repos/hub-state.repository.js';
-import { NotifyService } from '../notify/notify.service.js';
 
 interface SignerIdentity {
   address?: string;
@@ -33,6 +32,24 @@ interface ReplayDerivedState {
   ownerAccount: string | null;
   owner: string;
   latestAppliedPublicEventId: string | null;
+}
+
+interface AvailableOwnablePackageMetadata {
+  title: string;
+  description?: string;
+  thumbnailUrl?: string | null;
+}
+
+interface AvailableOwnableEntry {
+  id: string;
+  title: string;
+  description?: string;
+  issuer?: string;
+  availableAt: string;
+  package: {
+    cid: string;
+    thumbnailUrl?: string | null;
+  };
 }
 
 const CANONICAL_CHAIN_FILENAME = 'chain.json';
@@ -151,7 +168,6 @@ export class OwnableService implements OnModuleInit {
     private nft: NFTService,
     private readonly storage: ArchiveStorageService,
     private readonly hubState: HubStateRepository,
-    private readonly notifyService: NotifyService,
   ) {
     const mnemonic = this.config.getAuthoritySignerMnemonic();
     if (!mnemonic) {
@@ -278,24 +294,80 @@ export class OwnableService implements OnModuleInit {
     }
   }
 
-  private buildImportUrls(cid: string): { downloadUrl: string; eventsUrl: string; hubOrigin: string } {
-    const base = this.config.getAppConfig().publicBaseUrl.trim();
-    if (!base) {
-      throw new UserError('PUBLIC_BASE_URL is required for recipient discovery');
+  private deriveAvailableOwnableTitle(name: string): string {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      return '';
     }
 
-    let normalizedBase: URL;
+    const normalizedName = trimmedName.replace(/^ownable-/, '').replace(/-ownable$/, '');
+    const words = normalizedName
+      .split(/[-_]+/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1));
+
+    return words.join(' ') || trimmedName;
+  }
+
+  private normalizeOptionalText(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+
+    const trimmed = value.trim();
+    return trimmed ? trimmed : undefined;
+  }
+
+  private normalizeThumbnailUrl(value: unknown): string | null | undefined {
+    const candidate = this.normalizeOptionalText(value);
+    if (!candidate) {
+      return undefined;
+    }
+
     try {
-      normalizedBase = new URL(base.endsWith('/') ? base : `${base}/`);
+      const parsed = new URL(candidate);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'data:') {
+        return parsed.toString();
+      }
     } catch {
-      throw new UserError(`PUBLIC_BASE_URL is not a valid absolute URL: ${base}`);
+      return undefined;
     }
 
-    return {
-      downloadUrl: new URL(`ownables/${encodeURIComponent(cid)}/download`, normalizedBase).toString(),
-      eventsUrl: new URL(`ownables/${encodeURIComponent(cid)}/events`, normalizedBase).toString(),
-      hubOrigin: normalizedBase.origin,
-    };
+    return undefined;
+  }
+
+  private async readAvailableOwnablePackageMetadata(cid: string): Promise<AvailableOwnablePackageMetadata> {
+    const fallback = { title: cid, thumbnailUrl: null } satisfies AvailableOwnablePackageMetadata;
+
+    try {
+      const zipped = new JSZip();
+      await zipped.loadAsync(await this.storage.getPackageZip(cid), { createFolders: true });
+      const packageJsonFile = zipped.file('package.json');
+      if (!packageJsonFile) {
+        return fallback;
+      }
+
+      const packageJson = JSON.parse(await packageJsonFile.async('string')) as {
+        title?: unknown;
+        name?: unknown;
+        description?: unknown;
+        thumbnailUrl?: unknown;
+        image?: unknown;
+      };
+      const explicitTitle = this.normalizeOptionalText(packageJson.title);
+      const packageName = this.normalizeOptionalText(packageJson.name);
+      const title =
+        explicitTitle ?? (packageName ? this.deriveAvailableOwnableTitle(packageName) : fallback.title);
+
+      return {
+        title,
+        description: this.normalizeOptionalText(packageJson.description),
+        thumbnailUrl: this.normalizeThumbnailUrl(packageJson.thumbnailUrl ?? packageJson.image) ?? null,
+      };
+    } catch {
+      return fallback;
+    }
   }
 
   private toIndexedPublicEvent(row: IndexedWalletEvent): IndexedPublicEvent | null {
@@ -358,13 +430,12 @@ export class OwnableService implements OnModuleInit {
     }
   }
 
-  private async replayStoredOwnable(cid: string): Promise<ReplayDerivedState> {
-    const eventChainBuffer = await this.storage.getEventChain(cid);
+  private async replayOwnable(packageCid: string, eventChainBuffer: Buffer): Promise<ReplayDerivedState> {
     const chain = EventChain.from(JSON.parse(eventChainBuffer.toString('utf8')));
     this.validateEventChain(chain);
 
     const zipped = new JSZip();
-    await zipped.loadAsync(await this.storage.getPackageZip(cid), { createFolders: true });
+    await zipped.loadAsync(await this.storage.getPackageZip(packageCid), { createFolders: true });
     zipped.file(CANONICAL_CHAIN_FILENAME, eventChainBuffer);
     const files = await this.unzip(await zipped.generateAsync({ type: 'uint8array' }));
     this.assertSupportedOwnableRuntime(files);
@@ -384,16 +455,16 @@ export class OwnableService implements OnModuleInit {
     };
 
     const packageInfo: TypedPackage = {
-      title: cid,
-      name: cid,
-      cid,
+      title: packageCid,
+      name: packageCid,
+      cid: packageCid,
       isDynamic: true,
       hasMetadata: false,
       hasWidgetState: false,
       isConsumable: false,
       isConsumer: false,
       isTransferable: false,
-      versions: [{ date: new Date(), cid }],
+      versions: [{ date: new Date(), cid: packageCid }],
     };
 
     const packageAssetIO = new NodePackageAssetIO({
@@ -413,10 +484,10 @@ export class OwnableService implements OnModuleInit {
       { create: (id: string) => new NodeSandboxOwnableRPC(id) },
     );
 
-    await coreOwnables.initWorker(chain.id, cid);
+    await coreOwnables.initWorker(chain.id, packageCid);
     const privateStateDump = await coreOwnables.apply(chain, []);
 
-    const indexedRows = await this.hubState.listWalletEventsByCid(cid);
+    const indexedRows = await this.hubState.listWalletEventsByCid(packageCid);
     const indexedEventsWithRowId = indexedRows
       .map((row) => ({ rowId: row.id, event: this.toIndexedPublicEvent(row) }))
       .filter((value): value is { rowId: string; event: IndexedPublicEvent } => Boolean(value.event));
@@ -455,6 +526,11 @@ export class OwnableService implements OnModuleInit {
     };
   }
 
+  private async replayStoredOwnable(ownableId: string, packageCid: string): Promise<ReplayDerivedState> {
+    const eventChainBuffer = await this.storage.getEventChain(ownableId, packageCid);
+    return this.replayOwnable(packageCid, eventChainBuffer);
+  }
+
   private async requireNftOwner(nftInfo: NFTInfo, signer?: SignerIdentity): Promise<string> {
     if (!signer?.address) throw new AuthError('Missing SIWE signer');
 
@@ -473,7 +549,7 @@ export class OwnableService implements OnModuleInit {
     const nftOwner: string = await this.nft.getOwnerOfNFT(nftInfo);
     return JSON.parse(
       JSON.stringify({
-        OwnableCid: record.cid,
+        OwnableCid: record.packageCid,
         OwnableLastOwner: record.prevOwnerAddress,
         network: nftInfo.network,
         id: nftInfo.id.toString(),
@@ -508,6 +584,10 @@ export class OwnableService implements OnModuleInit {
 
   async existsCid(cid: string): Promise<boolean> {
     return await this.storage.hasEventChain(cid);
+  }
+
+  async existsOwnableChain(ownableId: string, packageCid: string): Promise<boolean> {
+    return await this.storage.hasEventChain(ownableId, packageCid);
   }
 
   async existsPkg(pkg: string): Promise<boolean> {
@@ -570,7 +650,7 @@ export class OwnableService implements OnModuleInit {
     if (!record) throw new UserError('CID not found. Ownable copy is not registered on hub.');
     if (!(await this.existsPkg(cid))) throw new UserError('Ownable package with CID is not available on server.');
 
-    const replayState = await this.replayStoredOwnable(cid);
+    const replayState = await this.replayStoredOwnable(record.id, record.packageCid);
     if (!replayState.nftInfo) {
       throw new UserError('NFT metadata is unavailable for this ownable');
     }
@@ -609,48 +689,32 @@ export class OwnableService implements OnModuleInit {
 
     const ownerFromPrivateState = chain.events.at(-1)?.signerAddress?.toLowerCase() ?? signer?.address?.toLowerCase() ?? '';
 
-    if (verbose) console.log(`removing ${chainAliases.join(', ')} from files to create CID`);
-    for (const alias of chainAliases) files.delete(alias);
-    const cid = await this.getCid(files);
+    if (verbose) console.log(`normalizing ${chainAliases.join(', ')} into ${CANONICAL_CHAIN_FILENAME} to create CID`);
+    const normalizedFiles = new Map(files);
+    for (const alias of chainAliases) normalizedFiles.delete(alias);
+    normalizedFiles.set(CANONICAL_CHAIN_FILENAME, eventChainBuffer);
+    const cid = await this.getCid(normalizedFiles);
+
+    const packageFiles = new Map(normalizedFiles);
+    packageFiles.delete(CANONICAL_CHAIN_FILENAME);
 
     const newZip = new JSZip();
     await newZip.loadAsync(buffer, { createFolders: true });
     for (const alias of chainAliases) newZip.remove(alias);
     const content = await newZip.generateAsync({ type: 'uint8array' });
 
-    await this.storage.storePackageArtifacts(cid, content, files);
-    await this.storage.storeEventChain(cid, eventChainBuffer);
-
-    const replayState = await this.replayStoredOwnable(cid);
+    await this.storage.storePackageArtifacts(cid, content, packageFiles);
+    const replayState = await this.replayOwnable(cid, eventChainBuffer);
     const record = await this.hubState.upsertOwnableRecord({
-      cid,
+      packageCid: cid,
       prevOwnerAddress: ownerFromPrivateState || '0x0000000000000000000000000000000000000000',
       subjectId: chain.id,
       nftNetwork: replayState.nftInfo?.network,
       nftContractAddress: replayState.nftInfo?.address,
       nftTokenId: replayState.nftInfo?.id,
     });
+    await this.storage.storeEventChain(record.id, eventChainBuffer);
     await this.hubState.setOwnerState(record.id, replayState.owner, replayState.ownerAccount, replayState.latestAppliedPublicEventId);
-    const ownerState = await this.hubState.getOwnerStateByCid(cid);
-    if (ownerState) {
-      try {
-        await this.notifyService.notifyOwnableAvailability({
-          ownerAddress: replayState.owner,
-          ownerNetwork: replayState.ownerNetwork,
-          ownableId: record.id,
-          cid,
-          ownerStateVersion: ownerState.version,
-          latestAppliedPublicEventId: ownerState.latestAppliedPublicEventId,
-          issuerAddress: record.prevOwnerAddress,
-          nftNetwork: replayState.nftInfo?.network,
-          nftContractAddress: replayState.nftInfo?.address,
-          nftTokenId: replayState.nftInfo?.id,
-          triggerKind: 'upload',
-        });
-      } catch (error) {
-        console.warn('notifyOwnableAvailability warning during upload', error);
-      }
-    }
 
     return {
       cid: cid.toString(),
@@ -671,17 +735,18 @@ export class OwnableService implements OnModuleInit {
   }
 
   async downloadOwnable(cid: string): Promise<StreamableFile> {
-    if (!(await this.hubState.getOwnableByCid(cid))) throw new UserError(`Event chain with cid ${cid} not available on this hub`);
-    if (!(await this.existsCid(cid))) throw new UserError(`Event chain with cid ${cid} not available on this hub`);
+    const record = await this.hubState.getOwnableByCid(cid);
+    if (!record) throw new UserError(`Event chain with cid ${cid} not available on this hub`);
+    if (!(await this.existsOwnableChain(record.id, record.packageCid))) throw new UserError(`Event chain with cid ${cid} not available on this hub`);
     if (!(await this.existsPkg(cid))) throw new UserError(`Ownable package with cid ${cid} not available on this hub`);
 
-    await this.replayStoredOwnable(cid);
+    await this.replayStoredOwnable(record.id, record.packageCid);
 
     const zipped = new JSZip();
     const zipFile = await this.storage.getPackageZip(cid);
     await zipped.loadAsync(zipFile, { createFolders: true });
     zipped.remove(LEGACY_CHAIN_FILENAME);
-    zipped.file(CANONICAL_CHAIN_FILENAME, await this.storage.getEventChain(cid));
+    zipped.file(CANONICAL_CHAIN_FILENAME, await this.storage.getEventChain(record.id, record.packageCid));
 
     const content = await zipped.generateAsync({ type: 'uint8array' });
     return new StreamableFile(Readable.from(Buffer.from(content)));
@@ -699,18 +764,18 @@ export class OwnableService implements OnModuleInit {
     return this.hubState.listWalletEventsByCid(cid);
   }
 
+  async downloadOwnableChain(ownableId: string): Promise<Buffer> {
+    const record = await this.hubState.getOwnableBySubjectId(ownableId);
+    if (!record) throw new UserError(`Ownable chain with id ${ownableId} not available on this hub`);
+    if (!(await this.existsOwnableChain(record.id, record.packageCid))) {
+      throw new UserError(`Ownable chain with id ${ownableId} not available on this hub`);
+    }
+    return await this.storage.getEventChain(record.id, record.packageCid);
+  }
+
   async getAvailableOwnables(ownerAccount: string): Promise<{
-    ownerAccount: string;
-    entries: Array<{
-      availabilityKey: string;
-      subjectId: string;
-      cid: string;
-      ownerStateVersion: number;
-      availableAt: string;
-      issuerAddress: string;
-      nft?: { network: string; contract: string; tokenId: string };
-      import: { downloadUrl: string; eventsUrl: string; hubOrigin: string };
-    }>;
+    owner: string;
+    entries: AvailableOwnableEntry[];
   }> {
     if (!this.config.isLocalDevRecipientDiscoveryEnabled()) {
       throw new UserError('RECIPIENT_DISCOVERY_DISABLED');
@@ -718,27 +783,26 @@ export class OwnableService implements OnModuleInit {
 
     const normalizedOwnerAccount = this.normalizeOwnerAccount(ownerAccount);
     const rows = await this.hubState.listAvailableOwnablesByOwnerAccount(normalizedOwnerAccount);
+    const entries = await Promise.all(
+      rows.map(async (row): Promise<AvailableOwnableEntry> => {
+        const metadata = await this.readAvailableOwnablePackageMetadata(row.packageCid);
+        return {
+          id: row.subjectId ?? row.ownableId,
+          title: metadata.title,
+          ...(metadata.description ? { description: metadata.description } : {}),
+          ...(row.issuerAddress ? { issuer: row.issuerAddress } : {}),
+          availableAt: row.availableAt,
+          package: {
+            cid: row.packageCid,
+            thumbnailUrl: metadata.thumbnailUrl ?? null,
+          },
+        };
+      }),
+    );
 
     return {
-      ownerAccount: normalizedOwnerAccount,
-      entries: rows.map((row) => ({
-        availabilityKey: `avail:${row.ownableId}:${row.ownerStateVersion}`,
-        subjectId: row.subjectId ?? '',
-        cid: row.cid,
-        ownerStateVersion: row.ownerStateVersion,
-        availableAt: row.availableAt,
-        issuerAddress: row.issuerAddress,
-        ...(row.nftNetwork && row.nftContractAddress && row.nftTokenId
-          ? {
-              nft: {
-                network: row.nftNetwork,
-                contract: row.nftContractAddress,
-                tokenId: row.nftTokenId,
-              },
-            }
-          : {}),
-        import: this.buildImportUrls(row.cid),
-      })).filter((entry) => entry.subjectId),
+      owner: normalizedOwnerAccount,
+      entries,
     };
   }
 }

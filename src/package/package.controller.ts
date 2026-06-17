@@ -1,4 +1,4 @@
-import { Controller, Post, Req, Res, UseInterceptors } from '@nestjs/common';
+import { Controller, Get, Header, Post, Req, Res, StreamableFile, UseInterceptors } from '@nestjs/common';
 import { ApiProperty, ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { PackageService } from './package.service.js';
@@ -36,5 +36,16 @@ export class PackageController {
     const cid = await this.packageService.store(buffer);
 
     return res.status(201).json({ cid });
+  }
+
+  @Get('/:cid/download')
+  @Header('Content-type', 'application/zip')
+  async download(@Req() req: Request, @Res({ passthrough: true }) res: Response): Promise<StreamableFile | Response> {
+    try {
+      const cid = String(req.params.cid ?? '');
+      return await this.packageService.download(cid);
+    } catch (error) {
+      return res.status(404).send(`${error}`);
+    }
   }
 }

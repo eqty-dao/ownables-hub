@@ -3,7 +3,7 @@ import { PostgresService } from '../postgres.service.js';
 import type { PoolClient } from 'pg';
 
 export interface OwnableRecordInput {
-  cid: string;
+  packageCid: string;
   prevOwnerAddress: string;
   subjectId?: string;
   nftNetwork?: string;
@@ -14,7 +14,7 @@ export interface OwnableRecordInput {
 
 export interface OwnableRecord {
   id: string;
-  cid: string;
+  packageCid: string;
   prevOwnerAddress: string;
   subjectId: string | null;
   nftNetwork: string | null;
@@ -68,7 +68,7 @@ export interface OwnerStateRow {
 
 export interface AvailableOwnableRow {
   ownableId: string;
-  cid: string;
+  packageCid: string;
   subjectId: string | null;
   ownerAccount: string;
   ownerStateVersion: number;
@@ -79,67 +79,63 @@ export interface AvailableOwnableRow {
   nftTokenId: string | null;
 }
 
-export interface NotifyDeliveryStateRow {
-  id: string;
-  ownableId: string;
-  cid?: string;
-  ownerAddress: string;
-  ownerAccount: string;
-  ownerStateVersion: number;
-  triggerKind: string;
-  status: string;
-  notificationType: string | null;
-  notificationId: string | null;
-  transportId: string | null;
-  attemptCount: number;
-  lastAttemptAt: string | null;
-  deliveredAt: string | null;
-  errorCode: string | null;
-  message: string | null;
-}
-
 @Injectable()
 export class HubStateRepository {
   constructor(private readonly db: PostgresService) {}
 
   async upsertOwnableRecord(input: OwnableRecordInput): Promise<OwnableRecord> {
-    const result = await this.db.query<OwnableRecord>(
-      `INSERT INTO ownable_records (
-         cid,
-         prev_owner_address,
-         subject_id,
-         nft_network,
-         nft_contract_address,
-         nft_token_id,
-         chain_file_name
-       ) VALUES ($1, LOWER($2), LOWER($3), $4, $5, $6, $7)
-       ON CONFLICT (cid) DO UPDATE SET
-         prev_owner_address = EXCLUDED.prev_owner_address,
-         subject_id = EXCLUDED.subject_id,
-         nft_network = EXCLUDED.nft_network,
-         nft_contract_address = EXCLUDED.nft_contract_address,
-         nft_token_id = EXCLUDED.nft_token_id,
-         chain_file_name = EXCLUDED.chain_file_name,
-         updated_at = NOW()
-       RETURNING id, cid, prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"`,
-      [
-        input.cid,
-        input.prevOwnerAddress,
-        input.subjectId ?? null,
-        input.nftNetwork ?? null,
-        input.nftContractAddress ?? null,
-        input.nftTokenId ?? null,
-        input.chainFileName ?? 'eventChain.json',
-      ],
-    );
+    const values = [
+      input.packageCid,
+      input.prevOwnerAddress,
+      input.subjectId ?? null,
+      input.nftNetwork ?? null,
+      input.nftContractAddress ?? null,
+      input.nftTokenId ?? null,
+      input.chainFileName ?? 'eventChain.json',
+    ];
+    const sql =
+      input.subjectId != null
+        ? `INSERT INTO ownable_records (
+             package_cid,
+             prev_owner_address,
+             subject_id,
+             nft_network,
+             nft_contract_address,
+             nft_token_id,
+             chain_file_name
+           ) VALUES ($1, LOWER($2), LOWER($3), $4, $5, $6, $7)
+           ON CONFLICT (subject_id) WHERE subject_id IS NOT NULL DO UPDATE SET
+             package_cid = EXCLUDED.package_cid,
+             prev_owner_address = EXCLUDED.prev_owner_address,
+             nft_network = EXCLUDED.nft_network,
+             nft_contract_address = EXCLUDED.nft_contract_address,
+             nft_token_id = EXCLUDED.nft_token_id,
+             chain_file_name = EXCLUDED.chain_file_name,
+             updated_at = NOW()
+           RETURNING id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"`
+        : `INSERT INTO ownable_records (
+             package_cid,
+             prev_owner_address,
+             subject_id,
+             nft_network,
+             nft_contract_address,
+             nft_token_id,
+             chain_file_name
+           ) VALUES ($1, LOWER($2), LOWER($3), $4, $5, $6, $7)
+           RETURNING id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"`;
+
+    const result = await this.db.query<OwnableRecord>(sql, values);
 
     return result.rows[0] as OwnableRecord;
   }
 
   async getOwnableByCid(cid: string): Promise<OwnableRecord | null> {
     const result = await this.db.query<OwnableRecord>(
-      `SELECT id, cid, prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
-       FROM ownable_records WHERE cid = $1`,
+      `SELECT id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
+       FROM ownable_records
+       WHERE package_cid = $1
+       ORDER BY updated_at DESC, created_at DESC
+       LIMIT 1`,
       [cid],
     );
 
@@ -148,7 +144,7 @@ export class HubStateRepository {
 
   async getOwnableByNft(nftNetwork: string, nftContractAddress: string, nftTokenId: string): Promise<OwnableRecord | null> {
     const result = await this.db.query<OwnableRecord>(
-      `SELECT id, cid, prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
+      `SELECT id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
        FROM ownable_records
        WHERE nft_network = $1 AND nft_contract_address = $2 AND nft_token_id = $3`,
       [nftNetwork, nftContractAddress, nftTokenId],
@@ -159,7 +155,7 @@ export class HubStateRepository {
 
   async getOwnableBySubjectId(subjectId: string): Promise<OwnableRecord | null> {
     const result = await this.db.query<OwnableRecord>(
-      `SELECT id, cid, prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
+      `SELECT id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
        FROM ownable_records
        WHERE subject_id = LOWER($1)
        ORDER BY updated_at DESC, created_at DESC
@@ -171,12 +167,12 @@ export class HubStateRepository {
   }
 
   async listOwnableCidsByPrevOwner(address: string): Promise<string[]> {
-    const result = await this.db.query<{ cid: string }>(
-      'SELECT cid FROM ownable_records WHERE prev_owner_address = LOWER($1) ORDER BY created_at ASC',
+    const result = await this.db.query<{ packageCid: string }>(
+      'SELECT package_cid AS "packageCid" FROM ownable_records WHERE prev_owner_address = LOWER($1) ORDER BY created_at ASC',
       [address],
     );
 
-    return result.rows.map((row) => row.cid);
+    return result.rows.map((row) => row.packageCid);
   }
 
   async setOwnerState(
@@ -220,7 +216,9 @@ export class HubStateRepository {
          s.updated_at AS "updatedAt"
        FROM ownable_owner_state s
        INNER JOIN ownable_records o ON o.id = s.ownable_id
-       WHERE o.cid = $1`,
+       WHERE o.package_cid = $1
+       ORDER BY o.updated_at DESC, o.created_at DESC
+       LIMIT 1`,
       [cid],
     );
 
@@ -314,150 +312,11 @@ export class HubStateRepository {
     );
   }
 
-  async upsertNotifyDeliveryState(input: {
-    ownableId: string;
-    ownerAddress: string;
-    ownerAccount: string;
-    ownerStateVersion: number;
-    triggerKind: string;
-    status?: string;
-    notificationType?: string | null;
-    notificationId?: string | null;
-    transportId?: string | null;
-    attemptCount?: number;
-    errorCode?: string | null;
-    lastError?: string | null;
-  }): Promise<NotifyDeliveryStateRow> {
-    const result = await this.db.query<NotifyDeliveryStateRow>(
-      `INSERT INTO notify_delivery_state (
-         ownable_id,
-         owner_address,
-         owner_account,
-         owner_state_version,
-         trigger_kind,
-         status,
-         notification_type,
-       notification_id,
-       transport_id,
-       attempt_count,
-       error_code,
-       last_error,
-       last_attempt_at,
-       delivered_at
-      ) VALUES ($1, LOWER($2), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), CASE WHEN $6 = 'delivered' THEN NOW() ELSE NULL END)
-       ON CONFLICT (ownable_id, owner_account, owner_state_version, trigger_kind) DO UPDATE SET
-         owner_address = EXCLUDED.owner_address,
-         status = EXCLUDED.status,
-         notification_type = EXCLUDED.notification_type,
-         notification_id = EXCLUDED.notification_id,
-         transport_id = EXCLUDED.transport_id,
-         attempt_count = EXCLUDED.attempt_count,
-         error_code = EXCLUDED.error_code,
-         last_error = EXCLUDED.last_error,
-         last_attempt_at = NOW(),
-         delivered_at = CASE WHEN EXCLUDED.status = 'delivered' THEN NOW() ELSE notify_delivery_state.delivered_at END,
-         updated_at = NOW()
-       RETURNING id,
-         ownable_id AS "ownableId",
-         owner_address AS "ownerAddress",
-         owner_account AS "ownerAccount",
-         owner_state_version AS "ownerStateVersion",
-         trigger_kind AS "triggerKind",
-         status,
-         notification_type AS "notificationType",
-         notification_id AS "notificationId",
-         transport_id AS "transportId",
-         attempt_count AS "attemptCount",
-         last_attempt_at AS "lastAttemptAt",
-         delivered_at AS "deliveredAt",
-         error_code AS "errorCode",
-         last_error AS "message"`,
-      [
-        input.ownableId,
-        input.ownerAddress,
-        input.ownerAccount,
-        input.ownerStateVersion,
-        input.triggerKind,
-        input.status ?? 'pending',
-        input.notificationType ?? null,
-        input.notificationId ?? null,
-        input.transportId ?? null,
-        input.attemptCount ?? 0,
-        input.errorCode ?? null,
-        input.lastError ?? null,
-      ],
-    );
-    return result.rows[0] as NotifyDeliveryStateRow;
-  }
-
-  async getNotifyDeliveryStateByDedupKey(input: {
-    ownableId: string;
-    ownerAccount: string;
-    ownerStateVersion: number;
-    triggerKind: string;
-  }): Promise<NotifyDeliveryStateRow | null> {
-    const result = await this.db.query<NotifyDeliveryStateRow>(
-      `SELECT id,
-         ownable_id AS "ownableId",
-         owner_address AS "ownerAddress",
-         owner_account AS "ownerAccount",
-         owner_state_version AS "ownerStateVersion",
-         trigger_kind AS "triggerKind",
-         status,
-         notification_type AS "notificationType",
-         notification_id AS "notificationId",
-         transport_id AS "transportId",
-         attempt_count AS "attemptCount",
-         last_attempt_at AS "lastAttemptAt",
-         delivered_at AS "deliveredAt",
-         error_code AS "errorCode",
-         last_error AS "message"
-       FROM notify_delivery_state
-       WHERE ownable_id = $1
-         AND owner_account = $2
-         AND owner_state_version = $3
-         AND trigger_kind = $4
-       LIMIT 1`,
-      [input.ownableId, input.ownerAccount, input.ownerStateVersion, input.triggerKind],
-    );
-    return result.rows[0] ?? null;
-  }
-
-  async getNotifyDeliveryStateByOwnableAndOwner(cid: string, ownerAccount: string): Promise<NotifyDeliveryStateRow | null> {
-    const result = await this.db.query<NotifyDeliveryStateRow>(
-      `SELECT
-         s.id,
-         o.cid AS "cid",
-         s.ownable_id AS "ownableId",
-         s.owner_address AS "ownerAddress",
-         s.owner_account AS "ownerAccount",
-         s.owner_state_version AS "ownerStateVersion",
-         s.trigger_kind AS "triggerKind",
-         s.status,
-         s.notification_type AS "notificationType",
-         s.notification_id AS "notificationId",
-         s.transport_id AS "transportId",
-         s.attempt_count AS "attemptCount",
-         s.last_attempt_at AS "lastAttemptAt",
-         s.delivered_at AS "deliveredAt",
-         s.error_code AS "errorCode",
-         s.last_error AS "message"
-       FROM notify_delivery_state s
-       INNER JOIN ownable_records o ON o.id = s.ownable_id
-       WHERE o.cid = $1
-         AND s.owner_account = $2
-       ORDER BY s.owner_state_version DESC, s.last_attempt_at DESC NULLS LAST, s.created_at DESC
-       LIMIT 1`,
-      [cid, ownerAccount],
-    );
-    return result.rows[0] ?? null;
-  }
-
   async listAvailableOwnablesByOwnerAccount(ownerAccount: string): Promise<AvailableOwnableRow[]> {
     const result = await this.db.query<AvailableOwnableRow>(
       `SELECT
          os.ownable_id AS "ownableId",
-         o.cid AS "cid",
+         o.package_cid AS "packageCid",
          o.subject_id AS "subjectId",
          os.current_owner_account AS "ownerAccount",
          os.owner_state_version AS "ownerStateVersion",
@@ -501,7 +360,7 @@ export class HubStateRepository {
          transaction_index,
          log_index,
          event_name,
-         cid,
+         package_cid,
          ownable_id,
          owner_address,
          payload_json
@@ -513,7 +372,7 @@ export class HubStateRepository {
          block_hash = EXCLUDED.block_hash,
          transaction_index = EXCLUDED.transaction_index,
          event_name = EXCLUDED.event_name,
-         cid = EXCLUDED.cid,
+         package_cid = EXCLUDED.package_cid,
          ownable_id = EXCLUDED.ownable_id,
          owner_address = EXCLUDED.owner_address,
          payload_json = EXCLUDED.payload_json,
@@ -566,7 +425,7 @@ export class HubStateRepository {
          log_index,
          event_name,
          ownable_id,
-         cid,
+         package_cid,
          subject_id,
          source_address,
          event_type,
@@ -584,7 +443,7 @@ export class HubStateRepository {
          $8,
          $9,
          (SELECT id FROM ownable_records WHERE subject_id = LOWER($10) LIMIT 1),
-         (SELECT cid FROM ownable_records WHERE subject_id = LOWER($10) LIMIT 1),
+         (SELECT package_cid FROM ownable_records WHERE subject_id = LOWER($10) LIMIT 1),
          LOWER($10),
          LOWER($11),
          $12,
@@ -600,7 +459,7 @@ export class HubStateRepository {
          transaction_index = EXCLUDED.transaction_index,
          event_name = EXCLUDED.event_name,
          ownable_id = EXCLUDED.ownable_id,
-         cid = EXCLUDED.cid,
+         package_cid = EXCLUDED.package_cid,
          subject_id = EXCLUDED.subject_id,
          source_address = EXCLUDED.source_address,
          event_type = EXCLUDED.event_type,
@@ -718,7 +577,7 @@ export class HubStateRepository {
            transaction_index AS "transactionIndex",
            log_index AS "logIndex",
            event_name AS "eventName",
-           cid,
+           package_cid AS cid,
            ownable_id AS "ownableId",
            owner_address AS "ownerAddress",
            NULL::text AS "subjectId",
@@ -729,7 +588,7 @@ export class HubStateRepository {
            payload_json AS "payloadJson",
            indexed_at::text AS "indexedAt"
          FROM indexed_anchor_events
-         WHERE cid = $1
+         WHERE package_cid = $1
          UNION ALL
          SELECT
            id,
@@ -743,7 +602,7 @@ export class HubStateRepository {
            transaction_index AS "transactionIndex",
            log_index AS "logIndex",
            event_name AS "eventName",
-           cid,
+           package_cid AS cid,
            ownable_id AS "ownableId",
            NULL::text AS "ownerAddress",
            subject_id AS "subjectId",
@@ -757,12 +616,12 @@ export class HubStateRepository {
          WHERE ownable_id IN (
            SELECT id
            FROM ownable_records
-           WHERE cid = $1
+           WHERE package_cid = $1
          )
          OR subject_id IN (
            SELECT subject_id
            FROM ownable_records
-           WHERE cid = $1
+           WHERE package_cid = $1
          )
        ) wallet_events
        ORDER BY "blockNumber"::numeric ASC, "transactionIndex" ASC, "logIndex" ASC`,

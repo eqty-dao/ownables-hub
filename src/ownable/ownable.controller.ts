@@ -73,6 +73,18 @@ export class OwnableController {
     }
   }
 
+  @Get(':id/chain')
+  @Header('Content-type', 'application/json')
+  async chain(@Req() req: Request, @Res() res: Response): Promise<Response> {
+    try {
+      const id = String(req.params.id ?? '');
+      const chain = await this.ownableService.downloadOwnableChain(id);
+      return res.status(200).send(chain.toString('utf8'));
+    } catch (err) {
+      return this.errorResponse(res, err);
+    }
+  }
+
   @Get('claim')
   @Header('Content-type', 'application/zip')
   @ApiProduces('application/zip')

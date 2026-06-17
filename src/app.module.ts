@@ -7,16 +7,16 @@ import { OwnableModule } from './ownable/ownable.module.js';
 import { OwnableController } from './ownable/ownable.controller.js';
 import { SIWEAuthMiddleware } from './common/siwe/siwe-auth.middleware.js';
 import { SIWEModule } from './common/siwe/siwe.module.js';
-import { NotifyModule } from './notify/notify.module.js';
-import { NotifyController } from './notify/notify.controller.js';
+import { PersistenceModule } from './persistence/persistence.module.js';
+import { StorageModule } from './storage/storage.module.js';
 
 @Module({
-  imports: [ConfigModule, PackageModule, OwnableModule, NotifyModule, SIWEModule],
+  imports: [ConfigModule, PackageModule, OwnableModule, SIWEModule, PersistenceModule, StorageModule],
   controllers: [AppController],
   providers: [AppService],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(SIWEAuthMiddleware).forRoutes(OwnableController, NotifyController);
+    consumer.apply(SIWEAuthMiddleware).forRoutes(OwnableController);
   }
 }
