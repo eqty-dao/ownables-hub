@@ -48,11 +48,11 @@ jobs:
       - name: Core compatibility smoke
         run: yarn verify:core-compat
 
+      - name: Build
+        run: yarn build
+
       - name: Replay boundary verifier
         run: yarn verify:hub-replay-boundary
 
       - name: Unit tests
         run: yarn test --runInBand
-
-      - name: Build
-        run: yarn build
