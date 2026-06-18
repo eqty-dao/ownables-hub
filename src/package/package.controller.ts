@@ -1,8 +1,10 @@
-import { Controller, Post, Req, Res, UseInterceptors } from '@nestjs/common';
+import { Controller, Get, Header, Post, Req, Res, StreamableFile, UseInterceptors } from '@nestjs/common';
 import { ApiProperty, ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
-import { PackageService } from './package.service';
+import { PackageService } from './package.service.js';
 import { FileInterceptor } from '@nestjs/platform-express';
+
+type FileUploadRequest = Request & { file?: Express.Multer.File };
 
 @Controller('packages')
 @ApiTags('packages')
@@ -26,13 +28,24 @@ export class PackageController {
     },
   })
   @UseInterceptors(FileInterceptor('file'))
-  async root(@Req() req: Request, @Res() res: Response): Promise<Response> {
-    const buffer = req.file.buffer;
+  async root(@Req() req: FileUploadRequest, @Res() res: Response): Promise<Response> {
+    const buffer = req.file?.buffer;
     if (!buffer || Object.getPrototypeOf(buffer) === null || Object.prototype.isPrototypeOf(buffer) == false) {
       return res.status(400).send('Failed to read data from HTTP request');
     }
     const cid = await this.packageService.store(buffer);
 
     return res.status(201).json({ cid });
+  }
+
+  @Get('/:cid/download')
+  @Header('Content-type', 'application/zip')
+  async download(@Req() req: Request, @Res({ passthrough: true }) res: Response): Promise<StreamableFile | Response> {
+    try {
+      const cid = String(req.params.cid ?? '');
+      return await this.packageService.download(cid);
+    } catch (error) {
+      return res.status(404).send(`${error}`);
+    }
   }
 }

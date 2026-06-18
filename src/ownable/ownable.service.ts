@@ -1,456 +1,700 @@
-import { Inject, Injectable, OnModuleInit, StreamableFile } from '@nestjs/common';
-import { PackageService } from '../package/package.service';
-import { Account, Binary, EventChain, Event, LTO } from '@ltonetwork/lto';
-import { ConfigService } from '../common/config/config.service';
-import { CosmWasmService } from '../cosmwasm/cosmwasm.service';
-import Contract from '../cosmwasm/contract';
-// import fs from 'fs/promises';
-import { rmSync, mkdirSync, readFileSync, writeFileSync, readdirSync, createReadStream } from 'fs';
-import { NFTInfo, OwnableInfo } from '../interfaces/OwnableInfo';
-import { NFTService } from '../nft/nft.service';
-import { LtoIndexService } from '../common/lto-index/lto-index.service';
-import { HttpService } from '@nestjs/axios';
-import { AuthError, UserError } from '../interfaces/error';
-import fileExists from '../utils/fileExists';
+import { Injectable, OnModuleInit, StreamableFile } from '@nestjs/common';
+import {
+  calculateOwnablePackageCid,
+  evaluateReplayFreshness,
+  OwnableService as CoreOwnableService,
+  EventChainService as CoreEventChainService,
+  type IndexedPublicEvent,
+  type StateStore,
+  type TypedPackage,
+  type AnchorProvider,
+} from '@ownables/core';
+import { NodePackageAssetIO, NodeSandboxOwnableRPC } from '@ownables/platform-node';
+import { ConfigService, RuntimeNetworkProfile } from '../common/config/config.service.js';
+import { resolveCaip2Reference } from '../common/config/evm-network.util.js';
+import { NFTInfo } from '../interfaces/OwnableInfo.js';
+import { NFTService } from '../nft/nft.service.js';
+import { AuthError, UserError } from '../interfaces/error.js';
 import JSZip from 'jszip';
-import path from 'path';
-import { IEventChainJSON } from '@ltonetwork/lto/interfaces';
-import { exec } from 'child_process';
-import { sign } from '@ltonetwork/http-message-signatures';
-interface InfoWithProof extends OwnableInfo {
-  proof?: string;
+import { EventChain } from 'eqty-core';
+import { Readable } from 'stream';
+import { ArchiveStorageService } from '../storage/archive-storage.service.js';
+import { HubStateRepository, IndexedWalletEvent } from '../persistence/repos/hub-state.repository.js';
+
+interface SignerIdentity {
+  address?: string;
+}
+
+interface ReplayDerivedState {
+  nftInfo: NFTInfo | null;
+  ownerNetwork: string | null;
+  ownerAccount: string | null;
+  owner: string;
+  latestAppliedPublicEventId: string | null;
+}
+
+interface AvailableOwnablePackageMetadata {
+  title: string;
+  description?: string;
+  thumbnailUrl?: string | null;
+}
+
+interface AvailableOwnableEntry {
+  id: string;
+  title: string;
+  description?: string;
+  issuer?: string;
+  availableAt: string;
+  package: {
+    cid: string;
+    thumbnailUrl?: string | null;
+  };
+}
+
+const CANONICAL_CHAIN_FILENAME = 'chain.json';
+const LEGACY_CHAIN_FILENAME = 'eventChain.json';
+const OWNABLE_RUNTIME_FILENAME = 'ownable_bg.wasm';
+const EVM_ADDRESS_REGEX = /^0x[a-f0-9]{40}$/i;
+const CAIP10_ACCOUNT_REGEX = /^([a-zA-Z0-9-]+):([a-zA-Z0-9-]+):([^:\s]+)$/;
+const REQUIRED_OWNABLE_RUNTIME_EXPORTS = [
+  'memory',
+  'ownable_alloc',
+  'ownable_free',
+  'ownable_instantiate',
+  'ownable_execute',
+  'ownable_query',
+  'ownable_register',
+  'ownable_ingest',
+  'ownable_encode_public_event',
+] as const;
+const REQUIRED_OWNABLE_RUNTIME_EXPORT_KINDS: Record<(typeof REQUIRED_OWNABLE_RUNTIME_EXPORTS)[number], WebAssembly.ImportExportKind> =
+  {
+    memory: 'memory',
+    ownable_alloc: 'function',
+    ownable_free: 'function',
+    ownable_instantiate: 'function',
+    ownable_execute: 'function',
+    ownable_query: 'function',
+    ownable_register: 'function',
+    ownable_ingest: 'function',
+    ownable_encode_public_event: 'function',
+  };
+
+function normalizeEvmAddress(address: string, errorMessage = 'Invalid EVM address'): string {
+  const normalized = address.trim().toLowerCase();
+  if (!EVM_ADDRESS_REGEX.test(normalized)) {
+    throw new Error(errorMessage);
+  }
+  return normalized;
+}
+
+function normalizeCaip10Account(account: string): string {
+  const trimmed = account.trim();
+  const match = CAIP10_ACCOUNT_REGEX.exec(trimmed);
+  if (!match) {
+    throw new Error('Invalid CAIP-10 account');
+  }
+
+  const namespaceRaw = match[1];
+  const referenceRaw = match[2];
+  const addressRaw = match[3];
+  if (!namespaceRaw || !referenceRaw || !addressRaw) {
+    throw new Error('Invalid CAIP-10 account');
+  }
+
+  const namespace = namespaceRaw.toLowerCase();
+  const reference = referenceRaw.toLowerCase();
+  const address = namespace === 'eip155' ? normalizeEvmAddress(addressRaw, 'Invalid CAIP-10 account') : addressRaw;
+
+  return `${namespace}:${reference}:${address}`;
+}
+
+class InMemoryStateStore implements StateStore {
+  private readonly stores = new Map<string, Map<any, any>>();
+
+  async get(store: string, key: string): Promise<any> {
+    return this.stores.get(store)?.get(key);
+  }
+
+  async getAll(store: string): Promise<Array<any>> {
+    return Array.from(this.stores.get(store)?.values() ?? []);
+  }
+
+  async getMap(store: string): Promise<Map<any, any>> {
+    return new Map(this.stores.get(store) ?? []);
+  }
+
+  async keys(store: string): Promise<string[]> {
+    return Array.from(this.stores.get(store)?.keys() ?? []);
+  }
+
+  async set(store: string, key: string, value: any): Promise<void> {
+    if (!this.stores.has(store)) this.stores.set(store, new Map());
+    this.stores.get(store)?.set(key, value);
+  }
+
+  async setAll(store: string, map: Record<string, any> | Map<any, any>): Promise<void>;
+  async setAll(data: Record<string, Record<string, any> | Map<any, any>>): Promise<void>;
+  async setAll(
+    storeOrData: string | Record<string, Record<string, any> | Map<any, any>>,
+    mapMaybe?: Record<string, any> | Map<any, any>,
+  ): Promise<void> {
+    if (typeof storeOrData === 'string') {
+      const store = storeOrData;
+      const mapOrObj = mapMaybe;
+      if (!mapOrObj) return;
+      if (!this.stores.has(store)) this.stores.set(store, new Map());
+      const storeMap = this.stores.get(store) as Map<any, any>;
+      if (mapOrObj instanceof Map) {
+        for (const [k, v] of mapOrObj.entries()) storeMap.set(k, v);
+      } else {
+        for (const [k, v] of Object.entries(mapOrObj)) storeMap.set(k, v);
+      }
+      return;
+    }
+
+    for (const [store, mapOrObj] of Object.entries(storeOrData)) {
+      if (!this.stores.has(store)) this.stores.set(store, new Map());
+      const storeMap = this.stores.get(store) as Map<any, any>;
+      if (mapOrObj instanceof Map) {
+        for (const [k, v] of mapOrObj.entries()) storeMap.set(k, v);
+      } else {
+        for (const [k, v] of Object.entries(mapOrObj)) storeMap.set(k, v);
+      }
+    }
+  }
+
+  async hasStore(store: string): Promise<boolean> {
+    return this.stores.has(store);
+  }
+
+  async createStore(...stores: string[]): Promise<void> {
+    for (const store of stores) if (!this.stores.has(store)) this.stores.set(store, new Map());
+  }
+
+  async deleteStore(store: string | RegExp): Promise<void> {
+    if (typeof store === 'string') {
+      this.stores.delete(store);
+      return;
+    }
+    for (const name of this.stores.keys()) {
+      if (store.test(name)) this.stores.delete(name);
+    }
+  }
+
+  async listStores(): Promise<string[]> {
+    return Array.from(this.stores.keys());
+  }
+
+  async delete(store: string, key: string): Promise<void> {
+    this.stores.get(store)?.delete(key);
+  }
 }
 
 @Injectable()
 export class OwnableService implements OnModuleInit {
-  private readonly pathToPkgs: string;
-  private readonly pathToCids: string;
-  private readonly pathToUsers: string;
-  private readonly pathToNfts: string;
-
-  private lto = new LTO(this.config.get('lto.networkId'));
-  private readonly _ltoAccount?: Account = this.lto.account({ seed: this.config.get('lto.account.seed') });
-  public readonly networkId = this.lto.networkId;
-
   constructor(
-    private packages: PackageService,
     private config: ConfigService,
-    private cosmWasm: CosmWasmService,
     private nft: NFTService,
-    private ltoIndex: LtoIndexService,
-    private http: HttpService,
-    @Inject('IPFS') private readonly ipfs: IPFS,
+    private readonly storage: ArchiveStorageService,
+    private readonly hubState: HubStateRepository,
   ) {
-    this.pathToPkgs = this.config.get('path.packages');
-    this.pathToCids = this.config.get('path.chains');
-    this.pathToUsers = this.config.get('path.users');
-    this.pathToNfts = this.config.get('path.nfts');
+    const mnemonic = this.config.getAuthoritySignerMnemonic();
+    if (!mnemonic) {
+      throw new Error('Missing account mnemonic configuration');
+    }
   }
 
-  async onModuleInit() {
-    mkdirSync(this.pathToPkgs, { recursive: true });
-    mkdirSync(this.pathToCids, { recursive: true });
-    mkdirSync(this.pathToUsers, { recursive: true });
-    mkdirSync(this.pathToNfts, { recursive: true });
-  }
+  async onModuleInit() {}
 
   public async GetServerETHBalance(networkName: string): Promise<string> {
     return await this.nft.GetServerETHBalance(networkName);
   }
 
-  public getLTOAccountAddress(): string {
-    if (!!this._ltoAccount) return this._ltoAccount?.address ?? '';
-  }
-
-  public async getLTOAccountBalance(address?: string) {
-    if (!address) address = this.getLTOAccountAddress();
-    const url = `${this.config.get('lto.node')}/addresses/balance/${address}`;
-
-    const response = await fetch(url);
-    if (response.status == 200) {
-      const data = await response.json();
-      return data;
-    } else {
-      throw new Error(`Error fetching balance of address: ${address}`);
+  private validateEventChain(chain: EventChain): void {
+    if (!chain.events.length) throw new UserError('Empty event chain');
+    if (chain.events.some((event) => !event.signature || !event.signerAddress)) {
+      throw new UserError('Invalid event chain');
     }
   }
 
-  public getLTOAccount(): Account {
-    if (!this._ltoAccount) {
-      throw new Error('Not logged in');
+  private parseNftInfoFromChain(chain: EventChain): NFTInfo {
+    const parsed = chain.events[0]?.parsedData;
+    if (!parsed?.nft?.network || !parsed?.nft?.address || parsed?.nft?.id === undefined) {
+      throw new UserError('Invalid event chain: missing NFT metadata in first event');
     }
-    return this._ltoAccount;
+    return { network: parsed.nft.network, address: parsed.nft.address, id: String(parsed.nft.id) };
   }
-  private async applyEvent(contract: Contract, event: Event): Promise<void> {
-    const info: { sender: string; funds: [] } = {
-      sender: event.signKey?.publicKey.base58,
-      funds: [],
+
+  private parseNftInfoFromOwnableInfo(info: unknown): NFTInfo | null {
+    const nft = (info as { nft?: { network?: string; address?: string; id?: string | number } } | null)?.nft;
+    if (!nft?.network || !nft.address || nft.id === undefined) {
+      return null;
+    }
+    return {
+      network: nft.network,
+      address: nft.address,
+      id: String(nft.id),
     };
-    const { '@context': context, ...msg } = event.parsedData;
+  }
 
-    switch (context) {
-      case 'instantiate_msg.json':
-        await contract.instantiate(msg, info);
-        break;
-      case 'execute_msg.json':
-        await contract.execute(msg, info);
-        break;
-      case 'external_event_msg.json':
-        await contract.externalEvent(msg, info);
-        break;
-      default:
-        throw new UserError(`Unknown event type: ${context}`);
+  private parseNftInfoFromRecord(record: {
+    nftNetwork: string | null;
+    nftContractAddress: string | null;
+    nftTokenId: string | null;
+  } | null): NFTInfo | null {
+    if (!record?.nftNetwork || !record.nftContractAddress || record.nftTokenId === null) {
+      return null;
+    }
+    return {
+      network: record.nftNetwork,
+      address: record.nftContractAddress,
+      id: record.nftTokenId,
+    };
+  }
+
+  private async deriveNftInfo(chain: EventChain, replayInfo?: unknown): Promise<NFTInfo | null> {
+    try {
+      return this.parseNftInfoFromChain(chain);
+    } catch (error) {
+      if (!(error instanceof UserError) || error.message !== 'Invalid event chain: missing NFT metadata in first event') {
+        throw error;
+      }
+    }
+
+    const replayNftInfo = this.parseNftInfoFromOwnableInfo(replayInfo);
+    if (replayNftInfo) {
+      return replayNftInfo;
+    }
+
+    const persistedNftInfo = this.parseNftInfoFromRecord(await this.hubState.getOwnableBySubjectId(chain.id));
+    if (persistedNftInfo) {
+      return persistedNftInfo;
+    }
+
+    return null;
+  }
+
+  private deriveOwnerNetwork(chain: EventChain, nftInfo: NFTInfo | null): string | null {
+    const parsed = chain.events[0]?.parsedData as { network_id?: string | number } | undefined;
+    const networkId = parsed?.network_id;
+    if (typeof networkId === 'number' && Number.isInteger(networkId) && networkId > 0) {
+      return `eip155:${networkId}`;
+    }
+    if (typeof networkId === 'string') {
+      const trimmed = networkId.trim();
+      if (/^\d+$/.test(trimmed)) {
+        return `eip155:${trimmed}`;
+      }
+      if (/^eip155:\d+$/.test(trimmed)) {
+        return trimmed;
+      }
+    }
+
+    return nftInfo?.network ?? null;
+  }
+
+  private deriveOwnerAccount(ownerAddress: string, ownerNetwork: string | null): string | null {
+    if (!ownerNetwork) {
+      return null;
+    }
+
+    const reference = resolveCaip2Reference(ownerNetwork, this.config.getRuntimeNetworkProfile());
+    if (!reference) {
+      return null;
+    }
+
+    try {
+      return normalizeCaip10Account(`eip155:${reference}:${ownerAddress}`);
+    } catch {
+      return null;
     }
   }
 
-  // private async loadContract(packageCid: string, chain: EventChain) {
-  //   if (!(await this.packages.exists(packageCid))) {
-  //     throw new UserError('Unknown ownable package');
-  //   }
+  private normalizeOwnerAccount(ownerAccount: string): string {
+    const trimmedOwner = ownerAccount.trim();
+    if (!trimmedOwner) {
+      throw new UserError('owner is required');
+    }
 
-  //   const contract = await this.cosmWasm.load(
-  //     this.packages.file(packageCid, 'ownable.js'),
-  //     this.packages.file(packageCid, 'ownable_bg.wasm'),
-  //   );
+    try {
+      return normalizeCaip10Account(trimmedOwner);
+    } catch {
+      throw new UserError('owner must be a valid CAIP-10 account');
+    }
+  }
 
-  //   for (const event of chain.events) {
-  //     await this.applyEvent(contract, event);
-  //   }
+  private deriveAvailableOwnableTitle(name: string): string {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      return '';
+    }
 
-  //   return contract;
-  // }
+    const normalizedName = trimmedName.replace(/^ownable-/, '').replace(/-ownable$/, '');
+    const words = normalizedName
+      .split(/[-_]+/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1));
 
-  // private verifyChainId(chain: EventChain, nft: NFTInfo): boolean {
-  //   const { publicKey, keyType } = chain.events[0].signKey as { publicKey: Binary; keyType: 'ed25519' | 'secp256k1' };
-  //   const account = this.lto.account({ publicKey: publicKey.base58, keyType });
-  //   const nonce = Binary.concat(
-  //     Binary.fromHex(nft.address),
-  //     nft.id.match(/^\d+$/) ? Binary.fromInt32(Number(nft.id)) : new Binary(nft.id),
-  //   );
-  //   const expectedId = new EventChain(account, nonce).id;
-  //   console.log('expectedId', expectedId, chain.id);
+    return words.join(' ') || trimmedName;
+  }
 
-  //   return chain.id === expectedId;
-  // }
+  private normalizeOptionalText(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
 
-  // private async verifyChainOwner(chain: EventChain, nft: NFTInfo): Promise<boolean> {
-  //   const { publicKey, keyType } = chain.events[0].signKey as { publicKey: Binary; keyType: 'ed25519' | 'secp256k1' };
-  //   const account = this.lto.account({ publicKey: publicKey.base58, keyType });
+    const trimmed = value.trim();
+    return trimmed ? trimmed : undefined;
+  }
 
-  //   const issuer = await this.nft.getIssuer(nft);
+  private normalizeThumbnailUrl(value: unknown): string | null | undefined {
+    const candidate = this.normalizeOptionalText(value);
+    if (!candidate) {
+      return undefined;
+    }
 
-  //   console.log('issuer', issuer, account.getAddressOnNetwork(nft.network));
-  //   return issuer === account.getAddressOnNetwork(nft.network);
-  // }
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'data:') {
+        return parsed.toString();
+      }
+    } catch {
+      return undefined;
+    }
 
-  // private postToWebhook(chain: EventChain, info: OwnableInfo, packageCid: string) {
-  //   const webhook = this.config.get('accept.webhook');
-  //   if (!webhook) return;
+    return undefined;
+  }
 
-  //   this.http.post(webhook, { chain: chain.toJSON(), ownable: info, packageCid });
-  // }
+  private async readAvailableOwnablePackageMetadata(cid: string): Promise<AvailableOwnablePackageMetadata> {
+    const fallback = { title: cid, thumbnailUrl: null } satisfies AvailableOwnablePackageMetadata;
 
-  public async testSignedRequest(): Promise<string> {
-    const account = this.lto.account();
-    const request: any = {
-      headers: { Accept: 'application/zip' },
-      method: 'GET',
-      url: 'http://localhost:3000/ownables/proof?cid=bafybeich7f34tktr6eszv7x4jqhetqqj3dmwxcumb23s6wh36mjwrxriim',
-      // body: JSON.stringify({
-      //   cid: 'bafybeich7f34tktr6eszv7x4jqhetqqj3dmwxcumb23s6wh36mjwrxriim',
-      // }),
+    try {
+      const zipped = new JSZip();
+      await zipped.loadAsync(await this.storage.getPackageZip(cid), { createFolders: true });
+      const packageJsonFile = zipped.file('package.json');
+      if (!packageJsonFile) {
+        return fallback;
+      }
+
+      const packageJson = JSON.parse(await packageJsonFile.async('string')) as {
+        title?: unknown;
+        name?: unknown;
+        description?: unknown;
+        thumbnailUrl?: unknown;
+        image?: unknown;
+      };
+      const explicitTitle = this.normalizeOptionalText(packageJson.title);
+      const packageName = this.normalizeOptionalText(packageJson.name);
+      const title =
+        explicitTitle ?? (packageName ? this.deriveAvailableOwnableTitle(packageName) : fallback.title);
+
+      return {
+        title,
+        description: this.normalizeOptionalText(packageJson.description),
+        thumbnailUrl: this.normalizeThumbnailUrl(packageJson.thumbnailUrl ?? packageJson.image) ?? null,
+      };
+    } catch {
+      return fallback;
+    }
+  }
+
+  private toIndexedPublicEvent(row: IndexedWalletEvent): IndexedPublicEvent | null {
+    if (row.eventKind !== 'public' || !row.sourceAddress || !row.eventType || !row.dataHex) {
+      return null;
+    }
+
+    return {
+      source: row.sourceAddress,
+      eventType: row.eventType,
+      data: row.dataHex,
+      blockNumber: Number(row.blockNumber),
+      transactionHash: row.transactionHash,
+      transactionIndex: row.transactionIndex,
+      logIndex: row.logIndex,
+    };
+  }
+
+  private unsupportedRuntimeError(reason: string): UserError {
+    return new UserError(
+      `Invalid package: unsupported Ownable runtime in '${OWNABLE_RUNTIME_FILENAME}'. Expected raw-ABI exports with no wasm imports; ${reason}`,
+    );
+  }
+
+  private assertSupportedOwnableRuntime(files: Map<string, Buffer>): void {
+    const wasm = files.get(OWNABLE_RUNTIME_FILENAME);
+    if (!wasm) {
+      throw new UserError(`Invalid package: '${OWNABLE_RUNTIME_FILENAME}' is missing`);
+    }
+
+    let runtimeModule: WebAssembly.Module;
+    try {
+      runtimeModule = new WebAssembly.Module(Uint8Array.from(wasm));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw this.unsupportedRuntimeError(`the wasm binary could not be compiled (${detail})`);
+    }
+
+    const imports = WebAssembly.Module.imports(runtimeModule);
+    if (imports.length > 0) {
+      const modules = Array.from(new Set(imports.map(({ module }) => module))).join(', ');
+      throw this.unsupportedRuntimeError(`found unsupported imports from module(s): ${modules}`);
+    }
+
+    const runtimeExports = WebAssembly.Module.exports(runtimeModule);
+    const exportKinds = new Map(runtimeExports.map(({ name, kind }) => [name, kind]));
+    const missingExports = REQUIRED_OWNABLE_RUNTIME_EXPORTS.filter((name) => !exportKinds.has(name));
+    if (missingExports.length > 0) {
+      throw this.unsupportedRuntimeError(`missing required raw-ABI exports: ${missingExports.join(', ')}`);
+    }
+
+    const wrongKindExports = REQUIRED_OWNABLE_RUNTIME_EXPORTS.flatMap((name) => {
+      const actualKind = exportKinds.get(name);
+      const expectedKind = REQUIRED_OWNABLE_RUNTIME_EXPORT_KINDS[name];
+      if (actualKind === expectedKind) return [];
+      return [`${name} (expected ${expectedKind}, found ${actualKind ?? 'missing'})`];
+    });
+    if (wrongKindExports.length > 0) {
+      throw this.unsupportedRuntimeError(`wrong raw-ABI export kinds: ${wrongKindExports.join(', ')}`);
+    }
+  }
+
+  private async replayOwnable(packageCid: string, eventChainBuffer: Buffer): Promise<ReplayDerivedState> {
+    const chain = EventChain.from(JSON.parse(eventChainBuffer.toString('utf8')));
+    this.validateEventChain(chain);
+
+    const zipped = new JSZip();
+    await zipped.loadAsync(await this.storage.getPackageZip(packageCid), { createFolders: true });
+    zipped.file(CANONICAL_CHAIN_FILENAME, eventChainBuffer);
+    const files = await this.unzip(await zipped.generateAsync({ type: 'uint8array' }));
+    this.assertSupportedOwnableRuntime(files);
+
+    const stateStore = new InMemoryStateStore();
+    const anchorProvider: AnchorProvider = {
+      address: '0x0000000000000000000000000000000000000000',
+      chainId: 0,
+      signer: null,
+      sign: async () => {},
+      anchor: async () => {},
+      submitAnchors: async () => undefined,
+      emitPublicEvent: async () => {
+        throw new Error('emitPublicEvent is not supported in hub replay');
+      },
+      verifyAnchors: async () => ({ verified: true, anchors: {}, map: {} }),
     };
 
-    const signedRequest = await sign(request, { signer: account });
-    return signedRequest;
+    const packageInfo: TypedPackage = {
+      title: packageCid,
+      name: packageCid,
+      cid: packageCid,
+      isDynamic: true,
+      hasMetadata: false,
+      hasWidgetState: false,
+      isConsumable: false,
+      isConsumer: false,
+      isTransferable: false,
+      versions: [{ date: new Date(), cid: packageCid }],
+    };
+
+    const packageAssetIO = new NodePackageAssetIO({
+      infoResolver: () => packageInfo,
+      assetLoader: async (_packageCid, name) => files.get(name),
+      assetList: async () => Array.from(files.keys()),
+    });
+
+    const eventChains = new CoreEventChainService(stateStore, anchorProvider);
+    const coreOwnables = new CoreOwnableService(
+      stateStore,
+      eventChains,
+      anchorProvider,
+      packageAssetIO,
+      undefined,
+      console,
+      { create: (id: string) => new NodeSandboxOwnableRPC(id) },
+    );
+
+    await coreOwnables.initWorker(chain.id, packageCid);
+    const privateStateDump = await coreOwnables.apply(chain, []);
+
+    const indexedRows = await this.hubState.listWalletEventsByCid(packageCid);
+    const indexedEventsWithRowId = indexedRows
+      .map((row) => ({ rowId: row.id, event: this.toIndexedPublicEvent(row) }))
+      .filter((value): value is { rowId: string; event: IndexedPublicEvent } => Boolean(value.event));
+    const indexedEvents = indexedEventsWithRowId.map(({ event }) => event);
+    const replay = await coreOwnables.attemptReplayIndexedPublicEvents(chain.id, privateStateDump, indexedEvents);
+
+    const freshness = evaluateReplayFreshness(indexedEvents, replay.appliedReplayKeys);
+
+    if (freshness.stale) {
+      throw new UserError(`STALE_OWNABLE missingReplayKeys=${freshness.missingReplayKeys.join(',')}`);
+    }
+
+    const info = await coreOwnables.rpc(chain.id).query({ get_info: {} }, replay.stateDump);
+    const owner = String(info.owner ?? '').toLowerCase();
+    if (!owner) throw new UserError('Unable to derive owner from replayed state');
+
+    const latestAppliedPublicEvent = replay.appliedEvents.at(-1);
+    const latestAppliedPublicEventId =
+      latestAppliedPublicEvent === undefined
+        ? null
+        : indexedEventsWithRowId.find(
+            ({ event }) =>
+              event.transactionHash === latestAppliedPublicEvent.transactionHash &&
+              event.logIndex === latestAppliedPublicEvent.logIndex,
+          )?.rowId ?? null;
+
+    const nftInfo = await this.deriveNftInfo(chain, info);
+    coreOwnables.clearRpc(chain.id);
+
+    return {
+      nftInfo,
+      ownerNetwork: this.deriveOwnerNetwork(chain, nftInfo),
+      ownerAccount: this.deriveOwnerAccount(owner, this.deriveOwnerNetwork(chain, nftInfo)),
+      owner,
+      latestAppliedPublicEventId: latestAppliedPublicEventId ?? null,
+    };
   }
+
+  private async replayStoredOwnable(ownableId: string, packageCid: string): Promise<ReplayDerivedState> {
+    const eventChainBuffer = await this.storage.getEventChain(ownableId, packageCid);
+    return this.replayOwnable(packageCid, eventChainBuffer);
+  }
+
+  private async requireNftOwner(nftInfo: NFTInfo, signer?: SignerIdentity): Promise<string> {
+    if (!signer?.address) throw new AuthError('Missing SIWE signer');
+
+    const currentNftOwner = await this.nft.getOwnerOfNFT(nftInfo);
+    if (currentNftOwner.toLowerCase() !== signer.address.toLowerCase()) {
+      throw new UserError(`Signer ${signer.address} is not current NFT owner ${currentNftOwner}`);
+    }
+
+    return signer.address;
+  }
+
   public async getOwnableCidFromNFT(nftInfo: NFTInfo): Promise<JSON> {
-    let cid: string;
-    let cidOwner: string;
+    const record = await this.hubState.getOwnableByNft(nftInfo.network, nftInfo.address, nftInfo.id.toString());
+    if (!record) throw new UserError(`No CID available for nftInfo ${JSON.stringify(nftInfo)}`);
 
-    try {
-      console.log(`Fetching available CIDs according to nftInfo:`);
-      const files = readdirSync(`${this.pathToNfts}/`);
-      const myReg = new RegExp(`${nftInfo.network}_${nftInfo.address}_${nftInfo.id}_`, 'g');
-      console.log('myReg', myReg);
-      files.forEach((file) => {
-        if (file.match(myReg)) {
-          const filesArray = file.split('_');
-          cid = filesArray[3].toString();
-        }
-      });
-    } catch (err) {
-      console.log(err);
-    }
-    try {
-      console.log(`Fetching last registered owner of CID: ${cid}`);
-      const files = readdirSync(`${this.pathToUsers}/`);
-      const myReg = new RegExp(`${cid}_`, 'g');
-      files.forEach((file) => {
-        if (file.match(myReg)) {
-          const filesArray = file.split('_');
-          cidOwner = filesArray[1].toString();
-        }
-      });
-    } catch (err) {
-      console.log(err);
-    }
-
-    if (cid === undefined) {
-      throw new UserError(`No CID available for nftInfo ${nftInfo}`);
-    }
     const nftOwner: string = await this.nft.getOwnerOfNFT(nftInfo);
-
-    const nftOwnableMapping = {
-      OwnableCid: cid,
-      OwnableLastOwner: cidOwner,
-      network: 'eip155:arbitrum',
-      id: nftInfo.id.toString(),
-      smartContractAddress: this.config.get('eth.contracts.arbitrum'),
-      nftOwner: nftOwner,
-    };
-
-    return JSON.parse(JSON.stringify(nftOwnableMapping));
+    return JSON.parse(
+      JSON.stringify({
+        OwnableCid: record.packageCid,
+        OwnableLastOwner: record.prevOwnerAddress,
+        network: nftInfo.network,
+        id: nftInfo.id.toString(),
+        smartContractAddress: nftInfo.address,
+        nftOwner,
+      }),
+    );
   }
 
   public async getAvailableNftChains(): Promise<JSON> {
-    const nftInfoETH: NFTInfo = {
-      network: 'eip155:ethereum',
-      id: '0',
-      address: this.config.get('eth.contracts.ethereum'),
-    };
+    const contractAddress = this.getBaseContractAddress();
+    const nftInfoBase: NFTInfo = { network: 'eip155:base', id: '0', address: contractAddress };
+    const nftCountBase = await this.nft.getNFTcount(nftInfoBase);
 
-    const nftInfoARB: NFTInfo = {
-      network: 'eip155:arbitrum',
-      id: '0',
-      address: this.config.get('eth.contracts.arbitrum'),
-    };
+    return JSON.parse(
+      JSON.stringify({
+        base: 'eip155:base',
+        baseContractAddress: contractAddress,
+        totalAmountBaseNFTs: nftCountBase.toString(),
+      }),
+    );
+  }
 
-    // const nftInfoPOL: NFTInfo = {
-    //   network: 'eip155:polygon',
-    //   id: '0',
-    //   address: this.config.get('eth.contracts.polygon'),
-    // };
+  private getBaseContractAddress(): string {
+    return this.getBaseNftContractAddressForProfile(this.config.getRuntimeNetworkProfile());
+  }
 
-    const nftCountETH = await this.nft.getNFTcount(nftInfoETH);
-    const nftCountARB = await this.nft.getNFTcount(nftInfoARB);
-    // const nftCountPOL = await this.nft.getNFTcount(nftInfoPOL);
-
-    const availableChains = {
-      ethereum: 'eip155:ethereum',
-      arbitrum: 'eip155:arbitrum',
-      // polygon: 'eip155:polygon',
-      ethereumContractAddress: this.config.get('eth.contracts.ethereum'),
-      arbitrumContractAddress: this.config.get('eth.contracts.arbitrum'),
-      // polygonContractAddress: this.config.get('eth.contracts.polygon'),
-      totalAmountethereumNFTs: nftCountETH.toString(),
-      totalAmountarbitrumNFTs: nftCountARB.toString(),
-      // polygonNFTcount: nftCountPOL,
-    };
-
-    return JSON.parse(JSON.stringify(availableChains));
+  private getBaseNftContractAddressForProfile(profile: RuntimeNetworkProfile): string {
+    if (profile === 'testnet') return process.env.TESTNET_BASE_NFT_CONTRACT_ADDRESS?.trim() || '';
+    return process.env.MAINNET_BASE_NFT_CONTRACT_ADDRESS?.trim() || '';
   }
 
   async existsCid(cid: string): Promise<boolean> {
-    return await fileExists(`${this.pathToCids}/${cid}/eventChain.json`);
+    return await this.storage.hasEventChain(cid);
+  }
+
+  async existsOwnableChain(ownableId: string, packageCid: string): Promise<boolean> {
+    return await this.storage.hasEventChain(ownableId, packageCid);
   }
 
   async existsPkg(pkg: string): Promise<boolean> {
-    return await fileExists(`${this.pathToPkgs}/${pkg}/${pkg}.zip`);
+    return await this.storage.hasPackage(pkg);
   }
 
   private async unzip(data: Uint8Array): Promise<Map<string, Buffer>> {
     const zip = new JSZip();
     const archive = await zip.loadAsync(data, { createFolders: true });
-
     const entries: Array<[string, Buffer]> = await Promise.all(
       Object.entries(archive.files)
-        .filter(([filename]) => filename !== 'chain.json')
+        .filter(([, file]) => !file.dir)
         .map(async ([filename, file]) => [filename, await file.async('nodebuffer')]),
     );
     return new Map(entries);
   }
 
-  private async storeFiles(destPath: string, cid: string, files: Map<string, Buffer>): Promise<void> {
-    const dir = path.join(destPath, cid);
-    mkdirSync(dir, { recursive: true });
+  private resolveChainFile(files: Map<string, Buffer>): { buffer: Buffer; aliases: string[] } {
+    const canonical = files.get(CANONICAL_CHAIN_FILENAME);
+    const legacy = files.get(LEGACY_CHAIN_FILENAME);
 
-    await Promise.all(
-      Array.from(files.entries()).map(([filename, content]) => writeFileSync(path.join(dir, filename), content)),
-    );
-  }
+    if (!canonical && !legacy) {
+      throw new UserError(`Invalid package: '${CANONICAL_CHAIN_FILENAME}' or '${LEGACY_CHAIN_FILENAME}' is missing`);
+    }
 
-  private async storeZip(destPath: string, uniqueId: string, data: Uint8Array): Promise<void> {
-    const file = path.join(destPath, `${uniqueId}.zip`);
-    writeFileSync(file, data);
+    if (canonical && legacy && !canonical.equals(legacy)) {
+      throw new UserError(`Invalid package: '${CANONICAL_CHAIN_FILENAME}' and '${LEGACY_CHAIN_FILENAME}' differ`);
+    }
+
+    return {
+      buffer: canonical ?? (legacy as Buffer),
+      aliases: [CANONICAL_CHAIN_FILENAME, LEGACY_CHAIN_FILENAME].filter((filename) => files.has(filename)),
+    };
   }
 
   public async isUnlockProofValid(network: string, address: string, id: string, proof: string): Promise<boolean> {
     try {
-      const isValid = await this.nft.isUnlockProofValid(proof, {
-        network: network,
-        address: address,
-        id: id,
-      });
-      return isValid;
+      return await this.nft.isUnlockProofValid(proof, { network, address, id });
     } catch (err) {
       throw new UserError(`function call isUnlockProofValid to smart contract failed with Error: ${err}`);
     }
   }
 
-  public getBridgedOwnableCIDs(signer: Account): string[] {
-    const bridgedOwnableCIDs: string[] = [];
-    // TODO: enable following check
-    // if (signer === undefined) {
-    //   throw new UserError(
-    //     'Signer is undefined. Use http authentication. See: https://docs.ltonetwork.com/libraries/javascript/http-authentication',
-    //   );
-    // }
-
-    // TODO: replace 3N5vwNey9aFkyrQ5KUzMt3qfuwg5jKKzrLB with signer.address
-    // const ltoUserAddress = signer.account;
-    const ltoUserAddress = '3N5vwNey9aFkyrQ5KUzMt3qfuwg5jKKzrLB';
-    try {
-      console.log(`Fetching available request IDs for LTO user address: ${ltoUserAddress}`);
-      const files = readdirSync(`${this.pathToUsers}/`);
-      const myReg = new RegExp(`${ltoUserAddress}_bridged$`, 'g');
-      files.forEach((file) => {
-        if (file.match(myReg)) {
-          const filesArray = file.split('_');
-          bridgedOwnableCIDs.push(filesArray[0].toString());
-        }
-      });
-    } catch (err) {
-      console.log(err);
-    }
-    return bridgedOwnableCIDs;
+  public getBridgedOwnableCIDs(signer?: SignerIdentity): Promise<string[]> {
+    const ownerAddress = signer?.address?.toLowerCase();
+    if (!ownerAddress) return Promise.resolve([]);
+    return this.hubState.listOwnableCidsByPrevOwner(ownerAddress);
   }
-  // private async storeZip(cid: string, data: Uint8Array): Promise<void> {
-  //   const file = path.join(this.path, `${cid}.zip`);
-  //   await fs.writeFile(file, data);
-  // }
 
   private async getCid(files: Map<string, Buffer>): Promise<string> {
-    const source = Array.from(files.entries()).map(([filename, content]) => ({
-      path: `./${filename}`,
-      content,
-    }));
-
-    for await (const entry of this.ipfs.addAll(source, { onlyHash: true, cidVersion: 1, recursive: true })) {
-      if (entry.path === entry.cid.toString() && !!entry.mode) return entry.cid.toString();
-    }
-    throw new Error('Failed to calculate directory CID: importer did not find a directory entry in the input files');
+    return calculateOwnablePackageCid(
+      Array.from(files.entries()).map(([filename, content]) => ({ path: filename, content })),
+    );
   }
 
-  // private file(cid: string, filename?: string): string {
-  //   return filename ? `${this.path}/${cid}/${filename}` : `${this.path}/${cid}.zip`;
-  // }
+  public async getUnlockProof(cid: string, signer?: SignerIdentity): Promise<string> {
+    if (!signer?.address) throw new AuthError('Missing SIWE signer');
 
-  private async validateEventChain(chain: EventChain, verbose: boolean): Promise<void> {
-    try {
-      chain.validate();
-      if (verbose) console.log(`eventChain.json successfully validated!`);
-    } catch (e) {
-      throw new UserError('Invalid event chain');
+    const record = await this.hubState.getOwnableByCid(cid);
+    if (!record) throw new UserError('CID not found. Ownable copy is not registered on hub.');
+    if (!(await this.existsPkg(cid))) throw new UserError('Ownable package with CID is not available on server.');
+
+    const replayState = await this.replayStoredOwnable(record.id, record.packageCid);
+    if (!replayState.nftInfo) {
+      throw new UserError('NFT metadata is unavailable for this ownable');
     }
-    const genesisSigner = this.lto.account(chain.events[0].signKey);
-    if (!chain.isCreatedBy(genesisSigner))
-      throw new Error('Event chain hijacking: genesis event not signed by chain creator');
-    else {
-      if (verbose) console.log('All good! Genesis signer correct', genesisSigner.address);
-    }
+    await this.requireNftOwner(replayState.nftInfo, signer);
 
-    // TODO: checking the anchoring does not work
-
-    try {
-      const { verified } = await this.ltoIndex.verifyAnchors(chain.anchorMap);
-      if (!verified) throw new UserError('Chain integrity could not be verified: Mismatch in anchor map');
-    } catch (err) {
-      console.log('Error Verifying Anchormap', err);
-    }
-  }
-  private validateOwnableOwnership(chain: EventChain, signer: Account, verbose: boolean): string {
-    const lastEntryIndex = chain.events.length - 1;
-
-    const { publicKey, keyType } = chain.events[0].signKey as { publicKey: Binary; keyType: 'ed25519' | 'secp256k1' };
-    const account = this.lto.account({ publicKey: publicKey.base58, keyType });
-    if (verbose) console.log('LTO Genesis Signer account Address', account.address);
-
-    const lastEventSigner = this.lto.account(chain.events[lastEntryIndex].signKey);
-    if (verbose) console.log('Signer of last event Entry in event Chain:', lastEventSigner.address);
-    // TODO: '3N5vwNey9aFkyrQ5KUzMt3qfuwg5jKKzrLB' must be replaced by signer.address
-    if (lastEventSigner.address !== '3N5vwNey9aFkyrQ5KUzMt3qfuwg5jKKzrLB') {
-      throw new AuthError(
-        `Signer of last event ${lastEventSigner.address} does not match HTTP Request Signer ${signer.address}`,
-      );
-    } else {
-      if (verbose)
-        console.log('Signer of last event Entry in event Chain matches HTTP Request Signer:', lastEventSigner.address);
-    }
-
-    const lastEventChainEntry = JSON.parse(chain.events[lastEntryIndex].data.toString());
-    if (!(lastEventChainEntry['@context'] === 'execute_msg.json')) {
-      throw new UserError('Missing transfer context');
-    } else {
-      if (verbose) console.log('transfer context exists');
-    }
-    // TODO: 3NCfghPcoym62MrXj6To5uRkiFp4xNDi5LK MUST BE BRIDGE LTO Wallet
-    if (!(lastEventChainEntry.transfer.to === '3NCfghPcoym62MrXj6To5uRkiFp4xNDi5LK')) {
-      throw new UserError('Bridge is not the Owner of Ownable');
-    } else {
-      if (verbose) console.log('Current owner of Ownable is Bridge');
-    }
-    return lastEventSigner.address;
-  }
-
-  public async getUnlockProof(cid: string, signer: Account): Promise<string> {
-    // Must check:
-    // NFT must be locked
-    // CID File 'bridged' must exist (with NFT info)
-    // LTO wallet must be signed in with http authentication
-    // LTO wallet must match the previous ownable owner
-    // TODO: enable following check for production
-    // if (signer === undefined) {
-    //   throw new UserError(
-    //     'Signer is undefined. Use http authentication. See: https://docs.ltonetwork.com/libraries/javascript/http-authentication',
-    //   );
-    // }
-
-    let cidInfoFile: string;
-
-    try {
-      console.log(`Fetching available CID: ${cid}`);
-      const files = readdirSync(`${this.pathToUsers}/`);
-      const myReg = new RegExp(`${cid}`, 'g');
-      files.forEach((file) => {
-        if (file.match(myReg)) {
-          cidInfoFile = file;
-        }
-      });
-    } catch (err) {
-      console.log(err);
-    }
-
-    if (cidInfoFile === undefined) {
-      throw new UserError('CID not found. Ownable with CID does not exist on server.');
-    }
-
-    const cidInfo = JSON.parse(readFileSync(`${this.pathToUsers}/${cidInfoFile}`).toString());
-
-    console.log('cidInfo', cidInfo);
-
-    if (signer !== undefined && !(signer.address === cidInfo.prevOwner)) {
-      throw new UserError('Signer ${signer.address} is not Ownable sender ${cidInfo.prevOwner}');
-    }
     try {
       const locked = await this.nft.isNFTlocked({
-        network: cidInfo.network,
-        address: cidInfo.smartContractAddress,
-        id: cidInfo.NftId,
+        network: replayState.nftInfo.network,
+        address: replayState.nftInfo.address,
+        id: replayState.nftInfo.id,
       });
       if (!locked) {
         throw new UserError(
-          `NFT ${cidInfo.NftId} is NOT LOCKED ! Network ${cidInfo.network} and NFT smart contract ${cidInfo.smartContractAddress}`,
+          `NFT ${replayState.nftInfo.id} is NOT LOCKED ! Network ${replayState.nftInfo.network} and NFT smart contract ${replayState.nftInfo.address}`,
         );
       }
     } catch (err) {
@@ -458,230 +702,137 @@ export class OwnableService implements OnModuleInit {
     }
 
     return await this.nft.getUnlockProof({
-      network: cidInfo.network,
-      address: cidInfo.smartContractAddress,
-      id: cidInfo.NftId,
+      network: replayState.nftInfo.network,
+      address: replayState.nftInfo.address,
+      id: replayState.nftInfo.id,
     });
   }
 
-  public getServerLTOwalletAddress(): string {
-    return this.getLTOAccountAddress();
-  }
-
-  // async bridgeOwnable(buffer: Uint8Array, signer: Account): Promise<InfoWithProof> {
-  async bridgeOwnable(buffer: Uint8Array, signer: Account, verbose: boolean): Promise<any> {
+  async uploadOwnable(buffer: Uint8Array, signer?: SignerIdentity, verbose = false): Promise<any> {
     if (verbose) console.log('unzipping Zip files into memory');
     const files = await this.unzip(buffer);
-    if (!files.has('eventChain.json')) throw new Error("Invalid package: 'eventChain.json' is missing");
+    const { buffer: eventChainBuffer, aliases: chainAliases } = this.resolveChainFile(files);
+    const eventChainJson = JSON.parse(eventChainBuffer.toString());
+    const chain = EventChain.from(eventChainJson);
+    this.validateEventChain(chain);
+    this.assertSupportedOwnableRuntime(files);
 
-    const eventChainBuffer: Buffer = files.get('eventChain.json');
-    if (verbose) console.log('eventChain.json found as buffer', eventChainBuffer);
+    const ownerFromPrivateState = chain.events.at(-1)?.signerAddress?.toLowerCase() ?? signer?.address?.toLowerCase() ?? '';
 
-    const eventChainJson: IEventChainJSON = JSON.parse(eventChainBuffer.toString());
-    const chain: EventChain = EventChain.from(eventChainJson);
-    if (verbose) console.log('eventChain.json imported as JSON format', chain);
+    if (verbose) console.log(`normalizing ${chainAliases.join(', ')} into ${CANONICAL_CHAIN_FILENAME} to create CID`);
+    const normalizedFiles = new Map(files);
+    for (const alias of chainAliases) normalizedFiles.delete(alias);
+    normalizedFiles.set(CANONICAL_CHAIN_FILENAME, eventChainBuffer);
+    const cid = await this.getCid(normalizedFiles);
 
-    const lastEventChainEntrySigner = this.validateOwnableOwnership(chain, signer, verbose);
-    await this.validateEventChain(chain, verbose);
+    const packageFiles = new Map(normalizedFiles);
+    packageFiles.delete(CANONICAL_CHAIN_FILENAME);
 
-    if (verbose) console.log('removing eventChain.json from files to create CID');
-    files.delete('eventChain.json');
-    const cid = await this.getCid(files);
+    const newZip = new JSZip();
+    await newZip.loadAsync(buffer, { createFolders: true });
+    for (const alias of chainAliases) newZip.remove(alias);
+    const content = await newZip.generateAsync({ type: 'uint8array' });
 
-    if (verbose) console.log('Storing Zip file without eventChain.json');
-    const new_zip = new JSZip();
-    await new_zip.loadAsync(buffer, { createFolders: true });
-    new_zip.remove('eventChain.json');
-    const content = await new_zip.generateAsync({ type: 'uint8array' });
-    mkdirSync(`${this.pathToPkgs}/${cid}`, { recursive: true });
-    writeFileSync(`${this.pathToPkgs}/${cid}/${cid}.zip`, content);
-
-    await this.storeFiles(this.pathToPkgs, cid, files);
-
-    const eventChainMap: Map<string, Buffer> = new Map().set('eventChain.json', eventChainBuffer);
-    await this.storeFiles(this.pathToCids, cid, eventChainMap);
-
-    const nftInfo: NFTInfo = JSON.parse(chain.events[0].data.toString()).nft;
-
-    // nftInfo.network = "eip155:arbitrum"; // DONE! TODO Ownable-generator needs to produce correct input here
-    // console.log('nftInfo', nftInfo);
-    const proof = await this.nft.getUnlockProof(nftInfo);
-    // console.log('proof', proof);
-
-    const bridgedOwnablesInfo = {
-      cid: cid.toString(),
-      prevOwner: lastEventChainEntrySigner.toString(),
-      network: nftInfo.network.toString(),
-      smartContractAddress: nftInfo.address.toString(),
-      NftId: nftInfo.id.toString(),
-    };
-
-    const signerAddress = '3N5vwNey9aFkyrQ5KUzMt3qfuwg5jKKzrLB'; // TODO must be replaced by signer.address
-
-    const bridgedOwnableFile = `${this.pathToUsers}/${cid}_${signerAddress}_bridged`;
-    writeFileSync(bridgedOwnableFile, JSON.stringify(bridgedOwnablesInfo));
-
-    const nftToCidMappingFile = `${this.pathToNfts}/${bridgedOwnablesInfo.network}_${bridgedOwnablesInfo.smartContractAddress}_${bridgedOwnablesInfo.NftId}_${cid}_mapped`;
-    await this.executeCommand(`touch ${nftToCidMappingFile}`);
+    await this.storage.storePackageArtifacts(cid, content, packageFiles);
+    const replayState = await this.replayOwnable(cid, eventChainBuffer);
+    const record = await this.hubState.upsertOwnableRecord({
+      packageCid: cid,
+      prevOwnerAddress: ownerFromPrivateState || '0x0000000000000000000000000000000000000000',
+      subjectId: chain.id,
+      nftNetwork: replayState.nftInfo?.network,
+      nftContractAddress: replayState.nftInfo?.address,
+      nftTokenId: replayState.nftInfo?.id,
+    });
+    await this.storage.storeEventChain(record.id, eventChainBuffer);
+    await this.hubState.setOwnerState(record.id, replayState.owner, replayState.ownerAccount, replayState.latestAppliedPublicEventId);
 
     return {
       cid: cid.toString(),
-      proof: proof.toString(),
-      ltoSignerWallet: signerAddress.toString(),
-      prevOwner: lastEventChainEntrySigner.toString(),
-      nftNetwork: nftInfo.network.toString(),
-      smartContractAddress: nftInfo.address.toString(),
-      NftId: nftInfo.id.toString(),
+      owner: replayState.owner,
+      ownerAccount: replayState.ownerAccount,
+      ...(replayState.nftInfo
+        ? {
+            nftNetwork: replayState.nftInfo.network,
+            smartContractAddress: replayState.nftInfo.address,
+            NftId: replayState.nftInfo.id,
+          }
+        : {}),
     };
   }
 
-  async claimOwnable(
-    cid: string,
-    message: string,
-    signature: any,
-    signer: Account,
-    verbose: boolean,
-  ): Promise<StreamableFile> {
-    // Must check:
-    // exists CID on server ?
-    // NFT must be locked
-    // recovered signer address from message+signature must match NFT owner address
-    // Must create a claimable zip file with an updated eventChain that transfers the Ownable to the signer.address
+  async bridgeOwnable(buffer: Uint8Array, signer?: SignerIdentity, verbose = false): Promise<any> {
+    return this.uploadOwnable(buffer, signer, verbose);
+  }
 
+  async downloadOwnable(cid: string): Promise<StreamableFile> {
+    const record = await this.hubState.getOwnableByCid(cid);
+    if (!record) throw new UserError(`Event chain with cid ${cid} not available on this hub`);
+    if (!(await this.existsOwnableChain(record.id, record.packageCid))) throw new UserError(`Event chain with cid ${cid} not available on this hub`);
+    if (!(await this.existsPkg(cid))) throw new UserError(`Ownable package with cid ${cid} not available on this hub`);
+
+    await this.replayStoredOwnable(record.id, record.packageCid);
+
+    const zipped = new JSZip();
+    const zipFile = await this.storage.getPackageZip(cid);
+    await zipped.loadAsync(zipFile, { createFolders: true });
+    zipped.remove(LEGACY_CHAIN_FILENAME);
+    zipped.file(CANONICAL_CHAIN_FILENAME, await this.storage.getEventChain(record.id, record.packageCid));
+
+    const content = await zipped.generateAsync({ type: 'uint8array' });
+    return new StreamableFile(Readable.from(Buffer.from(content)));
+  }
+
+  async claimOwnable(cid: string, signer?: SignerIdentity): Promise<StreamableFile> {
+    void signer;
+    return this.downloadOwnable(cid);
+  }
+
+  async getOwnableEvents(cid: string): Promise<IndexedWalletEvent[]> {
     if (!(await this.existsCid(cid))) {
-      throw new UserError('Event chain with cid ${cid} not available on this bridge');
+      throw new UserError(`Event chain with cid ${cid} not available on this hub`);
+    }
+    return this.hubState.listWalletEventsByCid(cid);
+  }
+
+  async downloadOwnableChain(ownableId: string): Promise<Buffer> {
+    const record = await this.hubState.getOwnableBySubjectId(ownableId);
+    if (!record) throw new UserError(`Ownable chain with id ${ownableId} not available on this hub`);
+    if (!(await this.existsOwnableChain(record.id, record.packageCid))) {
+      throw new UserError(`Ownable chain with id ${ownableId} not available on this hub`);
+    }
+    return await this.storage.getEventChain(record.id, record.packageCid);
+  }
+
+  async getAvailableOwnables(ownerAccount: string): Promise<{
+    owner: string;
+    entries: AvailableOwnableEntry[];
+  }> {
+    if (!this.config.isLocalDevRecipientDiscoveryEnabled()) {
+      throw new UserError('RECIPIENT_DISCOVERY_DISABLED');
     }
 
-    // TODO: Uncomment the following check
-    // if (signer === undefined) {
-    //   throw new UserError(
-    //     'Signer is undefined. Use http authentication. See: https://docs.ltonetwork.com/libraries/javascript/http-authentication',
-    //   );
-    // }
+    const normalizedOwnerAccount = this.normalizeOwnerAccount(ownerAccount);
+    const rows = await this.hubState.listAvailableOwnablesByOwnerAccount(normalizedOwnerAccount);
+    const entries = await Promise.all(
+      rows.map(async (row): Promise<AvailableOwnableEntry> => {
+        const metadata = await this.readAvailableOwnablePackageMetadata(row.packageCid);
+        return {
+          id: row.subjectId ?? row.ownableId,
+          title: metadata.title,
+          ...(metadata.description ? { description: metadata.description } : {}),
+          ...(row.issuerAddress ? { issuer: row.issuerAddress } : {}),
+          availableAt: row.availableAt,
+          package: {
+            cid: row.packageCid,
+            thumbnailUrl: metadata.thumbnailUrl ?? null,
+          },
+        };
+      }),
+    );
 
-    // TODO: Remove this testSignature from code
-    const testSignature: any = {
-      r: '0xa617d0558818c7a479d5063987981b59d6e619332ef52249be8243572ef10868',
-      s: '0x07e381afe644d9bb56b213f6e08374c893db308ac1a5ae2bf8b33bcddcb0f76a',
-      yParity: 0,
-      networkV: null,
+    return {
+      owner: normalizedOwnerAccount,
+      entries,
     };
-
-    let recoveredSignerAddressEVM: string;
-    try {
-      recoveredSignerAddressEVM = this.nft.verifyMessage(message, testSignature);
-      if (verbose) console.log('recovered signer Address:', recoveredSignerAddressEVM);
-    } catch (err) {
-      throw new AuthError('Not able to verify message on Event chain with cid ${cid} not available on this bridge');
-    }
-
-    console.log('Test:', await this.nft.testSignMessage('Hello World'));
-
-    // Transfer Ownable to signer.address and zip all together
-    const chainFile = `${this.pathToCids}/${cid}/eventChain.json`;
-    const eventChainJsonFile = readFileSync(chainFile, { encoding: 'utf8' });
-
-    const data: IEventChainJSON = JSON.parse(eventChainJsonFile);
-    const chain = EventChain.from(data);
-    chain.validate();
-
-    const genesisSigner = this.lto.account(chain.events[0].signKey);
-    if (!chain.isCreatedBy(genesisSigner))
-      throw new Error('Event chain hijacking: genesis event not signed by chain creator');
-    else {
-      console.log('All good! Genesis signer correct after reading EventChain from disk');
-    }
-
-    const nftInfo: NFTInfo = JSON.parse(chain.events[0].data.toString()).nft;
-    const currentNftOwner = await this.nft.getOwnerOfNFT(nftInfo);
-
-    if (currentNftOwner !== recoveredSignerAddressEVM) {
-      throw new UserError(
-        `Current NFT owner ${currentNftOwner} and recoveredSignerAddress on EVM chain ${recoveredSignerAddressEVM} do not match`,
-      );
-    }
-    // TODO: 3N5vwNey9aFkyrQ5KUzMt3qfuwg5jKKzrLB must be replaced by signer.address
-    const signerAddress = '3N5vwNey9aFkyrQ5KUzMt3qfuwg5jKKzrLB';
-    new Event({ '@context': 'execute_msg.json', transfer: { to: signerAddress } })
-      .addTo(chain)
-      .signWith(this._ltoAccount);
-
-    // TODO: add anchoring and anchoring check !
-    // const appendedEvents = chain.startingWith(chain.events[0]);
-    // const anchorMap1 = appendedEvents.anchorMap;
-    // await this.lto.anchor(this._ltoAccount, ...anchorMap1);
-
-    chain.validate();
-    console.log('Removing previous eventChain File');
-    rmSync(chainFile);
-    console.log('Writing new eventChain file including the transfer event');
-    writeFileSync(chainFile, JSON.stringify(chain));
-
-    const new_zip = new JSZip();
-    const zipFile = readFileSync(`${this.pathToPkgs}/${cid}/${cid}.zip`);
-    const newChainFile = readFileSync(chainFile);
-    await new_zip.loadAsync(zipFile, { createFolders: true });
-    new_zip.file('eventChain.json', newChainFile);
-    const content = await new_zip.generateAsync({ type: 'uint8array' });
-    writeFileSync(`${this.pathToPkgs}/${cid}/${cid}_claimed.zip`, content);
-    // const chainBuffer = Buffer.from(eventChainJsonFile, 'utf8');
-    // TODO: update the NFT proof => smart contract
-    const file = createReadStream(`${this.pathToPkgs}/${cid}/${cid}_claimed.zip`);
-    return new StreamableFile(file);
   }
-
-  private async executeCommand(command: string) {
-    return new Promise((resolve, reject) => {
-      exec(command, (error, stdout, stderr) => {
-        if (error) {
-          console.log(`error: ${error.message}`);
-          throw new Error(`error: ${error.message}`);
-        }
-        resolve(stdout ? stdout : stderr);
-      });
-    });
-  }
-  // async accept(chain: EventChain, signer: Account | undefined): Promise<InfoWithProof> {
-  //   try {
-  //     chain.validate();
-  //   } catch (e) {
-  //     throw new UserError('Invalid event chain');
-  //   }
-
-  //   const packageCid: string = chain.events[0].parsedData.package;
-  //   const contract = await this.loadContract(packageCid, chain);
-
-  //   const info = (await contract.query({ get_info: {} })) as OwnableInfo;
-
-  //   if (this.config.get('verify.signer') && info.owner !== signer?.address) {
-  //     throw new AuthError('HTTP Request is not signed by the owner of the Ownable');
-  //   }
-
-  //   if (this.config.get('verify.integrity')) {
-  //     const { verified } = await this.ltoIndex.verifyAnchors(chain.anchorMap);
-  //     if (!verified) throw new UserError('Chain integrity could not be verified: Mismatch in anchor map');
-  //   }
-
-  //   const isLocked = await contract.query({ is_locked: {} });
-  //   if (!isLocked) throw new UserError('Ownable is not locked');
-
-  //   // const proof = this.config.get('accept.unlockNFT') ? await this.unlock(chain, info) : undefined;
-  //   const proof = this.config.get('accept.unlockNFT') ? await this.unlock(chain, info) : undefined;
-
-  //   writeFileSync(`${this.pathToCids}/${chain.id}/${chain.id}.json`, JSON.stringify(chain));
-  //   this.postToWebhook(chain, info, packageCid);
-
-  //   return { ...info, proof };
-  // }
-
-  // async claim(chainId: string, signer: Account): Promise<Uint8Array> {
-  //   const zip = await this.packages.zipped(chainId);
-  //   const json = readFileSync(`${this.pathToCids}/${chainId}/${chainId}.json`, 'utf-8');
-
-  //   // Is the signer the current owner of the Ownable? No, then return a 403
-
-  //   zip.file(`chain.json`, json);
-
-  //   return await zip.generateAsync({ type: 'uint8array' });
-  // }
 }

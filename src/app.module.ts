@@ -1,20 +1,22 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
-import { ConfigModule } from './common/config/config.module';
-import { LtoModule } from './common/lto/lto.module';
-import { PackageModule } from './package/package.module';
-import { OwnableModule } from './ownable/ownable.module';
-import { OwnableController } from './ownable/ownable.controller';
-import { VerifySignatureMiddleware } from './common/http-signature/verify-signature.middleware';
+import { AppController } from './app.controller.js';
+import { AppService } from './app.service.js';
+import { ConfigModule } from './common/config/config.module.js';
+import { PackageModule } from './package/package.module.js';
+import { OwnableModule } from './ownable/ownable.module.js';
+import { OwnableController } from './ownable/ownable.controller.js';
+import { SIWEAuthMiddleware } from './common/siwe/siwe-auth.middleware.js';
+import { SIWEModule } from './common/siwe/siwe.module.js';
+import { PersistenceModule } from './persistence/persistence.module.js';
+import { StorageModule } from './storage/storage.module.js';
 
 @Module({
-  imports: [ConfigModule, PackageModule, OwnableModule, LtoModule],
+  imports: [ConfigModule, PackageModule, OwnableModule, SIWEModule, PersistenceModule, StorageModule],
   controllers: [AppController],
   providers: [AppService],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(VerifySignatureMiddleware).forRoutes(OwnableController);
+    consumer.apply(SIWEAuthMiddleware).forRoutes(OwnableController);
   }
 }

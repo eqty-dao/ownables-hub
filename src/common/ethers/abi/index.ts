@@ -1,3 +1,3 @@
-export { default as IERC721Lockable } from './IERC721Lockable';
-export { default as LockableNFT } from './LockableNFT';
-export { default as Ownable } from './Ownable';
+export { default as IERC721Lockable } from './IERC721Lockable.js';
+export { default as LockableNFT } from './LockableNFT.js';
+export { default as Ownable } from './Ownable.js';

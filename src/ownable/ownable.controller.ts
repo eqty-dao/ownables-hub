@@ -1,19 +1,23 @@
-import { Controller, Get, Header, Param, Query, Post, Req, Res, UseInterceptors, StreamableFile } from '@nestjs/common';
+import { Controller, Get, Header, Query, Post, Req, Res, UseGuards, UseInterceptors, StreamableFile } from '@nestjs/common';
 import { ApiBody, ApiProperty, ApiConsumes, ApiProduces } from '@nestjs/swagger';
 import { Request, Response } from 'express';
-import { OwnableService } from './ownable.service';
-import { Account, EventChain } from '@ltonetwork/lto';
-import { eventChainExample } from './examples';
-import { Signer } from '../common/http-signature/signer';
-import { AuthError, UserError } from '../interfaces/error';
+import { OwnableService } from './ownable.service.js';
+import { Signer } from '../common/http-signature/signer.js';
+import { AuthError, UserError } from '../interfaces/error.js';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { NFTInfo } from '../interfaces/OwnableInfo';
+import { SIWEGuard } from '../common/siwe/siwe.guard.js';
+
+interface SignerIdentity {
+  address?: string;
+}
+
+type FileUploadRequest = Request & { file?: Express.Multer.File };
 
 @Controller('ownables')
 export class OwnableController {
-  constructor(private ownableService: OwnableService) { }
+  constructor(private ownableService: OwnableService) {}
 
-  @Post('/bridge')
+  @Post('/upload')
   @ApiConsumes('multipart/form-data')
   @ApiProperty({ type: 'string', format: 'binary' })
   @ApiBody({
@@ -30,66 +34,109 @@ export class OwnableController {
     },
   })
   @UseInterceptors(FileInterceptor('file'))
-  async bridgeOwnable(@Req() req: Request, @Res() res: Response, @Signer() signer: Account): Promise<Response> {
-    const buffer = req.file.buffer;
-    if (!buffer || Object.getPrototypeOf(buffer) === null || Object.prototype.isPrototypeOf(buffer) == false) {
+  async uploadOwnable(@Req() req: FileUploadRequest, @Res() res: Response, @Signer() signer?: SignerIdentity): Promise<Response> {
+    const buffer = req.file?.buffer;
+    if (!buffer || !Buffer.isBuffer(buffer)) {
       return res.status(400).send('Failed to read data from HTTP request');
     }
-    // TODO: enable the following check
-    // if (signer == undefined) {
-    //   return res.status(400).send('Signer of HTTP request is undefined');
-    // }
+
     try {
-      const bridgedOwnableInfo = await this.ownableService.bridgeOwnable(buffer, signer, true);
+      const bridgedOwnableInfo = await this.ownableService.uploadOwnable(buffer, signer, true);
       return res.status(201).json(bridgedOwnableInfo);
     } catch (err) {
       return this.errorResponse(res, err);
     }
   }
+
+  @Post('/bridge')
+  @ApiConsumes('multipart/form-data')
+  @ApiProperty({ type: 'string', format: 'binary' })
+  @ApiBody({
+    description: 'Zipped Ownable package',
+    required: true,
+    schema: { type: 'object', properties: { file: { type: 'string', format: 'binary' } } },
+  })
+  @UseInterceptors(FileInterceptor('file'))
+  async bridgeOwnable(@Req() req: FileUploadRequest, @Res() res: Response, @Signer() signer?: SignerIdentity): Promise<Response> {
+    return this.uploadOwnable(req, res, signer);
+  }
+
+  @Get(':cid/download')
+  @Header('Content-type', 'application/zip')
+  @ApiProduces('application/zip')
+  async download(@Req() req: Request, @Res({ passthrough: true }) res: Response): Promise<StreamableFile | Response> {
+    try {
+      const cid = String(req.params.cid ?? '');
+      return await this.ownableService.downloadOwnable(cid);
+    } catch (err) {
+      return this.errorResponse(res, err);
+    }
+  }
+
+  @Get(':id/chain')
+  @Header('Content-type', 'application/json')
+  async chain(@Req() req: Request, @Res() res: Response): Promise<Response> {
+    try {
+      const id = String(req.params.id ?? '');
+      const chain = await this.ownableService.downloadOwnableChain(id);
+      return res.status(200).send(chain.toString('utf8'));
+    } catch (err) {
+      return this.errorResponse(res, err);
+    }
+  }
+
   @Get('claim')
   @Header('Content-type', 'application/zip')
   @ApiProduces('application/zip')
-  async claim(
-    @Query('cid') cid: string,
-    @Query('message') message: string,
-    @Query('signature') signature: string,
-    @Res() res: Response,
-    @Signer() signer?: Account,
-  ): Promise<StreamableFile | Response> {
+  async claim(@Query('cid') cid: string, @Res({ passthrough: true }) res: Response): Promise<StreamableFile | Response> {
+    return this.download({ params: { cid } } as unknown as Request, res);
+  }
+
+  @Get(':cid/events')
+  async events(@Req() req: Request, @Res() res: Response): Promise<Response> {
     try {
-      // TODO: add verbose as query parameter ?
-      return await this.ownableService.claimOwnable(cid, message, signature, signer, true);
+      const cid = String(req.params.cid ?? '');
+      const events = await this.ownableService.getOwnableEvents(cid);
+      return res.status(200).json({ cid, events });
+    } catch (err) {
+      return this.errorResponse(res, err);
+    }
+  }
+
+  @Get('available')
+  async available(@Query('owner') owner: string, @Res() res: Response): Promise<Response> {
+    try {
+      const availableOwnables = await this.ownableService.getAvailableOwnables(owner);
+      return res.status(200).json(availableOwnables);
     } catch (err) {
       return this.errorResponse(res, err);
     }
   }
 
   private errorResponse(res: Response, err: any) {
-    if (err instanceof AuthError) return res.status(403).send(err.message);
+    if (err instanceof AuthError) return res.status(403).json({ code: 'AUTH_ERROR', message: err.message });
+    if (err instanceof UserError && err.message === 'RECIPIENT_DISCOVERY_DISABLED') return res.status(404).send('Not Found');
+    if (err instanceof UserError && err.message.startsWith('STALE_OWNABLE')) {
+      return res.status(409).json({ code: 'STALE_OWNABLE', message: err.message });
+    }
     if (err instanceof UserError) return res.status(400).send(err.message);
 
     console.error(err);
     return res.status(500).send('Unexpected error');
   }
 
-  @Get('testSignedRequest')
-  async testSignedRequest() {
+  @Get('proof')
+  @UseGuards(SIWEGuard)
+  async getUnlockProof(@Query('cid') cid: string, @Signer() signer?: SignerIdentity, @Res() res?: Response) {
     try {
-      return await this.ownableService.testSignedRequest();
+      const unlockProof = await this.ownableService.getUnlockProof(cid, signer);
+      if (res) return res.status(200).json({ unlockProof });
+      return { unlockProof };
     } catch (e) {
-      return { error: `${e}` };
+      return this.errorResponse(res as Response, e);
     }
   }
 
-  @Get('proof')
-  async getUnlockProof(@Query('cid') cid: string, @Signer() signer: Account) {
-    try {
-      const unlockProof = await this.ownableService.getUnlockProof(cid, signer);
-      return { unlockProof: unlockProof };
-    } catch (e) {
-      return { error: `${e}` };
-    }
-  }
   @Get('isUnlockProofValid')
   async isUnlockProofValid(
     @Query('network') network: string,
@@ -104,22 +151,16 @@ export class OwnableController {
       return { error: `${e}` };
     }
   }
+
   @Get('bridged')
-  getBridgedOwnableCIDs(@Signer() signer: Account) {
+  getBridgedOwnableCIDs(@Signer() signer?: SignerIdentity) {
     try {
       return { bridgedOwnables: `${this.ownableService.getBridgedOwnableCIDs(signer)}` };
     } catch (e) {
       return { error: `${e}` };
     }
   }
-  @Get('serverwallet')
-  serverWalletAddressLTO() {
-    try {
-      return { serverWalletAddressLTO: `${this.ownableService.getServerLTOwalletAddress()}` };
-    } catch (e) {
-      return { error: `${e}` };
-    }
-  }
+
   @Get('chains')
   async GetAvailableNftChains() {
     try {
@@ -128,61 +169,25 @@ export class OwnableController {
       return { error: `${e}` };
     }
   }
+
   @Get('cid')
-  async getOwnableCidFromNFT(
-    @Query('network') network: string,
-    @Query('address') address: string,
-    @Query('id') id: string,
-  ) {
+  async getOwnableCidFromNFT(@Query('network') network: string, @Query('address') address: string, @Query('id') id: string) {
     try {
-      return await this.ownableService.getOwnableCidFromNFT({ network: network, address: address, id: id });
+      return await this.ownableService.getOwnableCidFromNFT({ network, address, id });
     } catch (e) {
       return { error: `${e}` };
     }
   }
+
   @Get('serverinfo')
   async GetServerInfo() {
     try {
-      const ethBalance = await this.ownableService.GetServerETHBalance('eip155:ethereum');
-      const arbBalance = await this.ownableService.GetServerETHBalance('eip155:arbitrum');
-      const polBalance = await this.ownableService.GetServerETHBalance('eip155:polygon');
-      const ltoBalance = await this.ownableService.getLTOAccountBalance();
-      const serverLTOwallet = this.ownableService.getServerLTOwalletAddress();
-      // console.log("balance", balance);
+      const baseBalance = await this.ownableService.GetServerETHBalance('eip155:base');
       return {
-        ServerEthereumBalance: ethBalance,
-        ServerArbitrumBalance: arbBalance,
-        ServerPolygonBalance: polBalance,
-        ServerLTOBalance: ltoBalance,
-        serverLTOwalletAddress: serverLTOwallet,
+        ServerBaseBalance: baseBalance,
       };
     } catch (e) {
       return { error: `${e}` };
     }
   }
-
-  // @Post('/')
-  // @ApiConsumes('application/json', 'application/yaml')
-  // @ApiBody({
-  //   schema: {
-  //     type: 'object',
-  //     example: eventChainExample,
-  //   },
-  //   description: 'Event chain',
-  //   required: true,
-  // })
-  // async submit(@Req() req: Request, @Res() res: Response, @Signer() signer?: Account): Promise<Response> {
-  //   const eventChainJson = req.body;
-  //   if (!eventChainJson) {
-  //     res.status(400).send('Failed to read event chain request');
-  //     return;
-  //   }
-
-  //   try {
-  //     await this.ownableService.accept(EventChain.from(eventChainJson), signer);
-  //     return res.status(201).send('Created');
-  //   } catch (err) {
-  //     return this.errorResponse(res, err);
-  //   }
-  // }
 }

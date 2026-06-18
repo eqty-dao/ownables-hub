@@ -1,7 +1,8 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { ethers } from 'ethers';
-import { ConfigService } from '../config/config.service';
-import * as abis from './abi';
+import { ConfigService, RuntimeNetworkProfile } from '../config/config.service.js';
+import { resolveEvmNetwork } from '../config/evm-network.util.js';
+import * as abis from './abi/index.js';
 // import { throwError } from 'rxjs';
 // import { Networkish } from '@ethersproject/networks';
 
@@ -15,24 +16,23 @@ import * as abis from './abi';
 @Injectable()
 export class EthersService implements OnModuleInit {
   private wallet: ethers.Wallet;
-  private signer: ethers.HDNodeWallet;
-  private alchemyProvider: ethers.AlchemyProvider;
-  private network: ethers.Networkish;
+  private signer: ethers.HDNodeWallet | ethers.Wallet;
+  private networkProfile: RuntimeNetworkProfile;
   private readonly providers: Map<string | number, ethers.Provider> = new Map();
 
   constructor(private config: ConfigService) { }
 
   onModuleInit(): void {
-    this.network = { name: 'arbitrum-sepolia', chainId: 421614 };
-    this.alchemyProvider = new ethers.AlchemyProvider(
-      this.network,
-      this.config.get('eth.account.arbitrum_alchemy_api_key'),
-    );
-    this.signer = ethers.Wallet.fromPhrase(this.config.get('eth.account.mnemonic'), this.alchemyProvider);
+    this.networkProfile = this.config.getRuntimeNetworkProfile();
+    const mnemonic = this.config.getAuthoritySignerMnemonic();
+    const provider = this.getProviderForNetwork('eip155:base');
+    this.signer = mnemonic
+      ? ethers.Wallet.fromPhrase(mnemonic, provider)
+      : new ethers.Wallet(ethers.id('ownables-hub-fallback-key'), provider);
   }
 
   public signMessage(message: string): Promise<string> {
-    return this.signer.signMessage(ethers.toBeArray(message));
+    return this.signer.signMessage(message);
   }
 
   public verifyMessage(message: string, sig: ethers.SignatureLike): string {
@@ -53,46 +53,44 @@ export class EthersService implements OnModuleInit {
   }
 
   public async GetServerETHBalance(networkName: string): Promise<string> {
-    const [alchemyNetworkNameMapped, chainId, providerApiKey] = this.getNetwork(networkName);
-    this.network = { name: alchemyNetworkNameMapped, chainId: chainId };
-
-    this.alchemyProvider = new ethers.AlchemyProvider(this.network, providerApiKey);
-    // console.log("Blocknumber:", await this.alchemyProvider.getBlockNumber());
-    return ethers.formatUnits(await this.alchemyProvider.getBalance(this.signer.address), 'ether').toString();
+    const provider = this.getProviderForNetwork(networkName);
+    return ethers.formatUnits(await provider.getBalance(this.signer.address), 'ether').toString();
   }
 
   private getNetwork(networkName: string): [string, number, string] {
-    // https://docs.ethers.org/v6/api/providers/thirdparty/#AlchemyProvider
-    const networkId = this.config.get('lto.networkId');
+    const profile = this.networkProfile;
     switch (networkName) {
       case 'eip155:ethereum':
-        if (networkId === 'T')
-          return ['sepolia', 11155111, this.config.get('eth.account.eth_alchemy_api_key')]; // Sepolia Testnet
-        else return ['mainnet', 1, this.config.get('eth.account.eth_alchemy_api_key')]; // Ethereum Mainnet
+        return this.getResolvedNetworkTuple('eip155:ethereum', profile);
       case 'eip155:arbitrum':
-        if (networkId === 'T')
-          // Arbitrum Sepolia Testnet
-          return ['arbitrum-sepolia', 421614, this.config.get('eth.account.arbitrum_alchemy_api_key')];
-        else return ['arbitrum', 42161, this.config.get('eth.account.arbitrum_alchemy_api_key')]; // Arbitrum Mainnet
+        return this.getResolvedNetworkTuple('eip155:arbitrum', profile);
       case 'eip155:polygon':
-        if (networkId === 'T')
-          return ['matic-amoy', 80002, this.config.get('eth.account.polygon_alchemy_api_key')]; // Polygon Amoy Testnet
-        else return ['matic', 137, this.config.get('eth.account.polygon_alchemy_api_key')]; // Polygon mainnet
-      // case 'base':
-      //   if (networkId === 'T') return ['base-sepolia', 84532,this.config.get('eth.account.base_alchemy_api_key')]; // Base Sepolia Testnet
-      //   else return ['base', 8453,this.config.get('eth.account.base_alchemy_api_key')]; // Base mainnet
+        return this.getResolvedNetworkTuple('eip155:polygon', profile);
+      case 'eip155:base':
+        return this.getResolvedNetworkTuple('eip155:base', profile);
     }
-    throw new Error(`Incorrect network name. Supported network names: eip155:ethereum eip155:arbitrum eip155:polygon`);
+    throw new Error(
+      `Incorrect network name. Supported network names: eip155:ethereum eip155:arbitrum eip155:polygon eip155:base`,
+    );
+  }
+
+  private getResolvedNetworkTuple(networkName: 'eip155:ethereum' | 'eip155:arbitrum' | 'eip155:polygon' | 'eip155:base', profile: RuntimeNetworkProfile) {
+    const resolved = resolveEvmNetwork(networkName, profile);
+    return [resolved.rpcName, resolved.chainId, this.config.getRpcUrl(profile, networkName)] as [string, number, string];
+  }
+
+  private getProviderForNetwork(networkName: string): ethers.JsonRpcProvider {
+    const [networkMappedName, chainId, rpcUrl] = this.getNetwork(networkName);
+    return new ethers.JsonRpcProvider(rpcUrl, { name: networkMappedName, chainId });
   }
 
   public getContract(type: keyof typeof abis, networkName: string, address: string): ethers.Contract {
     if (!(type in abis)) throw new Error(`No ABI for ${type}`);
-    const [alchemyNetworkNameMapped, chainId, providerApiKey] = this.getNetwork(networkName);
-    this.network = { name: alchemyNetworkNameMapped, chainId: chainId };
-
-    this.alchemyProvider = new ethers.AlchemyProvider(this.network, providerApiKey);
-
-    this.signer = ethers.Wallet.fromPhrase(this.config.get('eth.account.mnemonic'), this.alchemyProvider);
+    const provider = this.getProviderForNetwork(networkName);
+    const mnemonic = this.config.getAuthoritySignerMnemonic();
+    this.signer = mnemonic
+      ? ethers.Wallet.fromPhrase(mnemonic, provider)
+      : new ethers.Wallet(ethers.id('ownables-hub-fallback-key'), provider);
 
     const nftContract: ethers.Contract = new ethers.Contract(address, abis[type], this.signer);
     return nftContract;

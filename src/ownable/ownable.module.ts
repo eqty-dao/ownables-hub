@@ -1,26 +1,25 @@
 import { Module } from '@nestjs/common';
-import { OwnableController } from './ownable.controller';
-import { LtoModule } from '../common/lto/lto.module';
-import { CosmWasmModule } from '../cosmwasm/cosmwasm.module';
-import { PackageModule } from '../package/package.module';
-import { ConfigModule } from '../common/config/config.module';
-import { EthersModule } from '../common/ethers/ethers.module';
-import { NFTModule } from '../nft/nft.module';
-import { LtoIndexModule } from '../common/lto-index/lto-index.module';
-import { OwnableService } from './ownable.service';
+import { OwnableController } from './ownable.controller.js';
+import { CosmWasmModule } from '../cosmwasm/cosmwasm.module.js';
+import { PackageModule } from '../package/package.module.js';
+import { ConfigModule } from '../common/config/config.module.js';
+import { EthersModule } from '../common/ethers/ethers.module.js';
+import { NFTModule } from '../nft/nft.module.js';
+import { OwnableService } from './ownable.service.js';
 import { HttpModule } from '@nestjs/axios';
-import { IpfsModule } from '../common/ipfs/ipfs.module';
+import { PersistenceModule } from '../persistence/persistence.module.js';
+import { StorageModule } from '../storage/storage.module.js';
+
 @Module({
   imports: [
     ConfigModule,
-    LtoModule,
-    IpfsModule,
     CosmWasmModule,
     PackageModule,
     EthersModule,
     NFTModule,
-    LtoIndexModule,
     HttpModule,
+    PersistenceModule,
+    StorageModule,
   ],
   providers: [OwnableService],
   controllers: [OwnableController],

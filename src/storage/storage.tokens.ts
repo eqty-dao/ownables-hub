@@ -1,0 +1,1 @@
+export const OWNABLES_BUCKET = 'OWNABLES_BUCKET';

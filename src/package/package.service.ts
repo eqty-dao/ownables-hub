@@ -1,24 +1,17 @@
-import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '../common/config/config.service';
+import { Injectable, OnModuleInit, StreamableFile } from '@nestjs/common';
+import { calculateOwnablePackageCid } from '@ownables/core';
 import JSZip from 'jszip';
-import * as fs from 'fs/promises';
-import fileExists from '../utils/fileExists';
-import path from 'path';
+import { ArchiveStorageService } from '../storage/archive-storage.service.js';
+import { Readable } from 'stream';
 
 @Injectable()
 export class PackageService implements OnModuleInit {
-  private path: string;
-
   constructor(
-    private readonly config: ConfigService,
     private readonly zip: JSZip,
-    @Inject('IPFS') private readonly ipfs: IPFS,
+    private readonly storage: ArchiveStorageService,
   ) {}
 
-  async onModuleInit() {
-    this.path = this.config.get('path.packages');
-    await fs.mkdir(this.path, { recursive: true });
-  }
+  async onModuleInit() {}
 
   private async unzip(data: Uint8Array): Promise<Map<string, Buffer>> {
     const archive = await this.zip.loadAsync(data, { createFolders: true });
@@ -33,29 +26,10 @@ export class PackageService implements OnModuleInit {
   }
 
   private async getCid(files: Map<string, Buffer>): Promise<string> {
-    const source = Array.from(files.entries()).map(([filename, content]) => ({
-      path: `./${filename}`,
+    return calculateOwnablePackageCid(Array.from(files.entries()).map(([filename, content]) => ({
+      path: filename,
       content,
-    }));
-
-    for await (const entry of this.ipfs.addAll(source, { onlyHash: true, cidVersion: 1, recursive: true })) {
-      if (entry.path === entry.cid.toString() && !!entry.mode) return entry.cid.toString();
-    }
-    throw new Error('Failed to calculate directory CID: importer did not find a directory entry in the input files');
-  }
-
-  private async storeFiles(cid: string, files: Map<string, Buffer>): Promise<void> {
-    const packageDir = path.join(this.path, cid);
-    await fs.mkdir(packageDir, { recursive: true });
-
-    await Promise.all(
-      Array.from(files.entries()).map(([filename, content]) => fs.writeFile(path.join(packageDir, filename), content)),
-    );
-  }
-
-  private async storeZip(cid: string, data: Uint8Array): Promise<void> {
-    const file = path.join(this.path, `${cid}.zip`);
-    await fs.writeFile(file, data);
+    })));
   }
 
   async store(data: Uint8Array): Promise<string> {
@@ -65,27 +39,36 @@ export class PackageService implements OnModuleInit {
     const cid = await this.getCid(files);
     if (await this.exists(cid)) return cid;
 
-    await this.storeFiles(cid, files);
-    await this.storeZip(cid, data);
+    await this.storage.storePackageArtifacts(cid, data, files);
 
     return cid;
   }
 
   async exists(cid: string): Promise<boolean> {
-    return await fileExists(`${this.path}/${cid}`);
+    return await this.storage.hasPackage(cid);
+  }
+
+  async download(cid: string): Promise<StreamableFile> {
+    const data = await this.storage.getPackageZip(cid);
+    return new StreamableFile(Readable.from(data));
   }
 
   file(cid: string, filename?: string): string {
-    return filename ? `${this.path}/${cid}/${filename}` : `${this.path}/${cid}.zip`;
+    return filename ? this.storage.packageAssetKey(cid, filename) : this.storage.packageZipKey(cid);
   }
 
   async zipped(cid: string): Promise<JSZip> {
-    const data = await fs.readFile(this.file(cid), 'utf8');
+    const data = await this.storage.getPackageZip(cid);
     return await this.zip.loadAsync(data, { createFolders: true });
   }
 
   async hasMethod(cid: string, msgType: string, method: string): Promise<boolean> {
-    const json = await fs.readFile(this.file(cid, `${msgType}_msg.json`), 'utf8');
+    const zipped = await this.zipped(cid);
+    const file = zipped.file(`${msgType}_msg.json`);
+    if (!file) {
+      return false;
+    }
+    const json = await file.async('string');
     const schema = JSON.parse(json);
 
     return schema.oneOf.findIndex((m) => m.required.includes(method)) >= 0;
