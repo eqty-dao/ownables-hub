@@ -69,7 +69,7 @@ describeWithDatabase('HubStateRepository recipient discovery postgres integratio
   it('returns available ownables by persisted current owner account on the migrated schema', async () => {
     await withSchema(null, async (repo, client) => {
       await client.query(
-        `INSERT INTO ownable_records (id, cid, prev_owner_address, subject_id, nft_network, nft_contract_address, nft_token_id)
+        `INSERT INTO ownable_records (id, package_cid, prev_owner_address, subject_id, nft_network, nft_contract_address, nft_token_id)
          VALUES (
            '00000000-0000-0000-0000-000000000001',
            'cid-available-1',
@@ -114,7 +114,7 @@ describeWithDatabase('HubStateRepository recipient discovery postgres integratio
   it('increments owner state version only when availability materially changes', async () => {
     await withSchema(null, async (repo, client) => {
       await client.query(
-        `INSERT INTO ownable_records (id, cid, prev_owner_address)
+        `INSERT INTO ownable_records (id, package_cid, prev_owner_address)
          VALUES ('00000000-0000-0000-0000-000000000101', 'cid-current-1', '0xissuer')`,
       );
 
