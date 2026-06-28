@@ -4,7 +4,7 @@ import { NFTInfo } from '../../interfaces/OwnableInfo';
 
 @Injectable()
 export class EthereumService {
-  constructor(private ethers: EthersService) { }
+  constructor(private ethers: EthersService) {}
 
   public async isNFTlocked(nft: NFTInfo): Promise<boolean> {
     const nftContract = this.ethers.getContract('LockableNFT', nft.network, nft.address);

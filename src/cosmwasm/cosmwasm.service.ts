@@ -10,10 +10,7 @@ import pathToFileURL from 'url';
 export class CosmWasmService {
   private async loadModule(moduleFile: string): Promise<string> {
     const { code } = await babel.transformFileAsync(moduleFile, {
-      plugins: [
-        'babel-plugin-remove-import-export',
-        __dirname + '/babel/transfer-import-meta',
-      ],
+      plugins: ['babel-plugin-remove-import-export', __dirname + '/babel/transfer-import-meta'],
     });
 
     return code;

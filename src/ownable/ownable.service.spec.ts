@@ -104,7 +104,9 @@ describe('OwnableService', () => {
     zip.file('package.json', '{}');
     writeFileSync(path.join(pkgDir, 'cid-1.zip'), await zip.generateAsync({ type: 'uint8array' }));
 
-    await expect(service.claimOwnable('cid-1', { address: ownerWallet.address })).rejects.toThrow('is not current NFT owner');
+    await expect(service.claimOwnable('cid-1', { address: ownerWallet.address })).rejects.toThrow(
+      'is not current NFT owner',
+    );
 
     await rm(root, { recursive: true, force: true });
   });

@@ -30,8 +30,7 @@ export default function (): PluginObj {
 
     visitor: {
       Program(path, state) {
-        const { module: target = 'CommonJS' } =
-          (state.opts as PluginOptions | undefined) ?? {};
+        const { module: target = 'CommonJS' } = (state.opts as PluginOptions | undefined) ?? {};
         if (target !== 'CommonJS') {
           throw new Error('Invalid target, must be "CommonJS"');
         }
@@ -50,9 +49,7 @@ export default function (): PluginObj {
               node.property.name === 'url'
             ) {
               metas.push(memberExpPath);
-              for (const name of Object.keys(
-                memberExpPath.scope.getAllBindings(),
-              )) {
+              for (const name of Object.keys(memberExpPath.scope.getAllBindings())) {
                 identifiers.add(name);
               }
             }
@@ -63,8 +60,7 @@ export default function (): PluginObj {
           return;
         }
 
-        const metaUrlReplacement =
-          smart.ast`pathToFileURL(__filename).toString()` as Statement;
+        const metaUrlReplacement = smart.ast`pathToFileURL(__filename).toString()` as Statement;
 
         for (const meta of metas) {
           meta.replaceWith(metaUrlReplacement);

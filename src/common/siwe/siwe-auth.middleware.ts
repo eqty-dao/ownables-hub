@@ -5,10 +5,7 @@ import { ConfigService } from '../config/config.service';
 
 @Injectable()
 export class SIWEAuthMiddleware implements NestMiddleware {
-  constructor(
-    private readonly siweService: SIWEService,
-    private readonly config: ConfigService,
-  ) {}
+  constructor(private readonly siweService: SIWEService, private readonly config: ConfigService) {}
 
   async use(req: Request, _res: Response, next: NextFunction): Promise<void> {
     if (this.config.get('auth.disable')) {

@@ -20,7 +20,7 @@ export class EthersService implements OnModuleInit {
   private network: ethers.Networkish;
   private readonly providers: Map<string | number, ethers.Provider> = new Map();
 
-  constructor(private config: ConfigService) { }
+  constructor(private config: ConfigService) {}
 
   onModuleInit(): void {
     this.network = { name: 'base-sepolia', chainId: 84532 };
@@ -82,8 +82,7 @@ export class EthersService implements OnModuleInit {
           return ['matic-amoy', 80002, this.config.get('eth.account.polygon_alchemy_api_key')]; // Polygon Amoy Testnet
         else return ['matic', 137, this.config.get('eth.account.polygon_alchemy_api_key')]; // Polygon mainnet
       case 'eip155:base':
-        if (networkId === 'T')
-          return ['base-sepolia', 84532, this.config.get('eth.account.base_alchemy_api_key')];
+        if (networkId === 'T') return ['base-sepolia', 84532, this.config.get('eth.account.base_alchemy_api_key')];
         else return ['base', 8453, this.config.get('eth.account.base_alchemy_api_key')];
     }
     throw new Error(

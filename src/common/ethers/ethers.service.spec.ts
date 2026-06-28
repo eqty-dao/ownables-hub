@@ -37,13 +37,17 @@ describe('EthersService', () => {
   });
 
   it('creates lockable contract instance for base network', () => {
-    const contract = service.getContract('IERC721Lockable', 'eip155:base', '0x1234567890123456789012345678901234567890');
+    const contract = service.getContract(
+      'IERC721Lockable',
+      'eip155:base',
+      '0x1234567890123456789012345678901234567890',
+    );
     expect(contract).toBeInstanceOf(ethers.Contract);
   });
 
   it('throws on unknown network', () => {
-    expect(() => service.getContract('IERC721Lockable', 'unknown', '0x1234567890123456789012345678901234567890')).toThrow(
-      /Incorrect network name/,
-    );
+    expect(() =>
+      service.getContract('IERC721Lockable', 'unknown', '0x1234567890123456789012345678901234567890'),
+    ).toThrow(/Incorrect network name/);
   });
 });

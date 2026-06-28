@@ -53,10 +53,7 @@ export default class Contract {
     if (!('ownable_type' in msg)) msg.ownable_type = undefined;
     if (typeof msg.network_id === 'string') msg.network_id = msg.network_id.charCodeAt(0);
 
-    const result: Map<string, any> = await this.run(
-      'instantiate_contract(msg, info)',
-      { msg, info },
-    );
+    const result: Map<string, any> = await this.run('instantiate_contract(msg, info)', { msg, info });
 
     const response = JSON.parse(result.has('state') ? result.get('state') : result.get('result'));
     this.sandbox.mem = JSON.parse(result.get('mem'));
@@ -70,10 +67,7 @@ export default class Contract {
     msg: Dict,
     info: MsgInfo,
   ): Promise<{ attributes: Dict; events: Array<{ type: string; attributes: Dict }>; data?: any }> {
-    const result: Map<string, any> = await this.run(
-      'execute_contract(msg, info, mem)',
-      { msg, info },
-    );
+    const result: Map<string, any> = await this.run('execute_contract(msg, info, mem)', { msg, info });
 
     const response = JSON.parse(result.has('state') ? result.get('state') : result.get('result'));
     this.sandbox.mem = JSON.parse(result.get('mem'));
@@ -89,10 +83,7 @@ export default class Contract {
     msg: Dict,
     info: MsgInfo,
   ): Promise<{ attributes: Dict; events: Array<{ type: string; attributes: Dict }>; data?: any }> {
-    const result: Map<string, any> = await this.run(
-      'register_external_event(msg, info, mem)',
-      { msg, info },
-    );
+    const result: Map<string, any> = await this.run('register_external_event(msg, info, mem)', { msg, info });
 
     const response = JSON.parse(result.has('state') ? result.get('state') : result.get('result'));
     this.sandbox.mem = JSON.parse(result.get('mem'));

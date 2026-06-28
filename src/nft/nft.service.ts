@@ -4,7 +4,7 @@ import { NFTInfo } from '../interfaces/OwnableInfo';
 
 @Injectable()
 export class NFTService {
-  constructor(private ethereum: EthereumService) { }
+  constructor(private ethereum: EthereumService) {}
 
   public async isNFTlocked(nft: NFTInfo): Promise<boolean> {
     return await this.ethereum.isNFTlocked(nft);
@@ -17,7 +17,7 @@ export class NFTService {
   public async isUnlockProofValid(proof: string, nft: NFTInfo): Promise<boolean> {
     return await this.ethereum.isUnlockProofValid(proof, nft);
   }
-  
+
   async getUnlockProof(nft: NFTInfo): Promise<string> {
     if (nft.network.startsWith('eip155:')) {
       return await this.ethereum.getUnlockProof(nft);
