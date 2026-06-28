@@ -19,6 +19,22 @@ export default [
     },
     rules: {
       ...tsPlugin.configs.recommended.rules,
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: [
+                '@ownables/*/dist/*',
+                '@ownables/*/src/*',
+                '../ownables-js/*',
+              ],
+              message:
+                'Import published package entrypoints instead of package internals or sibling checkouts.',
+            },
+          ],
+        },
+      ],
       '@typescript-eslint/no-unused-vars': 'off',
       '@typescript-eslint/no-require-imports': 'off',
       '@typescript-eslint/explicit-function-return-type': 'off',
