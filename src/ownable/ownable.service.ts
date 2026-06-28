@@ -491,8 +491,11 @@ export class OwnableService implements OnModuleInit {
       isDynamic: true,
       hasMetadata: false,
       hasWidgetState: false,
+      hasAttachments: false,
+      isClosable: false,
       isConsumable: false,
       isConsumer: false,
+      isLockable: false,
       isTransferable: false,
       versions: [{ date: new Date(), cid: packageCid }],
     };
