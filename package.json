@@ -9,6 +9,9 @@
     "node": ">=24"
   },
   "license": "MIT",
+  "resolutions": {
+    "@ownables/core@workspace:*": "file:../ownables-js/packages/core"
+  },
   "scripts": {
     "prebuild": "rimraf dist tsconfig.build.tsbuildinfo",
     "build": "tsc -p tsconfig.build.json --incremental false",
@@ -41,8 +44,8 @@
     "@nestjs/core": "^11.1.24",
     "@nestjs/platform-express": "^11.1.24",
     "@nestjs/swagger": "^11.4.4",
-    "@ownables/core": "^0.8.1",
-    "@ownables/platform-node": "^0.8.1",
+    "@ownables/core": "file:../ownables-js/packages/core",
+    "@ownables/platform-node": "file:../ownables-js/packages/platform-node",
     "any-bucket": "^0.1.6",
     "axios": "^1.16.1",
     "babel-plugin-remove-import-export": "^1.1.1",

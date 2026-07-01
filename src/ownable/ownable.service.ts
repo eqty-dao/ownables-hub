@@ -4,7 +4,12 @@ import {
   evaluateReplayFreshness,
   OwnableService as CoreOwnableService,
   EventChainService as CoreEventChainService,
+  publicEventReplayKey,
+  validateAnchorsAgainstIndexedRecords,
+  type AnchorValidationResult,
+  type IndexedAnchorRecord,
   type IndexedPublicEvent,
+  type ReplayIgnoredPublicEvent,
   type StateStore,
   type TypedPackage,
   type AnchorProvider,
@@ -19,18 +24,46 @@ import JSZip from 'jszip';
 import { EventChain } from 'eqty-core';
 import { Readable } from 'stream';
 import { ArchiveStorageService } from '../storage/archive-storage.service.js';
-import { HubStateRepository, IndexedWalletEvent } from '../persistence/repos/hub-state.repository.js';
+import { HubStateRepository, IndexedAnchorEvent, IndexedPublicEventRow } from '../persistence/repos/hub-state.repository.js';
 
 interface SignerIdentity {
   address?: string;
 }
 
 interface ReplayDerivedState {
+  anchorVerification: AnchorValidationResult;
+  freshness: {
+    stale: boolean;
+    missingReplayKeys: string[];
+    latestReplayKey?: string;
+  };
+  ignoredPublicEvents: ReplayIgnoredPublicEvent[];
   nftInfo: NFTInfo | null;
   ownerNetwork: string | null;
   ownerAccount: string | null;
   owner: string;
   latestAppliedPublicEventId: string | null;
+}
+
+interface OwnableVerificationResponse {
+  ownableId: string;
+  packageCid: string;
+  verified: boolean;
+  owner: string;
+  ownerAccount: string | null;
+  freshness: {
+    stale: boolean;
+    missingReplayKeys: string[];
+    latestReplayKey?: string;
+  };
+  anchorVerification: AnchorValidationResult;
+  ignoredPublicEvents: Array<{
+    replayKey: string;
+    transactionHash: string;
+    logIndex: number;
+    reason: string;
+  }>;
+  nft?: NFTInfo;
 }
 
 interface AvailableOwnablePackageMetadata {
@@ -400,8 +433,8 @@ export class OwnableService implements OnModuleInit {
     }
   }
 
-  private toIndexedPublicEvent(row: IndexedWalletEvent): IndexedPublicEvent | null {
-    if (row.eventKind !== 'public' || !row.sourceAddress || !row.eventType || !row.dataHex) {
+  private toIndexedPublicEvent(row: IndexedPublicEventRow): IndexedPublicEvent | null {
+    if (!row.sourceAddress || !row.eventType || !row.dataHex) {
       return null;
     }
 
@@ -413,7 +446,67 @@ export class OwnableService implements OnModuleInit {
       transactionHash: row.transactionHash,
       transactionIndex: row.transactionIndex,
       logIndex: row.logIndex,
+      timestamp: row.eventTimestamp ? Number(row.eventTimestamp) : undefined,
     };
+  }
+
+  private toIndexedAnchorRecord(row: IndexedAnchorEvent, expectedOwner?: string): IndexedAnchorRecord | null {
+    const ownerAddress = row.ownerAddress?.toLowerCase();
+    if (expectedOwner && ownerAddress && ownerAddress !== expectedOwner.toLowerCase()) {
+      return null;
+    }
+
+    const payload =
+      row.payloadJson && typeof row.payloadJson === 'object' && !Array.isArray(row.payloadJson)
+        ? (row.payloadJson as Record<string, unknown>)
+        : null;
+    const key = typeof payload?.key === 'string' ? payload.key.trim().toLowerCase() : '';
+    const value = typeof payload?.value === 'string' ? payload.value.trim().toLowerCase() : '';
+    if (!key || !value) {
+      return null;
+    }
+
+    return {
+      key,
+      value,
+      transactionHash: row.transactionHash,
+      blockNumber: Number(row.blockNumber),
+      transactionIndex: row.transactionIndex,
+      logIndex: row.logIndex,
+    };
+  }
+
+  private buildAnchorVerificationResult(
+    anchorEvents: IndexedAnchorEvent[],
+    anchors: Array<{ key: { hex: string }; value: { hex: string } }>,
+    expectedOwner?: string,
+  ): AnchorValidationResult {
+    const indexedRecords = anchorEvents
+      .map((row) => this.toIndexedAnchorRecord(row, expectedOwner))
+      .filter((record): record is IndexedAnchorRecord => Boolean(record));
+    return validateAnchorsAgainstIndexedRecords(anchors, indexedRecords);
+  }
+
+  private sanitizeIgnoredPublicEvents(ignoredPublicEvents: ReplayIgnoredPublicEvent[]) {
+    return ignoredPublicEvents.map(({ replayKey, event, reason }) => ({
+      replayKey,
+      transactionHash: event.transactionHash,
+      logIndex: event.logIndex,
+      reason,
+    }));
+  }
+
+  private assertReplayVerification(result: ReplayDerivedState): void {
+    if (!result.anchorVerification.verified) {
+      const missingAnchorKeys = Object.entries(result.anchorVerification.anchors)
+        .filter(([, transactionHash]) => !transactionHash)
+        .map(([key]) => key);
+      throw new UserError(`UNVERIFIED_OWNABLE missingAnchorKeys=${missingAnchorKeys.join(',')}`);
+    }
+
+    if (result.freshness.stale) {
+      throw new UserError(`STALE_OWNABLE missingReplayKeys=${result.freshness.missingReplayKeys.join(',')}`);
+    }
   }
 
   private unsupportedRuntimeError(reason: string): UserError {
@@ -460,15 +553,18 @@ export class OwnableService implements OnModuleInit {
     }
   }
 
-  private async replayOwnable(packageCid: string, eventChainBuffer: Buffer): Promise<ReplayDerivedState> {
+  private async replayOwnable(packageCid: string, eventChainBuffer: Buffer, packageZipBuffer: Buffer): Promise<ReplayDerivedState> {
     const chain = EventChain.from(JSON.parse(eventChainBuffer.toString('utf8')));
     this.validateEventChain(chain);
 
     const zipped = new JSZip();
-    await zipped.loadAsync(await this.storage.getPackageZip(packageCid), { createFolders: true });
+    await zipped.loadAsync(packageZipBuffer, { createFolders: true });
     zipped.file(CANONICAL_CHAIN_FILENAME, eventChainBuffer);
     const files = await this.unzip(await zipped.generateAsync({ type: 'uint8array' }));
     this.assertSupportedOwnableRuntime(files);
+
+    const indexedAnchorEvents = await this.hubState.listIndexedAnchorEventsByPackageCid(packageCid);
+    const indexedPublicRows = await this.hubState.listIndexedPublicEventsBySubjectId(chain.id);
 
     const stateStore = new InMemoryStateStore();
     const anchorProvider: AnchorProvider = {
@@ -481,7 +577,12 @@ export class OwnableService implements OnModuleInit {
       emitPublicEvent: async () => {
         throw new Error('emitPublicEvent is not supported in hub replay');
       },
-      verifyAnchors: async () => ({ verified: true, anchors: {}, map: {} }),
+      verifyAnchors: async (...anchors: Array<{ key: { hex: string }; value: { hex: string } }>) =>
+        this.buildAnchorVerificationResult(
+          indexedAnchorEvents,
+          anchors,
+          chain.events.at(-1)?.signerAddress?.toLowerCase(),
+        ),
     };
 
     const packageInfo: TypedPackage = {
@@ -517,21 +618,21 @@ export class OwnableService implements OnModuleInit {
       { create: (id: string) => new NodeSandboxOwnableRPC(id) },
     );
 
+    const anchorVerification = await eventChains.verify(chain as any);
     await coreOwnables.initWorker(chain.id, packageCid);
     const privateStateDump = await coreOwnables.apply(chain, []);
 
-    const indexedRows = await this.hubState.listWalletEventsByCid(packageCid);
-    const indexedEventsWithRowId = indexedRows
+    const indexedEventsWithRowId = indexedPublicRows
       .map((row) => ({ rowId: row.id, event: this.toIndexedPublicEvent(row) }))
       .filter((value): value is { rowId: string; event: IndexedPublicEvent } => Boolean(value.event));
     const indexedEvents = indexedEventsWithRowId.map(({ event }) => event);
     const replay = await coreOwnables.attemptReplayIndexedPublicEvents(chain.id, privateStateDump, indexedEvents);
 
-    const freshness = evaluateReplayFreshness(indexedEvents, replay.appliedReplayKeys);
-
-    if (freshness.stale) {
-      throw new UserError(`STALE_OWNABLE missingReplayKeys=${freshness.missingReplayKeys.join(',')}`);
-    }
+    const ignoredReplayKeys = new Set(replay.ignoredPublicEvents.map(({ replayKey }) => replayKey));
+    const freshness = evaluateReplayFreshness(
+      indexedEvents.filter((event) => !ignoredReplayKeys.has(publicEventReplayKey(event))),
+      replay.appliedReplayKeys,
+    );
 
     const info = await coreOwnables.rpc(chain.id).query({ get_info: {} }, replay.stateDump);
     const owner = String(info.owner ?? '').toLowerCase();
@@ -551,6 +652,9 @@ export class OwnableService implements OnModuleInit {
     coreOwnables.clearRpc(chain.id);
 
     return {
+      anchorVerification,
+      freshness,
+      ignoredPublicEvents: replay.ignoredPublicEvents,
       nftInfo,
       ownerNetwork: this.deriveOwnerNetwork(chain, nftInfo),
       ownerAccount: this.deriveOwnerAccount(owner, this.deriveOwnerNetwork(chain, nftInfo)),
@@ -561,7 +665,8 @@ export class OwnableService implements OnModuleInit {
 
   private async replayStoredOwnable(ownableId: string, packageCid: string): Promise<ReplayDerivedState> {
     const eventChainBuffer = await this.storage.getEventChain(ownableId, packageCid);
-    return this.replayOwnable(packageCid, eventChainBuffer);
+    const packageZipBuffer = await this.storage.getPackageZip(packageCid);
+    return this.replayOwnable(packageCid, eventChainBuffer, packageZipBuffer);
   }
 
   private async requireNftOwner(nftInfo: NFTInfo, signer?: SignerIdentity): Promise<string> {
@@ -613,10 +718,6 @@ export class OwnableService implements OnModuleInit {
   private getBaseNftContractAddressForProfile(profile: RuntimeNetworkProfile): string {
     if (profile === 'testnet') return process.env.TESTNET_BASE_NFT_CONTRACT_ADDRESS?.trim() || '';
     return process.env.MAINNET_BASE_NFT_CONTRACT_ADDRESS?.trim() || '';
-  }
-
-  async existsCid(cid: string): Promise<boolean> {
-    return await this.storage.hasEventChain(cid);
   }
 
   async existsOwnableChain(ownableId: string, packageCid: string): Promise<boolean> {
@@ -676,14 +777,15 @@ export class OwnableService implements OnModuleInit {
     );
   }
 
-  public async getUnlockProof(cid: string, signer?: SignerIdentity): Promise<string> {
+  public async getUnlockProof(ownableId: string, signer?: SignerIdentity): Promise<string> {
     if (!signer?.address) throw new AuthError('Missing SIWE signer');
 
-    const record = await this.hubState.getOwnableByCid(cid);
-    if (!record) throw new UserError('CID not found. Ownable copy is not registered on hub.');
-    if (!(await this.existsPkg(cid))) throw new UserError('Ownable package with CID is not available on server.');
+    const record = await this.hubState.getOwnableBySubjectId(ownableId);
+    if (!record) throw new UserError('Ownable is not registered on hub.');
+    if (!(await this.existsPkg(record.packageCid))) throw new UserError('Ownable package is not available on server.');
 
     const replayState = await this.replayStoredOwnable(record.id, record.packageCid);
+    this.assertReplayVerification(replayState);
     if (!replayState.nftInfo) {
       throw new UserError('NFT metadata is unavailable for this ownable');
     }
@@ -711,6 +813,31 @@ export class OwnableService implements OnModuleInit {
     });
   }
 
+  async getOwnableVerification(ownableId: string): Promise<OwnableVerificationResponse> {
+    const record = await this.hubState.getOwnableBySubjectId(ownableId);
+    if (!record) throw new UserError(`Ownable with id ${ownableId} not available on this hub`);
+    if (!(await this.existsOwnableChain(record.id, record.packageCid))) {
+      throw new UserError(`Ownable chain with id ${ownableId} not available on this hub`);
+    }
+    if (!(await this.existsPkg(record.packageCid))) {
+      throw new UserError(`Ownable package with id ${ownableId} not available on this hub`);
+    }
+
+    const replayState = await this.replayStoredOwnable(record.id, record.packageCid);
+
+    return {
+      ownableId,
+      packageCid: record.packageCid,
+      verified: replayState.anchorVerification.verified && !replayState.freshness.stale,
+      owner: replayState.owner,
+      ownerAccount: replayState.ownerAccount,
+      freshness: replayState.freshness,
+      anchorVerification: replayState.anchorVerification,
+      ignoredPublicEvents: this.sanitizeIgnoredPublicEvents(replayState.ignoredPublicEvents),
+      ...(replayState.nftInfo ? { nft: replayState.nftInfo } : {}),
+    };
+  }
+
   async uploadOwnable(buffer: Uint8Array, signer?: SignerIdentity, verbose = false): Promise<any> {
     if (verbose) console.log('unzipping Zip files into memory');
     const files = await this.unzip(buffer);
@@ -736,8 +863,8 @@ export class OwnableService implements OnModuleInit {
     for (const alias of chainAliases) newZip.remove(alias);
     const content = await newZip.generateAsync({ type: 'uint8array' });
 
-    await this.storage.storePackageArtifacts(cid, content, packageFiles);
-    const replayState = await this.replayOwnable(cid, eventChainBuffer);
+    const replayState = await this.replayOwnable(cid, eventChainBuffer, Buffer.from(content));
+    this.assertReplayVerification(replayState);
     const record = await this.hubState.upsertOwnableRecord({
       packageCid: cid,
       prevOwnerAddress: ownerFromPrivateState || '0x0000000000000000000000000000000000000000',
@@ -746,10 +873,12 @@ export class OwnableService implements OnModuleInit {
       nftContractAddress: replayState.nftInfo?.address,
       nftTokenId: replayState.nftInfo?.id,
     });
+    await this.storage.storePackageArtifacts(cid, content, packageFiles);
     await this.storage.storeEventChain(record.id, eventChainBuffer);
     await this.hubState.setOwnerState(record.id, replayState.owner, replayState.ownerAccount, replayState.latestAppliedPublicEventId);
 
     return {
+      ownableId: chain.id,
       cid: cid.toString(),
       owner: replayState.owner,
       ownerAccount: replayState.ownerAccount,
@@ -767,34 +896,27 @@ export class OwnableService implements OnModuleInit {
     return this.uploadOwnable(buffer, signer, verbose);
   }
 
-  async downloadOwnable(cid: string): Promise<StreamableFile> {
-    const record = await this.hubState.getOwnableByCid(cid);
-    if (!record) throw new UserError(`Event chain with cid ${cid} not available on this hub`);
-    if (!(await this.existsOwnableChain(record.id, record.packageCid))) throw new UserError(`Event chain with cid ${cid} not available on this hub`);
-    if (!(await this.existsPkg(cid))) throw new UserError(`Ownable package with cid ${cid} not available on this hub`);
+  async downloadOwnable(ownableId: string): Promise<StreamableFile> {
+    const record = await this.hubState.getOwnableBySubjectId(ownableId);
+    if (!record) throw new UserError(`Ownable bundle with id ${ownableId} not available on this hub`);
+    if (!(await this.existsOwnableChain(record.id, record.packageCid))) {
+      throw new UserError(`Ownable bundle with id ${ownableId} not available on this hub`);
+    }
+    if (!(await this.existsPkg(record.packageCid))) {
+      throw new UserError(`Ownable package with id ${ownableId} not available on this hub`);
+    }
 
-    await this.replayStoredOwnable(record.id, record.packageCid);
+    const replayState = await this.replayStoredOwnable(record.id, record.packageCid);
+    this.assertReplayVerification(replayState);
 
     const zipped = new JSZip();
-    const zipFile = await this.storage.getPackageZip(cid);
+    const zipFile = await this.storage.getPackageZip(record.packageCid);
     await zipped.loadAsync(zipFile, { createFolders: true });
     zipped.remove(LEGACY_CHAIN_FILENAME);
     zipped.file(CANONICAL_CHAIN_FILENAME, await this.storage.getEventChain(record.id, record.packageCid));
 
     const content = await zipped.generateAsync({ type: 'uint8array' });
     return new StreamableFile(Readable.from(Buffer.from(content)));
-  }
-
-  async claimOwnable(cid: string, signer?: SignerIdentity): Promise<StreamableFile> {
-    void signer;
-    return this.downloadOwnable(cid);
-  }
-
-  async getOwnableEvents(cid: string): Promise<IndexedWalletEvent[]> {
-    if (!(await this.existsCid(cid))) {
-      throw new UserError(`Event chain with cid ${cid} not available on this hub`);
-    }
-    return this.hubState.listWalletEventsByCid(cid);
   }
 
   async downloadOwnableChain(ownableId: string): Promise<Buffer> {

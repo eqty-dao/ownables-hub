@@ -90,22 +90,28 @@ describe('OwnableController', () => {
     );
   });
 
-  it('exports events endpoint deterministically as service ordered payload', async () => {
-    const ordered = [
-      { transactionHash: '0xa', transactionIndex: 0, logIndex: 1 },
-      { transactionHash: '0xb', transactionIndex: 1, logIndex: 0 },
-    ];
+  it('exports verification endpoint with ignored public event metadata', async () => {
+    const verification = {
+      ownableId: 'ownable-1',
+      packageCid: 'cid-1',
+      verified: true,
+      owner: '0xowner',
+      ownerAccount: 'eip155:84532:0xowner',
+      freshness: { stale: false, missingReplayKeys: [], latestReplayKey: '0xa:1' },
+      anchorVerification: { verified: true, anchors: { '0x1': '0xaaa' }, map: { '0x1': '0x2' }, details: {} },
+      ignoredPublicEvents: [{ replayKey: '0xb:2', transactionHash: '0xb', logIndex: 2, reason: 'register_failed' }],
+    };
     const ownableService = {
-      getOwnableEvents: jest.fn().mockResolvedValue(ordered),
+      getOwnableVerification: jest.fn().mockResolvedValue(verification),
     } as any;
     const controller = new OwnableController(ownableService);
     const res = buildRes();
 
-    await controller.events({ params: { cid: 'cid-1' } } as any, res);
+    await controller.verification({ params: { id: 'ownable-1' } } as any, res);
 
-    expect(ownableService.getOwnableEvents).toHaveBeenCalledWith('cid-1');
+    expect(ownableService.getOwnableVerification).toHaveBeenCalledWith('ownable-1');
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith({ cid: 'cid-1', events: ordered });
+    expect(res.json).toHaveBeenCalledWith(verification);
   });
 
   it('maps disabled recipient discovery to 404', async () => {
@@ -127,7 +133,7 @@ describe('OwnableController', () => {
     const controller = new OwnableController(ownableService);
     const res = buildRes();
 
-    await controller.download({ params: { cid: 'cid-1' } } as any, res);
+    await controller.download({ params: { id: 'ownable-1' } } as any, res);
 
     expect(res.status).toHaveBeenCalledWith(409);
   });
@@ -139,16 +145,15 @@ describe('OwnableController', () => {
     const controller = new OwnableController(ownableService);
     const res = buildRes();
 
-    await controller.getUnlockProof('cid-1', { address: '0x1' }, res);
+    await controller.getUnlockProof({ params: { id: 'ownable-1' } } as any, { address: '0x1' }, res);
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.send).toHaveBeenCalled();
   });
 
-  it('keeps bridge and claim as thin aliases', async () => {
+  it('keeps bridge as a thin alias', async () => {
     const ownableService = {
       uploadOwnable: jest.fn().mockResolvedValue({ cid: 'cid-1' }),
-      downloadOwnable: jest.fn().mockResolvedValue('stream'),
     } as any;
     const controller = new OwnableController(ownableService);
 
@@ -156,13 +161,9 @@ describe('OwnableController', () => {
     const uploadRes = buildRes();
     await controller.bridgeOwnable(uploadReq, uploadRes, undefined);
     expect(ownableService.uploadOwnable).toHaveBeenCalledWith(uploadReq.file.buffer, undefined, true);
-
-    const claimRes = buildRes();
-    await controller.claim('cid-1', claimRes);
-    expect(ownableService.downloadOwnable).toHaveBeenCalledWith('cid-1');
   });
 
-  it('streams a non-empty zip body for GET /ownables/:cid/download over HTTP', async () => {
+  it('streams a non-empty zip body for GET /ownables/:id/bundle over HTTP', async () => {
     const zip = new JSZip();
     zip.file('chain.json', JSON.stringify({ cid: 'cid-1' }));
     const zipBuffer = Buffer.from(await zip.generateAsync({ type: 'uint8array' }));
@@ -182,13 +183,13 @@ describe('OwnableController', () => {
       await app.init();
 
       const response = await request(app.getHttpServer())
-        .get('/ownables/cid-1/download')
+        .get('/ownables/ownable-1/bundle')
         .buffer(true)
         .parse(binaryParser)
         .expect(200)
         .expect('Content-Type', /application\/zip/);
 
-      expect(ownableService.downloadOwnable).toHaveBeenCalledWith('cid-1');
+      expect(ownableService.downloadOwnable).toHaveBeenCalledWith('ownable-1');
       expect(response.body).toBeInstanceOf(Buffer);
       expect(response.body.length).toBeGreaterThan(0);
 

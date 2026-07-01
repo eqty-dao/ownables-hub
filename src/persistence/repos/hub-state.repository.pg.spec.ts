@@ -147,6 +147,78 @@ describeWithDatabase('HubStateRepository recipient discovery postgres integratio
     });
   });
 
+  it('returns indexed anchor and public replay inputs by package cid and ownable subject id', async () => {
+    await withSchema(null, async (repo, client) => {
+      const ownableId = '00000000-0000-0000-0000-000000000501';
+      const subjectId = `0x${'5'.repeat(64)}`;
+      await client.query(
+        `INSERT INTO ownable_records (id, package_cid, prev_owner_address, subject_id)
+         VALUES ($1, $2, $3, $4)`,
+        [ownableId, 'cid-proof-1', '0xissuer', subjectId],
+      );
+
+      await repo.upsertIndexedAnchorEvent({
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x00000000000000000000000000000000000000aa',
+        blockNumber: 10n,
+        blockHash: '0xabc',
+        transactionHash: '0xaaa',
+        transactionIndex: 1,
+        logIndex: 2,
+        eventName: 'Anchored',
+        cid: 'cid-proof-1',
+        ownableId,
+        ownerAddress: '0xowner',
+        payloadJson: { anchor: true },
+      });
+
+      await repo.upsertIndexedPublicEvent({
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x00000000000000000000000000000000000000aa',
+        blockNumber: 11n,
+        blockHash: '0xdef',
+        transactionHash: '0xbbb',
+        transactionIndex: 0,
+        logIndex: 3,
+        eventName: 'PublicEvent',
+        subjectId,
+        sourceAddress: '0x00000000000000000000000000000000000000bb',
+        eventType: 'transfer',
+        dataHex: '0x1234',
+        eventTimestamp: 42n,
+        payloadJson: { public: true },
+      });
+
+      const anchorRows = await repo.listIndexedAnchorEventsByPackageCid('cid-proof-1');
+      const publicRows = await repo.listIndexedPublicEventsBySubjectId(subjectId);
+
+      expect(anchorRows).toEqual([
+        expect.objectContaining({
+          transactionHash: '0xaaa',
+          blockNumber: '10',
+          transactionIndex: 1,
+          logIndex: 2,
+          ownerAddress: '0xowner',
+        }),
+      ]);
+      expect(publicRows).toEqual([
+        expect.objectContaining({
+          transactionHash: '0xbbb',
+          blockNumber: '11',
+          transactionIndex: 0,
+          logIndex: 3,
+          subjectId,
+          sourceAddress: '0x00000000000000000000000000000000000000bb',
+          eventType: 'transfer',
+          dataHex: '0x1234',
+          eventTimestamp: '42',
+        }),
+      ]);
+    });
+  });
+
   it('backfills current_owner_account on upgrade from the pre-recipient-discovery schema', async () => {
     const schema = `hub_owner_account_upgrade_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     runMigrationsForSchema(schema, '1717193000000');

@@ -46,6 +46,46 @@ export interface IndexedWalletEvent {
   indexedAt: string;
 }
 
+export interface IndexedAnchorEvent {
+  id: string;
+  slotName: string;
+  chainId: string;
+  anchorContractAddress: string;
+  blockNumber: string;
+  blockHash: string;
+  transactionHash: string;
+  transactionIndex: number;
+  logIndex: number;
+  eventName: string;
+  cid: string | null;
+  ownableId: string | null;
+  ownerAddress: string | null;
+  payloadJson: unknown;
+  indexedAt: string;
+}
+
+export interface IndexedPublicEventRow {
+  id: string;
+  slotName: string;
+  chainId: string;
+  anchorContractAddress: string;
+  blockNumber: string;
+  blockHash: string;
+  transactionHash: string;
+  transactionIndex: number;
+  logIndex: number;
+  eventName: string;
+  cid: string | null;
+  ownableId: string | null;
+  subjectId: string | null;
+  sourceAddress: string | null;
+  eventType: string | null;
+  dataHex: string | null;
+  eventTimestamp: string | null;
+  payloadJson: unknown;
+  indexedAt: string;
+}
+
 export interface IndexerCursorState {
   slotName: 'testnet' | 'mainnet';
   cursorName: string;
@@ -626,6 +666,64 @@ export class HubStateRepository {
        ) wallet_events
        ORDER BY "blockNumber"::numeric ASC, "transactionIndex" ASC, "logIndex" ASC`,
       [cid],
+    );
+
+    return result.rows;
+  }
+
+  async listIndexedAnchorEventsByPackageCid(packageCid: string): Promise<IndexedAnchorEvent[]> {
+    const result = await this.db.query<IndexedAnchorEvent>(
+      `SELECT
+         id,
+         slot_name AS "slotName",
+         chain_id AS "chainId",
+         anchor_contract_address AS "anchorContractAddress",
+         block_number::text AS "blockNumber",
+         block_hash AS "blockHash",
+         transaction_hash AS "transactionHash",
+         transaction_index AS "transactionIndex",
+         log_index AS "logIndex",
+         event_name AS "eventName",
+         package_cid AS cid,
+         ownable_id AS "ownableId",
+         owner_address AS "ownerAddress",
+         payload_json AS "payloadJson",
+         indexed_at::text AS "indexedAt"
+       FROM indexed_anchor_events
+       WHERE package_cid = $1
+       ORDER BY block_number ASC, transaction_index ASC, log_index ASC`,
+      [packageCid],
+    );
+
+    return result.rows;
+  }
+
+  async listIndexedPublicEventsBySubjectId(subjectId: string): Promise<IndexedPublicEventRow[]> {
+    const result = await this.db.query<IndexedPublicEventRow>(
+      `SELECT
+         id,
+         slot_name AS "slotName",
+         chain_id AS "chainId",
+         anchor_contract_address AS "anchorContractAddress",
+         block_number::text AS "blockNumber",
+         block_hash AS "blockHash",
+         transaction_hash AS "transactionHash",
+         transaction_index AS "transactionIndex",
+         log_index AS "logIndex",
+         event_name AS "eventName",
+         package_cid AS cid,
+         ownable_id AS "ownableId",
+         subject_id AS "subjectId",
+         source_address AS "sourceAddress",
+         event_type AS "eventType",
+         data_hex AS "dataHex",
+         event_timestamp::text AS "eventTimestamp",
+         payload_json AS "payloadJson",
+         indexed_at::text AS "indexedAt"
+       FROM indexed_public_events
+       WHERE subject_id = LOWER($1)
+       ORDER BY block_number ASC, transaction_index ASC, log_index ASC`,
+      [subjectId],
     );
 
     return result.rows;
