@@ -10,12 +10,64 @@ import { OwnableService as CoreOwnableService } from '@ownables/core';
 const PRIVATE_STATE_OWNER_WALLET = ethers.Wallet.createRandom();
 const REPLAY_OWNER_WALLET = ethers.Wallet.createRandom();
 const REPLAY_NFT_INFO = { network: 'eip155:base', address: '0xabc', id: '1' };
+const DEFAULT_ANCHORS = [{ key: { hex: '0xanchor' }, value: { hex: '0xbbb' } }];
 let mockReplayInfo: Record<string, unknown>;
 
 jest.mock('eqty-core', () => require('../test-mocks/eqty-core.ts'));
 jest.mock('@ownables/core', () => {
+  const validateAnchorsAgainstIndexedRecords = (
+    anchors: Array<{ key: { hex: string }; value: { hex: string } }>,
+    indexedRecords: Array<{
+      key: string;
+      value: string;
+      transactionHash?: string;
+      blockNumber?: number;
+      transactionIndex?: number;
+      logIndex?: number;
+    }>,
+  ) => {
+    const latestByKey = new Map<string, (typeof indexedRecords)[number]>();
+    for (const record of indexedRecords) {
+      latestByKey.set(record.key.toLowerCase(), record);
+    }
+
+    const details = Object.fromEntries(
+      anchors.map(({ key, value }) => {
+        const evidence = latestByKey.get(key.hex.toLowerCase());
+        const actualValue = evidence?.value?.toLowerCase() ?? value.hex.toLowerCase();
+        const verified = Boolean(evidence?.transactionHash) && actualValue === value.hex.toLowerCase();
+        return [
+          key.hex,
+          {
+            key: key.hex,
+            expectedValue: value.hex.toLowerCase(),
+            value: actualValue,
+            verified,
+            source: evidence ? 'indexed' : 'provider',
+            ...(evidence?.transactionHash ? { transactionHash: evidence.transactionHash } : {}),
+            ...(evidence?.blockNumber !== undefined ? { blockNumber: evidence.blockNumber } : {}),
+            ...(evidence?.transactionIndex !== undefined ? { transactionIndex: evidence.transactionIndex } : {}),
+            ...(evidence?.logIndex !== undefined ? { logIndex: evidence.logIndex } : {}),
+          },
+        ];
+      }),
+    );
+
+    return {
+      verified: anchors.length > 0 && Object.values(details).every((detail) => detail.verified && detail.transactionHash),
+      anchors: Object.fromEntries(
+        anchors.map(({ key }) => [key.hex, details[key.hex]?.transactionHash as string | undefined]),
+      ),
+      map: Object.fromEntries(anchors.map(({ key }) => [key.hex, details[key.hex]?.value ?? ''])),
+      details,
+    };
+  };
+
   class MockCoreEventChainService {
-    constructor(..._args: any[]) {}
+    constructor(private readonly _stateStore: any, private readonly anchorProvider: any) {}
+    async verify(chain: any) {
+      return this.anchorProvider.verifyAnchors(...(chain.anchorMap ?? []));
+    }
   }
 
   class MockCoreOwnableService {
@@ -33,12 +85,21 @@ jest.mock('@ownables/core', () => {
       const firstReject = indexedPublicEvents.find((event) => event.eventType === 'reject');
       if (firstReject) {
         return {
-          complete: false,
+          complete: true,
           stateDump,
           appliedEvents: [],
           appliedReplayKeys: [],
           duplicateReplayKeys: [],
-          failure: { replayKey: `${firstReject.transactionHash}:${firstReject.logIndex}`, event: firstReject, cause: new Error('reject') },
+          appliedPublicEvents: [],
+          duplicatePublicEvents: [],
+          ignoredPublicEvents: [
+            {
+              replayKey: `${firstReject.transactionHash}:${firstReject.logIndex}`,
+              event: firstReject,
+              reason: 'register_failed',
+              cause: new Error('reject'),
+            },
+          ],
         };
       }
       return {
@@ -47,6 +108,9 @@ jest.mock('@ownables/core', () => {
         appliedEvents: indexedPublicEvents,
         appliedReplayKeys: indexedPublicEvents.map((event) => `${event.transactionHash}:${event.logIndex}`),
         duplicateReplayKeys: [],
+        appliedPublicEvents: indexedPublicEvents.map((event) => ({ replayKey: `${event.transactionHash}:${event.logIndex}`, event })),
+        duplicatePublicEvents: [],
+        ignoredPublicEvents: [],
       };
     }
     rpc(id: string) {
@@ -69,6 +133,8 @@ jest.mock('@ownables/core', () => {
       const missingReplayKeys = keys.filter((key) => !appliedReplayKeys.includes(key));
       return { stale: missingReplayKeys.length > 0, missingReplayKeys };
     },
+    publicEventReplayKey: (event: any) => `${event.transactionHash}:${event.logIndex}`,
+    validateAnchorsAgainstIndexedRecords,
     OwnableService: MockCoreOwnableService,
     EventChainService: MockCoreEventChainService,
   };
@@ -190,6 +256,17 @@ describe('OwnableService', () => {
       listAvailableOwnablesByOwnerAccount: jest.fn().mockResolvedValue([]),
       listOwnableCidsByPrevOwner: jest.fn().mockResolvedValue(['cid-a']),
       listWalletEventsByCid: jest.fn().mockResolvedValue([]),
+      listIndexedAnchorEventsByPackageCid: jest.fn().mockResolvedValue([
+        {
+          transactionHash: '0xaaa',
+          blockNumber: '10',
+          transactionIndex: 0,
+          logIndex: 0,
+          ownerAddress: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase(),
+          payloadJson: { key: '0xanchor', value: '0xbbb' },
+        },
+      ]),
+      listIndexedPublicEventsBySubjectId: jest.fn().mockResolvedValue([]),
     };
     const service = new OwnableService(buildConfig() as any, nft as any, storage as any, hubState as any);
     const runtimeValidatorSpy = jest
@@ -200,13 +277,16 @@ describe('OwnableService', () => {
     return { service, nft, storage, hubState, runtimeValidatorSpy };
   };
 
-  const createChain = async (nft = { network: 'eip155:base', address: '0xabc', id: '1' }) => {
+  const createChain = async (
+    nft = { network: 'eip155:base', address: '0xabc', id: '1' },
+    anchors: Array<{ key: { hex: string }; value: { hex: string } }> = DEFAULT_ANCHORS,
+  ) => {
     const chain = new EventChain(`0x${'11'.repeat(32)}`);
     const signer = {
       getAddress: async () => PRIVATE_STATE_OWNER_WALLET.address,
       signTypedData: async () => `0x${'00'.repeat(65)}`,
     };
-    const event = new Event({ '@context': 'instantiate_msg.json', nft });
+    const event = new Event({ '@context': 'instantiate_msg.json', nft, anchors });
     event.previous = {
       toHex: () => `0x${'12'.repeat(32)}`,
     } as any;
@@ -226,10 +306,13 @@ describe('OwnableService', () => {
       package: 'cid-package',
       network_id: 84532,
       keywords: [],
+      anchors: DEFAULT_ANCHORS,
     });
     await event.addTo(chain).signWith(signer);
     return chain;
   };
+
+  const storedOwnableId = async () => (await createChain()).id;
 
   const toBuffer = async (stream: Readable): Promise<Buffer> => {
     const chunks: Buffer[] = [];
@@ -608,15 +691,15 @@ describe('OwnableService', () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain();
     const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
 
     const packageZip = new JSZip();
     packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
     storage.getEventChain.mockResolvedValue(chainBuffer);
-    hubState.listWalletEventsByCid.mockResolvedValue([
+    hubState.listIndexedPublicEventsBySubjectId.mockResolvedValue([
       {
         id: 'evt-1',
-        eventKind: 'public',
         slotName: 'testnet',
         chainId: '84532',
         anchorContractAddress: '0x1',
@@ -640,39 +723,40 @@ describe('OwnableService', () => {
     ]);
 
     const replaySpy = jest.spyOn(CoreOwnableService.prototype, 'attemptReplayIndexedPublicEvents');
-    await service.downloadOwnable('cid-1');
+    await service.downloadOwnable(chain.id);
 
     expect(replaySpy).toHaveBeenCalled();
     expect(hubState.setOwnerState).not.toHaveBeenCalled();
   });
 
-  it('does not read persisted owner state when the archive is fresh', async () => {
+  it('returns bundle by ownable id without reading legacy persisted owner state', async () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain();
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
 
     storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
     const packageZip = new JSZip();
     packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
-    hubState.listWalletEventsByCid.mockResolvedValue([]);
+    hubState.listIndexedPublicEventsBySubjectId.mockResolvedValue([]);
 
-    await service.downloadOwnable('cid-1');
+    await service.downloadOwnable(chain.id);
 
     expect(hubState.getOwnerStateByCid).not.toHaveBeenCalled();
   });
 
-  it('rejects stale ownables with stable stale error contract', async () => {
+  it('keeps ignored public events non-fatal in verification metadata', async () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain();
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
 
     storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
     const packageZip = new JSZip();
     packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
-    hubState.listWalletEventsByCid.mockResolvedValue([
+    hubState.listIndexedPublicEventsBySubjectId.mockResolvedValue([
       {
         id: 'evt-1',
-        eventKind: 'public',
         slotName: 'testnet',
         chainId: '84532',
         anchorContractAddress: '0x1',
@@ -695,21 +779,176 @@ describe('OwnableService', () => {
       },
     ]);
 
-    await expect(service.downloadOwnable('cid-1')).rejects.toThrow('STALE_OWNABLE');
+    await expect(service.downloadOwnable(chain.id)).resolves.toBeDefined();
+    await expect(service.getOwnableVerification(chain.id)).resolves.toEqual(
+      expect.objectContaining({
+        ownableId: chain.id,
+        verified: true,
+        ignoredPublicEvents: [
+          expect.objectContaining({
+            replayKey: '0xaaa:1',
+            transactionHash: '0xaaa',
+            logIndex: 1,
+            reason: 'register_failed',
+          }),
+        ],
+      }),
+    );
+  });
+
+  it('marks verification false when indexed anchor evidence is missing for the requested key', async () => {
+    const { service, storage, hubState } = await buildService();
+    const chain = await createChain(undefined, [{ key: { hex: '0xanchor' }, value: { hex: '0xbbb' } }]);
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
+    hubState.listIndexedAnchorEventsByPackageCid.mockResolvedValue([
+      {
+        transactionHash: '0xaaa',
+        blockNumber: '10',
+        transactionIndex: 0,
+        logIndex: 0,
+        ownerAddress: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase(),
+        payloadJson: { key: '0xother', value: '0xbbb' },
+      },
+    ]);
+
+    storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
+    const packageZip = new JSZip();
+    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
+    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
+    hubState.listIndexedPublicEventsBySubjectId.mockResolvedValue([]);
+
+    await expect(service.getOwnableVerification(chain.id)).resolves.toEqual(
+      expect.objectContaining({
+        verified: false,
+        anchorVerification: expect.objectContaining({
+          verified: false,
+          anchors: { '0xanchor': undefined },
+          details: {
+            '0xanchor': expect.objectContaining({
+              key: '0xanchor',
+              expectedValue: '0xbbb',
+              value: '0xbbb',
+              verified: false,
+            }),
+          },
+        }),
+      }),
+    );
+  });
+
+  it('marks verification false when indexed anchor evidence value mismatches the requested key', async () => {
+    const { service, storage, hubState } = await buildService();
+    const chain = await createChain(undefined, [{ key: { hex: '0xanchor' }, value: { hex: '0xbbb' } }]);
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
+    hubState.listIndexedAnchorEventsByPackageCid.mockResolvedValue([
+      {
+        transactionHash: '0xaaa',
+        blockNumber: '10',
+        transactionIndex: 0,
+        logIndex: 0,
+        ownerAddress: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase(),
+        payloadJson: { key: '0xanchor', value: '0xccc' },
+      },
+    ]);
+
+    storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
+    const packageZip = new JSZip();
+    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
+    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
+    hubState.listIndexedPublicEventsBySubjectId.mockResolvedValue([]);
+
+    await expect(service.getOwnableVerification(chain.id)).resolves.toEqual(
+      expect.objectContaining({
+        verified: false,
+        anchorVerification: expect.objectContaining({
+          verified: false,
+          anchors: { '0xanchor': '0xaaa' },
+          map: { '0xanchor': '0xccc' },
+          details: {
+            '0xanchor': expect.objectContaining({
+              key: '0xanchor',
+              expectedValue: '0xbbb',
+              value: '0xccc',
+              transactionHash: '0xaaa',
+              verified: false,
+            }),
+          },
+        }),
+      }),
+    );
+  });
+
+  it('marks verification true only when matching indexed anchor evidence exists for the requested key', async () => {
+    const { service, storage, hubState } = await buildService();
+    const chain = await createChain(undefined, [{ key: { hex: '0xanchor' }, value: { hex: '0xbbb' } }]);
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
+    hubState.listIndexedAnchorEventsByPackageCid.mockResolvedValue([
+      {
+        transactionHash: '0xolder',
+        blockNumber: '9',
+        transactionIndex: 0,
+        logIndex: 0,
+        ownerAddress: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase(),
+        payloadJson: { key: '0xanchor', value: '0xaaa' },
+      },
+      {
+        transactionHash: '0xaaa',
+        blockNumber: '10',
+        transactionIndex: 0,
+        logIndex: 1,
+        ownerAddress: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase(),
+        payloadJson: { key: '0xanchor', value: '0xbbb' },
+      },
+      {
+        transactionHash: '0xother',
+        blockNumber: '11',
+        transactionIndex: 0,
+        logIndex: 2,
+        ownerAddress: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase(),
+        payloadJson: { key: '0xother', value: '0xddd' },
+      },
+    ]);
+
+    storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
+    const packageZip = new JSZip();
+    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
+    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
+    hubState.listIndexedPublicEventsBySubjectId.mockResolvedValue([]);
+
+    await expect(service.getOwnableVerification(chain.id)).resolves.toEqual(
+      expect.objectContaining({
+        verified: true,
+        anchorVerification: expect.objectContaining({
+          verified: true,
+          anchors: { '0xanchor': '0xaaa' },
+          map: { '0xanchor': '0xbbb' },
+          details: {
+            '0xanchor': expect.objectContaining({
+              key: '0xanchor',
+              expectedValue: '0xbbb',
+              value: '0xbbb',
+              transactionHash: '0xaaa',
+              verified: true,
+            }),
+          },
+        }),
+      }),
+    );
   });
 
   it('preserves archive shape without synthesizing authority_claim_msg.json', async () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain();
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
 
     storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
     const packageZip = new JSZip();
     packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
     packageZip.file('package.json', JSON.stringify({ name: 'pkg' }));
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
-    hubState.listWalletEventsByCid.mockResolvedValue([]);
+    hubState.listIndexedPublicEventsBySubjectId.mockResolvedValue([]);
 
-    const file = await service.downloadOwnable('cid-1');
+    const file = await service.downloadOwnable(chain.id);
     const buffer = await toBuffer(file.getStream() as Readable);
     const outputZip = await new JSZip().loadAsync(buffer);
 
@@ -720,11 +959,12 @@ describe('OwnableService', () => {
 
   it('requires signer for unlock proof', async () => {
     const { service } = await buildService();
-    await expect(service.getUnlockProof('cid-1')).rejects.toThrow('Missing SIWE signer');
+    const chainId = await storedOwnableId();
+    await expect(service.getUnlockProof(chainId)).rejects.toThrow('Missing SIWE signer');
   });
 
   it('rejects unlock proof when nft metadata is unavailable', async () => {
-    const { service, storage } = await buildService();
+    const { service, storage, hubState } = await buildService();
     const chain = await createSdkIssuedChain();
     const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
     const packageZip = new JSZip();
@@ -732,8 +972,9 @@ describe('OwnableService', () => {
     storage.getEventChain.mockResolvedValue(chainBuffer);
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
     mockReplayInfo = { owner: REPLAY_OWNER_WALLET.address.toLowerCase() };
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
 
-    await expect(service.getUnlockProof('cid-1', { address: PRIVATE_STATE_OWNER_WALLET.address })).rejects.toThrow(
+    await expect(service.getUnlockProof(chain.id, { address: PRIVATE_STATE_OWNER_WALLET.address })).rejects.toThrow(
       'NFT metadata is unavailable for this ownable',
     );
   });

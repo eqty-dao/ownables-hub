@@ -248,6 +248,78 @@ describe('HubStateRepository', () => {
     expect(query).toHaveBeenCalledWith(expect.stringContaining('ORDER BY "blockNumber"::numeric ASC, "transactionIndex" ASC, "logIndex" ASC'), ['cid-abc']);
   });
 
+  it('queries indexed anchor events by package cid in replay order', async () => {
+    query.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'anchor-1',
+          transactionHash: '0xaaa',
+          blockNumber: '10',
+          transactionIndex: 1,
+          logIndex: 2,
+          ownerAddress: '0xowner',
+        },
+      ],
+    });
+
+    const rows = await repo.listIndexedAnchorEventsByPackageCid('cid-abc');
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: 'anchor-1',
+        transactionHash: '0xaaa',
+        blockNumber: '10',
+        transactionIndex: 1,
+        logIndex: 2,
+        ownerAddress: '0xowner',
+      }),
+    ]);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('FROM indexed_anchor_events'),
+      ['cid-abc'],
+    );
+  });
+
+  it('queries indexed public events by ownable subject id in replay order', async () => {
+    query.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'public-1',
+          subjectId: `0x${'6'.repeat(64)}`,
+          transactionHash: '0xbbb',
+          blockNumber: '11',
+          transactionIndex: 0,
+          logIndex: 3,
+          sourceAddress: '0x00000000000000000000000000000000000000bb',
+          eventType: 'transfer',
+          dataHex: '0x01',
+          eventTimestamp: '42',
+        },
+      ],
+    });
+
+    const rows = await repo.listIndexedPublicEventsBySubjectId(`0x${'6'.repeat(64)}`);
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: 'public-1',
+        subjectId: `0x${'6'.repeat(64)}`,
+        transactionHash: '0xbbb',
+        blockNumber: '11',
+        transactionIndex: 0,
+        logIndex: 3,
+        sourceAddress: '0x00000000000000000000000000000000000000bb',
+        eventType: 'transfer',
+        dataHex: '0x01',
+        eventTimestamp: '42',
+      }),
+    ]);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('WHERE subject_id = LOWER($1)'),
+      [`0x${'6'.repeat(64)}`],
+    );
+  });
+
   it('resolves public events by ownable_records subject linkage when indexed before upload', async () => {
     query.mockResolvedValueOnce({ rows: [] });
 

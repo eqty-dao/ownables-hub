@@ -61,13 +61,13 @@ export class OwnableController {
     return this.uploadOwnable(req, res, signer);
   }
 
-  @Get(':cid/download')
+  @Get(':id/bundle')
   @Header('Content-type', 'application/zip')
   @ApiProduces('application/zip')
   async download(@Req() req: Request, @Res({ passthrough: true }) res: Response): Promise<StreamableFile | Response> {
     try {
-      const cid = String(req.params.cid ?? '');
-      return await this.ownableService.downloadOwnable(cid);
+      const id = String(req.params.id ?? '');
+      return await this.ownableService.downloadOwnable(id);
     } catch (err) {
       return this.errorResponse(res, err);
     }
@@ -85,19 +85,12 @@ export class OwnableController {
     }
   }
 
-  @Get('claim')
-  @Header('Content-type', 'application/zip')
-  @ApiProduces('application/zip')
-  async claim(@Query('cid') cid: string, @Res({ passthrough: true }) res: Response): Promise<StreamableFile | Response> {
-    return this.download({ params: { cid } } as unknown as Request, res);
-  }
-
-  @Get(':cid/events')
-  async events(@Req() req: Request, @Res() res: Response): Promise<Response> {
+  @Get(':id/verification')
+  async verification(@Req() req: Request, @Res() res: Response): Promise<Response> {
     try {
-      const cid = String(req.params.cid ?? '');
-      const events = await this.ownableService.getOwnableEvents(cid);
-      return res.status(200).json({ cid, events });
+      const id = String(req.params.id ?? '');
+      const verification = await this.ownableService.getOwnableVerification(id);
+      return res.status(200).json(verification);
     } catch (err) {
       return this.errorResponse(res, err);
     }
@@ -125,11 +118,12 @@ export class OwnableController {
     return res.status(500).send('Unexpected error');
   }
 
-  @Get('proof')
+  @Get(':id/unlock-proof')
   @UseGuards(SIWEGuard)
-  async getUnlockProof(@Query('cid') cid: string, @Signer() signer?: SignerIdentity, @Res() res?: Response) {
+  async getUnlockProof(@Req() req: Request, @Signer() signer?: SignerIdentity, @Res() res?: Response) {
     try {
-      const unlockProof = await this.ownableService.getUnlockProof(cid, signer);
+      const id = String(req.params.id ?? '');
+      const unlockProof = await this.ownableService.getUnlockProof(id, signer);
       if (res) return res.status(200).json({ unlockProof });
       return { unlockProof };
     } catch (e) {

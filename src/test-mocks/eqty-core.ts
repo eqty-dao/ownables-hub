@@ -59,6 +59,13 @@ export class EventChain {
     return chain;
   }
 
+  get anchorMap(): Array<{ key: { hex: string }; value: { hex: string } }> {
+    return this.events.flatMap((event) => {
+      const anchors = event.parsedData?.anchors;
+      return Array.isArray(anchors) ? anchors : [];
+    });
+  }
+
   toJSON(): { id: string; events: any[] } {
     return {
       id: this.id,
