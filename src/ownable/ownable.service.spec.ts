@@ -313,6 +313,7 @@ describe('OwnableService', () => {
   };
 
   const storedOwnableId = async () => (await createChain()).id;
+  const expectedSubjectId = (ownableId: string) => ethers.keccak256(ethers.getBytes(ownableId)).toLowerCase();
 
   const toBuffer = async (stream: Readable): Promise<Buffer> => {
     const chunks: Buffer[] = [];
@@ -496,7 +497,7 @@ describe('OwnableService', () => {
     expect(result.NftId).toEqual(REPLAY_NFT_INFO.id);
     expect(hubState.upsertOwnableRecord).toHaveBeenCalledWith(
       expect.objectContaining({
-        subjectId: chain.id,
+        subjectId: expectedSubjectId(chain.id),
         nftNetwork: REPLAY_NFT_INFO.network,
         nftContractAddress: REPLAY_NFT_INFO.address,
         nftTokenId: REPLAY_NFT_INFO.id,
@@ -525,7 +526,7 @@ describe('OwnableService', () => {
       id: 'own-existing',
       packageCid: 'cid-existing',
       prevOwnerAddress: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase(),
-      subjectId: chain.id,
+      subjectId: expectedSubjectId(chain.id),
       nftNetwork: REPLAY_NFT_INFO.network,
       nftContractAddress: REPLAY_NFT_INFO.address,
       nftTokenId: REPLAY_NFT_INFO.id,
@@ -538,10 +539,10 @@ describe('OwnableService', () => {
     expect(result.nftNetwork).toEqual(REPLAY_NFT_INFO.network);
     expect(result.smartContractAddress).toEqual(REPLAY_NFT_INFO.address);
     expect(result.NftId).toEqual(REPLAY_NFT_INFO.id);
-    expect(hubState.getOwnableBySubjectId).toHaveBeenCalledWith(chain.id);
+    expect(hubState.getOwnableBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id));
     expect(hubState.upsertOwnableRecord).toHaveBeenCalledWith(
       expect.objectContaining({
-        subjectId: chain.id,
+        subjectId: expectedSubjectId(chain.id),
         nftNetwork: REPLAY_NFT_INFO.network,
         nftContractAddress: REPLAY_NFT_INFO.address,
         nftTokenId: REPLAY_NFT_INFO.id,
@@ -576,7 +577,7 @@ describe('OwnableService', () => {
     expect(result).not.toHaveProperty('NftId');
     expect(hubState.upsertOwnableRecord).toHaveBeenCalledWith(
       expect.objectContaining({
-        subjectId: chain.id,
+        subjectId: expectedSubjectId(chain.id),
         nftNetwork: undefined,
         nftContractAddress: undefined,
         nftTokenId: undefined,
@@ -691,7 +692,7 @@ describe('OwnableService', () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain();
     const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
-    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: expectedSubjectId(chain.id) });
 
     const packageZip = new JSZip();
     packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
@@ -712,7 +713,7 @@ describe('OwnableService', () => {
         cid: 'cid-1',
         ownableId: 'id-1',
         ownerAddress: null,
-        subjectId: chain.id,
+        subjectId: expectedSubjectId(chain.id),
         sourceAddress: '0x1111111111111111111111111111111111111111',
         eventType: 'ok',
         dataHex: '0x01',
@@ -726,13 +727,15 @@ describe('OwnableService', () => {
     await service.downloadOwnable(chain.id);
 
     expect(replaySpy).toHaveBeenCalled();
+    expect(hubState.getOwnableBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id));
+    expect(hubState.listIndexedPublicEventsBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id));
     expect(hubState.setOwnerState).not.toHaveBeenCalled();
   });
 
   it('returns bundle by ownable id without reading legacy persisted owner state', async () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain();
-    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: expectedSubjectId(chain.id) });
 
     storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
     const packageZip = new JSZip();
@@ -748,7 +751,7 @@ describe('OwnableService', () => {
   it('keeps ignored public events non-fatal in verification metadata', async () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain();
-    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: expectedSubjectId(chain.id) });
 
     storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
     const packageZip = new JSZip();
@@ -769,7 +772,7 @@ describe('OwnableService', () => {
         cid: 'cid-1',
         ownableId: 'id-1',
         ownerAddress: null,
-        subjectId: chain.id,
+        subjectId: expectedSubjectId(chain.id),
         sourceAddress: '0x1111111111111111111111111111111111111111',
         eventType: 'reject',
         dataHex: '0x01',
@@ -799,7 +802,7 @@ describe('OwnableService', () => {
   it('marks verification false when indexed anchor evidence is missing for the requested key', async () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain(undefined, [{ key: { hex: '0xanchor' }, value: { hex: '0xbbb' } }]);
-    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: expectedSubjectId(chain.id) });
     hubState.listIndexedAnchorEventsByPackageCid.mockResolvedValue([
       {
         transactionHash: '0xaaa',
@@ -839,7 +842,7 @@ describe('OwnableService', () => {
   it('marks verification false when indexed anchor evidence value mismatches the requested key', async () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain(undefined, [{ key: { hex: '0xanchor' }, value: { hex: '0xbbb' } }]);
-    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: expectedSubjectId(chain.id) });
     hubState.listIndexedAnchorEventsByPackageCid.mockResolvedValue([
       {
         transactionHash: '0xaaa',
@@ -881,7 +884,7 @@ describe('OwnableService', () => {
   it('marks verification true only when matching indexed anchor evidence exists for the requested key', async () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain(undefined, [{ key: { hex: '0xanchor' }, value: { hex: '0xbbb' } }]);
-    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: expectedSubjectId(chain.id) });
     hubState.listIndexedAnchorEventsByPackageCid.mockResolvedValue([
       {
         transactionHash: '0xolder',
@@ -939,7 +942,7 @@ describe('OwnableService', () => {
   it('preserves archive shape without synthesizing authority_claim_msg.json', async () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain();
-    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: expectedSubjectId(chain.id) });
 
     storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
     const packageZip = new JSZip();
@@ -972,7 +975,7 @@ describe('OwnableService', () => {
     storage.getEventChain.mockResolvedValue(chainBuffer);
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
     mockReplayInfo = { owner: REPLAY_OWNER_WALLET.address.toLowerCase() };
-    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: chain.id });
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: expectedSubjectId(chain.id) });
 
     await expect(service.getUnlockProof(chain.id, { address: PRIVATE_STATE_OWNER_WALLET.address })).rejects.toThrow(
       'NFT metadata is unavailable for this ownable',
@@ -981,11 +984,12 @@ describe('OwnableService', () => {
 
   it('returns available ownables with stable keys and import metadata', async () => {
     const { service, hubState, storage } = await buildService();
+    const chain = await createChain();
     hubState.listAvailableOwnablesByOwnerAccount.mockResolvedValue([
       {
         ownableId: '00000000-0000-0000-0000-000000000101',
         packageCid: 'cid-1',
-        subjectId: '0x11',
+        subjectId: expectedSubjectId(chain.id),
         ownerAccount: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
         ownerStateVersion: 4,
         availableAt: '2026-06-07T10:02:00.000Z',
@@ -1005,6 +1009,7 @@ describe('OwnableService', () => {
       }),
     );
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
+    storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
 
     await expect(
       service.getAvailableOwnables(`eip155:84532:${REPLAY_OWNER_WALLET.address}`),
@@ -1012,7 +1017,7 @@ describe('OwnableService', () => {
       owner: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
       entries: [
         {
-          id: '0x11',
+          id: chain.id,
           title: 'Potion',
           description: 'Recovered from the stored package.',
           issuer: '0xissuer',
@@ -1037,6 +1042,7 @@ describe('OwnableService', () => {
 
   it('falls back to cid metadata when stored package metadata is unavailable', async () => {
     const { service, hubState, storage } = await buildService();
+    const chain = await createChain();
     hubState.listAvailableOwnablesByOwnerAccount.mockResolvedValue([
       {
         ownableId: '00000000-0000-0000-0000-000000000102',
@@ -1052,6 +1058,7 @@ describe('OwnableService', () => {
       },
     ]);
     storage.getPackageZip.mockRejectedValue(new Error('missing package zip'));
+    storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
 
     await expect(
       service.getAvailableOwnables(`eip155:84532:${REPLAY_OWNER_WALLET.address}`),
@@ -1059,7 +1066,7 @@ describe('OwnableService', () => {
       owner: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
       entries: [
         {
-          id: '00000000-0000-0000-0000-000000000102',
+          id: chain.id,
           title: 'cid-2',
           issuer: '0xissuer',
           availableAt: '2026-06-08T12:00:00.000Z',

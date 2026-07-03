@@ -22,6 +22,7 @@ import { NFTService } from '../nft/nft.service.js';
 import { AuthError, UserError } from '../interfaces/error.js';
 import JSZip from 'jszip';
 import { EventChain } from 'eqty-core';
+import { ethers } from 'ethers';
 import { Readable } from 'stream';
 import { ArchiveStorageService } from '../storage/archive-storage.service.js';
 import { HubStateRepository, IndexedAnchorEvent, IndexedPublicEventRow } from '../persistence/repos/hub-state.repository.js';
@@ -286,6 +287,21 @@ export class OwnableService implements OnModuleInit {
     };
   }
 
+  private publicEventSubjectId(ownableId: string): string {
+    return ethers.keccak256(ethers.getBytes(ownableId)).toLowerCase();
+  }
+
+  private async getOwnableRecordByOwnableId(ownableId: string) {
+    return await this.hubState.getOwnableBySubjectId(this.publicEventSubjectId(ownableId));
+  }
+
+  private async readStoredOwnableId(recordId: string, packageCid: string): Promise<string> {
+    const chainBuffer = await this.storage.getEventChain(recordId, packageCid);
+    const chain = EventChain.from(JSON.parse(chainBuffer.toString('utf8')));
+    this.validateEventChain(chain);
+    return chain.id;
+  }
+
   private async deriveNftInfo(chain: EventChain, replayInfo?: unknown): Promise<NFTInfo | null> {
     try {
       return this.parseNftInfoFromChain(chain);
@@ -300,7 +316,7 @@ export class OwnableService implements OnModuleInit {
       return replayNftInfo;
     }
 
-    const persistedNftInfo = this.parseNftInfoFromRecord(await this.hubState.getOwnableBySubjectId(chain.id));
+    const persistedNftInfo = this.parseNftInfoFromRecord(await this.getOwnableRecordByOwnableId(chain.id));
     if (persistedNftInfo) {
       return persistedNftInfo;
     }
@@ -564,7 +580,7 @@ export class OwnableService implements OnModuleInit {
     this.assertSupportedOwnableRuntime(files);
 
     const indexedAnchorEvents = await this.hubState.listIndexedAnchorEventsByPackageCid(packageCid);
-    const indexedPublicRows = await this.hubState.listIndexedPublicEventsBySubjectId(chain.id);
+    const indexedPublicRows = await this.hubState.listIndexedPublicEventsBySubjectId(this.publicEventSubjectId(chain.id));
 
     const stateStore = new InMemoryStateStore();
     const anchorProvider: AnchorProvider = {
@@ -780,7 +796,7 @@ export class OwnableService implements OnModuleInit {
   public async getUnlockProof(ownableId: string, signer?: SignerIdentity): Promise<string> {
     if (!signer?.address) throw new AuthError('Missing SIWE signer');
 
-    const record = await this.hubState.getOwnableBySubjectId(ownableId);
+    const record = await this.getOwnableRecordByOwnableId(ownableId);
     if (!record) throw new UserError('Ownable is not registered on hub.');
     if (!(await this.existsPkg(record.packageCid))) throw new UserError('Ownable package is not available on server.');
 
@@ -814,7 +830,7 @@ export class OwnableService implements OnModuleInit {
   }
 
   async getOwnableVerification(ownableId: string): Promise<OwnableVerificationResponse> {
-    const record = await this.hubState.getOwnableBySubjectId(ownableId);
+    const record = await this.getOwnableRecordByOwnableId(ownableId);
     if (!record) throw new UserError(`Ownable with id ${ownableId} not available on this hub`);
     if (!(await this.existsOwnableChain(record.id, record.packageCid))) {
       throw new UserError(`Ownable chain with id ${ownableId} not available on this hub`);
@@ -868,7 +884,7 @@ export class OwnableService implements OnModuleInit {
     const record = await this.hubState.upsertOwnableRecord({
       packageCid: cid,
       prevOwnerAddress: ownerFromPrivateState || '0x0000000000000000000000000000000000000000',
-      subjectId: chain.id,
+      subjectId: this.publicEventSubjectId(chain.id),
       nftNetwork: replayState.nftInfo?.network,
       nftContractAddress: replayState.nftInfo?.address,
       nftTokenId: replayState.nftInfo?.id,
@@ -897,7 +913,7 @@ export class OwnableService implements OnModuleInit {
   }
 
   async downloadOwnable(ownableId: string): Promise<StreamableFile> {
-    const record = await this.hubState.getOwnableBySubjectId(ownableId);
+    const record = await this.getOwnableRecordByOwnableId(ownableId);
     if (!record) throw new UserError(`Ownable bundle with id ${ownableId} not available on this hub`);
     if (!(await this.existsOwnableChain(record.id, record.packageCid))) {
       throw new UserError(`Ownable bundle with id ${ownableId} not available on this hub`);
@@ -920,7 +936,7 @@ export class OwnableService implements OnModuleInit {
   }
 
   async downloadOwnableChain(ownableId: string): Promise<Buffer> {
-    const record = await this.hubState.getOwnableBySubjectId(ownableId);
+    const record = await this.getOwnableRecordByOwnableId(ownableId);
     if (!record) throw new UserError(`Ownable chain with id ${ownableId} not available on this hub`);
     if (!(await this.existsOwnableChain(record.id, record.packageCid))) {
       throw new UserError(`Ownable chain with id ${ownableId} not available on this hub`);
@@ -941,8 +957,9 @@ export class OwnableService implements OnModuleInit {
     const entries = await Promise.all(
       rows.map(async (row): Promise<AvailableOwnableEntry> => {
         const metadata = await this.readAvailableOwnablePackageMetadata(row.packageCid);
+        const storedOwnableId = await this.readStoredOwnableId(row.ownableId, row.packageCid);
         return {
-          id: row.subjectId ?? row.ownableId,
+          id: storedOwnableId,
           title: metadata.title,
           ...(metadata.description ? { description: metadata.description } : {}),
           ...(row.issuerAddress ? { issuer: row.issuerAddress } : {}),

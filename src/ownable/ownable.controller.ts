@@ -164,15 +164,6 @@ export class OwnableController {
     }
   }
 
-  @Get('cid')
-  async getOwnableCidFromNFT(@Query('network') network: string, @Query('address') address: string, @Query('id') id: string) {
-    try {
-      return await this.ownableService.getOwnableCidFromNFT({ network, address, id });
-    } catch (e) {
-      return { error: `${e}` };
-    }
-  }
-
   @Get('serverinfo')
   async GetServerInfo() {
     try {

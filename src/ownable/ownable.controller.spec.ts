@@ -294,4 +294,20 @@ describe('OwnableController recipient discovery route behavior', () => {
     ownableService.getAvailableOwnables.mockRejectedValueOnce(new UserError('owner must be a valid CAIP-10 account'));
     await request(app.getHttpServer()).get('/ownables/available').query({ owner: 'not-caip10' }).expect(400);
   });
+
+  it('keeps removed legacy ownables routes absent', async () => {
+    await request(app.getHttpServer())
+      .get('/ownables/cid')
+      .query({ network: 'eip155:84532', address: '0xabc', id: '1' })
+      .expect(404);
+
+    await request(app.getHttpServer()).get('/ownables/claim').query({ cid: 'cid-1' }).expect(404);
+
+    await request(app.getHttpServer())
+      .get('/ownables/proof')
+      .query({ network: 'eip155:84532', address: '0xabc', id: '1' })
+      .expect(404);
+
+    await request(app.getHttpServer()).get('/ownables/cid-1/events').expect(404);
+  });
 });
