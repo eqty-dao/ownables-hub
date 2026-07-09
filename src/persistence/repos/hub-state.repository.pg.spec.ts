@@ -7,6 +7,7 @@ const databaseUrl = process.env.DATABASE_URL;
 const repoRoot = path.resolve(__dirname, '../../..');
 const migrateBin = path.join(repoRoot, 'node_modules/node-pg-migrate/bin/node-pg-migrate');
 const migrationsDir = path.join(repoRoot, 'migrations');
+const postgresReplayProofScript = path.join(repoRoot, 'scripts/verify-postgres-replay-proof.mjs');
 
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
 
@@ -289,6 +290,14 @@ describeWithDatabase('HubStateRepository recipient discovery postgres integratio
         await cleanupClient.end();
       }
     }
+  });
+
+  it('runs the DATABASE_URL-backed replay proof through the real Hub service', () => {
+    execFileSync(process.execPath, [postgresReplayProofScript], {
+      cwd: repoRoot,
+      env: { ...process.env, DATABASE_URL: databaseUrl },
+      stdio: 'pipe',
+    });
   });
 
 });

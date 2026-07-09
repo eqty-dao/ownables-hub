@@ -12,8 +12,7 @@ describe('HubStateRepository', () => {
     repo = new HubStateRepository(db as any);
   });
 
-  it('upserts and resolves ownable lookups by cid, nft, and subject', async () => {
-    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', packageCid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
+  it('upserts and resolves ownable lookups by nft and subject', async () => {
     query.mockResolvedValueOnce({ rows: [{ id: 'own-1', packageCid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
     query.mockResolvedValueOnce({ rows: [{ id: 'own-1', packageCid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
     query.mockResolvedValueOnce({ rows: [{ id: 'own-1', packageCid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
@@ -27,11 +26,9 @@ describe('HubStateRepository', () => {
       nftTokenId: '1',
     });
 
-    const byCid = await repo.getOwnableByCid('cid-1');
     const byNft = await repo.getOwnableByNft('eip155:base', '0xNFT', '1');
     const bySubject = await repo.getOwnableBySubjectId('0x11');
 
-    expect(byCid?.packageCid).toBe('cid-1');
     expect(byNft?.id).toBe('own-1');
     expect(bySubject?.subjectId).toBe('0x11');
   });
@@ -45,19 +42,15 @@ describe('HubStateRepository', () => {
     expect(query).toHaveBeenCalledWith(expect.stringContaining('prev_owner_address = LOWER($1)'), ['0xOwner']);
   });
 
-  it('writes owner state with versioning increment path and reads by cid', async () => {
+  it('writes owner state with versioning increment path', async () => {
     query.mockResolvedValueOnce({ rows: [] });
-    query.mockResolvedValueOnce({ rows: [{ owner: '0xowner', ownerAccount: 'eip155:84532:0xowner', version: 3, updatedAt: '2026-06-08T12:00:00.000Z' }] });
 
     await repo.setOwnerState('own-1', '0xOWNER', 'eip155:84532:0xowner', 'evt-1');
-    const state = await repo.getOwnerStateByCid('cid-1');
 
-    expect(state).toEqual({
-      owner: '0xowner',
-      ownerAccount: 'eip155:84532:0xowner',
-      version: 3,
-      updatedAt: '2026-06-08T12:00:00.000Z',
-    });
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO ownable_owner_state'),
+      ['own-1', '0xOWNER', 'eip155:84532:0xowner', 'evt-1'],
+    );
   });
 
   it('upserts and reads indexer cursor state including tx index', async () => {
@@ -217,37 +210,6 @@ describe('HubStateRepository', () => {
     );
   });
 
-  it('queries wallet export events ordered by block, transaction_index, and log_index', async () => {
-    query.mockResolvedValueOnce({
-      rows: [
-        {
-          id: '1',
-          eventKind: 'public',
-          subjectId: `0x${'4'.repeat(64)}`,
-          sourceAddress: '0x00000000000000000000000000000000000000bb',
-          eventType: 'transfer',
-          dataHex: '0xdead',
-          eventTimestamp: '123',
-        },
-      ],
-    });
-
-    const rows = await repo.listWalletEventsByCid('cid-abc');
-
-    expect(rows).toEqual([
-      expect.objectContaining({
-        id: '1',
-        eventKind: 'public',
-        subjectId: `0x${'4'.repeat(64)}`,
-        sourceAddress: '0x00000000000000000000000000000000000000bb',
-        eventType: 'transfer',
-        dataHex: '0xdead',
-        eventTimestamp: '123',
-      }),
-    ]);
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('ORDER BY "blockNumber"::numeric ASC, "transactionIndex" ASC, "logIndex" ASC'), ['cid-abc']);
-  });
-
   it('queries indexed anchor events by package cid in replay order', async () => {
     query.mockResolvedValueOnce({
       rows: [
@@ -317,62 +279,6 @@ describe('HubStateRepository', () => {
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('WHERE subject_id = LOWER($1)'),
       [`0x${'6'.repeat(64)}`],
-    );
-  });
-
-  it('resolves public events by ownable_records subject linkage when indexed before upload', async () => {
-    query.mockResolvedValueOnce({ rows: [] });
-
-    await repo.upsertIndexedPublicEvent({
-      slotName: 'testnet',
-      chainId: '84532',
-      anchorContractAddress: '0xA2',
-      blockNumber: 26n,
-      blockHash: '0xB2',
-      transactionHash: '0xC2',
-      transactionIndex: 1,
-      logIndex: 5,
-      eventName: 'PublicEvent',
-      subjectId: `0x${'5'.repeat(64)}`,
-      sourceAddress: '0x00000000000000000000000000000000000000bb',
-      eventType: 'transfer',
-      dataHex: '0xdeadbeef',
-      eventTimestamp: 321n,
-      payloadJson: { key: 'value' },
-    });
-
-    query.mockResolvedValueOnce({ rows: [{ id: 'own-1', packageCid: 'cid-abc', prevOwnerAddress: '0xabc', subjectId: `0x${'5'.repeat(64)}` }] });
-    await repo.upsertOwnableRecord({
-      packageCid: 'cid-abc',
-      prevOwnerAddress: '0xABC',
-      subjectId: `0x${'5'.repeat(64)}`,
-    });
-
-    query.mockResolvedValueOnce({
-      rows: [
-        {
-          id: 'pub-1',
-          eventKind: 'public',
-          subjectId: `0x${'5'.repeat(64)}`,
-          sourceAddress: '0x00000000000000000000000000000000000000bb',
-          eventType: 'transfer',
-          dataHex: '0xdeadbeef',
-          eventTimestamp: '321',
-        },
-      ],
-    });
-    const rows = await repo.listWalletEventsByCid('cid-abc');
-
-    expect(rows).toEqual([
-      expect.objectContaining({
-        id: 'pub-1',
-        eventKind: 'public',
-        subjectId: `0x${'5'.repeat(64)}`,
-      }),
-    ]);
-    expect(query).toHaveBeenLastCalledWith(
-      expect.stringContaining('OR subject_id IN ('),
-      ['cid-abc'],
     );
   });
 

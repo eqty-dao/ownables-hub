@@ -44,6 +44,23 @@ interface ReplayDerivedState {
   ownerAccount: string | null;
   owner: string;
   latestAppliedPublicEventId: string | null;
+  publicEvents: OwnableVerificationPublicEvent[];
+}
+
+interface OwnableVerificationPublicEvent {
+  kind: 'public';
+  replayKey: string;
+  transactionHash: string;
+  transactionIndex: number;
+  logIndex: number;
+  blockNumber: string;
+  eventTimestamp: string | null;
+  sourceAddress: string;
+  eventType: string;
+  dataHex: string;
+  payloadJson: unknown;
+  replayStatus: 'applied' | 'ignored';
+  ignoredReason?: string;
 }
 
 interface OwnableVerificationResponse {
@@ -64,6 +81,7 @@ interface OwnableVerificationResponse {
     logIndex: number;
     reason: string;
   }>;
+  publicEvents: OwnableVerificationPublicEvent[];
   nft?: NFTInfo;
 }
 
@@ -512,6 +530,40 @@ export class OwnableService implements OnModuleInit {
     }));
   }
 
+  private sanitizePublicEvents(
+    indexedPublicRows: IndexedPublicEventRow[],
+    ignoredPublicEvents: ReplayIgnoredPublicEvent[],
+  ): OwnableVerificationPublicEvent[] {
+    const ignoredReasonByReplayKey = new Map(ignoredPublicEvents.map(({ replayKey, reason }) => [replayKey, reason]));
+
+    return indexedPublicRows.flatMap((row) => {
+      if (!row.sourceAddress || !row.eventType || !row.dataHex) {
+        return [];
+      }
+
+      const replayKey = `${row.transactionHash}:${row.logIndex}`;
+      const ignoredReason = ignoredReasonByReplayKey.get(replayKey);
+
+      return [
+        {
+          kind: 'public' as const,
+          replayKey,
+          transactionHash: row.transactionHash,
+          transactionIndex: row.transactionIndex,
+          logIndex: row.logIndex,
+          blockNumber: row.blockNumber,
+          eventTimestamp: row.eventTimestamp,
+          sourceAddress: row.sourceAddress,
+          eventType: row.eventType,
+          dataHex: row.dataHex,
+          payloadJson: row.payloadJson,
+          replayStatus: ignoredReason ? ('ignored' as const) : ('applied' as const),
+          ...(ignoredReason ? { ignoredReason } : {}),
+        },
+      ];
+    });
+  }
+
   private assertReplayVerification(result: ReplayDerivedState): void {
     if (!result.anchorVerification.verified) {
       const missingAnchorKeys = Object.entries(result.anchorVerification.anchors)
@@ -676,6 +728,7 @@ export class OwnableService implements OnModuleInit {
       ownerAccount: this.deriveOwnerAccount(owner, this.deriveOwnerNetwork(chain, nftInfo)),
       owner,
       latestAppliedPublicEventId: latestAppliedPublicEventId ?? null,
+      publicEvents: this.sanitizePublicEvents(indexedPublicRows, replay.ignoredPublicEvents),
     };
   }
 
@@ -850,6 +903,7 @@ export class OwnableService implements OnModuleInit {
       freshness: replayState.freshness,
       anchorVerification: replayState.anchorVerification,
       ignoredPublicEvents: this.sanitizeIgnoredPublicEvents(replayState.ignoredPublicEvents),
+      publicEvents: replayState.publicEvents,
       ...(replayState.nftInfo ? { nft: replayState.nftInfo } : {}),
     };
   }

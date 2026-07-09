@@ -22,30 +22,6 @@ export interface OwnableRecord {
   nftTokenId: string | null;
 }
 
-export interface IndexedWalletEvent {
-  id: string;
-  eventKind: 'anchor' | 'public';
-  slotName: string;
-  chainId: string;
-  anchorContractAddress: string;
-  blockNumber: string;
-  blockHash: string;
-  transactionHash: string;
-  transactionIndex: number;
-  logIndex: number;
-  eventName: string;
-  cid: string | null;
-  ownableId: string | null;
-  ownerAddress: string | null;
-  subjectId: string | null;
-  sourceAddress: string | null;
-  eventType: string | null;
-  dataHex: string | null;
-  eventTimestamp: string | null;
-  payloadJson: unknown;
-  indexedAt: string;
-}
-
 export interface IndexedAnchorEvent {
   id: string;
   slotName: string;
@@ -169,19 +145,6 @@ export class HubStateRepository {
     return result.rows[0] as OwnableRecord;
   }
 
-  async getOwnableByCid(cid: string): Promise<OwnableRecord | null> {
-    const result = await this.db.query<OwnableRecord>(
-      `SELECT id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
-       FROM ownable_records
-       WHERE package_cid = $1
-       ORDER BY updated_at DESC, created_at DESC
-       LIMIT 1`,
-      [cid],
-    );
-
-    return result.rows[0] ?? null;
-  }
-
   async getOwnableByNft(nftNetwork: string, nftContractAddress: string, nftTokenId: string): Promise<OwnableRecord | null> {
     const result = await this.db.query<OwnableRecord>(
       `SELECT id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
@@ -244,25 +207,6 @@ export class HubStateRepository {
          END`,
       [ownableId, currentOwnerAddress, currentOwnerAccount, lastAppliedPublicEventId ?? null],
     );
-  }
-
-  async getOwnerStateByCid(cid: string): Promise<OwnerStateRow | null> {
-    const result = await this.db.query<OwnerStateRow>(
-      `SELECT
-         s.current_owner_address AS owner,
-         s.current_owner_account AS "ownerAccount",
-         s.owner_state_version AS version,
-         s.last_applied_public_event_id AS "latestAppliedPublicEventId",
-         s.updated_at AS "updatedAt"
-       FROM ownable_owner_state s
-       INNER JOIN ownable_records o ON o.id = s.ownable_id
-       WHERE o.package_cid = $1
-       ORDER BY o.updated_at DESC, o.created_at DESC
-       LIMIT 1`,
-      [cid],
-    );
-
-    return result.rows[0] ?? null;
   }
 
   private async runQuery<T = unknown>(text: string, values: unknown[] = [], client?: PoolClient) {
@@ -600,75 +544,6 @@ export class HubStateRepository {
         throw error;
       }
     });
-  }
-
-  async listWalletEventsByCid(cid: string): Promise<IndexedWalletEvent[]> {
-    const result = await this.db.query<IndexedWalletEvent>(
-      `SELECT * FROM (
-         SELECT
-           id,
-           'anchor'::text AS "eventKind",
-           slot_name AS "slotName",
-           chain_id AS "chainId",
-           anchor_contract_address AS "anchorContractAddress",
-           block_number::text AS "blockNumber",
-           block_hash AS "blockHash",
-           transaction_hash AS "transactionHash",
-           transaction_index AS "transactionIndex",
-           log_index AS "logIndex",
-           event_name AS "eventName",
-           package_cid AS cid,
-           ownable_id AS "ownableId",
-           owner_address AS "ownerAddress",
-           NULL::text AS "subjectId",
-           NULL::text AS "sourceAddress",
-           NULL::text AS "eventType",
-           NULL::text AS "dataHex",
-           NULL::text AS "eventTimestamp",
-           payload_json AS "payloadJson",
-           indexed_at::text AS "indexedAt"
-         FROM indexed_anchor_events
-         WHERE package_cid = $1
-         UNION ALL
-         SELECT
-           id,
-           'public'::text AS "eventKind",
-           slot_name AS "slotName",
-           chain_id AS "chainId",
-           anchor_contract_address AS "anchorContractAddress",
-           block_number::text AS "blockNumber",
-           block_hash AS "blockHash",
-           transaction_hash AS "transactionHash",
-           transaction_index AS "transactionIndex",
-           log_index AS "logIndex",
-           event_name AS "eventName",
-           package_cid AS cid,
-           ownable_id AS "ownableId",
-           NULL::text AS "ownerAddress",
-           subject_id AS "subjectId",
-           source_address AS "sourceAddress",
-           event_type AS "eventType",
-           data_hex AS "dataHex",
-           event_timestamp::text AS "eventTimestamp",
-           payload_json AS "payloadJson",
-           indexed_at::text AS "indexedAt"
-         FROM indexed_public_events
-         WHERE ownable_id IN (
-           SELECT id
-           FROM ownable_records
-           WHERE package_cid = $1
-         )
-         OR subject_id IN (
-           SELECT subject_id
-           FROM ownable_records
-           WHERE package_cid = $1
-         )
-       ) wallet_events
-       ORDER BY "blockNumber"::numeric ASC, "transactionIndex" ASC, "logIndex" ASC`,
-      [cid],
-    );
-
-    return result.rows;
   }
 
   async listIndexedAnchorEventsByPackageCid(packageCid: string): Promise<IndexedAnchorEvent[]> {

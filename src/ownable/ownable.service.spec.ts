@@ -249,13 +249,10 @@ describe('OwnableService', () => {
     const hubState = {
       upsertOwnableRecord: jest.fn().mockResolvedValue({ id: 'id-1' }),
       setOwnerState: jest.fn().mockResolvedValue(undefined),
-      getOwnerStateByCid: jest.fn().mockResolvedValue({ owner: REPLAY_OWNER_WALLET.address.toLowerCase(), version: 1, latestAppliedPublicEventId: null }),
-      getOwnableByCid: jest.fn().mockResolvedValue({ id: 'id-1', packageCid: 'cid-1' }),
       getOwnableByNft: jest.fn(),
       getOwnableBySubjectId: jest.fn().mockResolvedValue(null),
       listAvailableOwnablesByOwnerAccount: jest.fn().mockResolvedValue([]),
       listOwnableCidsByPrevOwner: jest.fn().mockResolvedValue(['cid-a']),
-      listWalletEventsByCid: jest.fn().mockResolvedValue([]),
       listIndexedAnchorEventsByPackageCid: jest.fn().mockResolvedValue([
         {
           transactionHash: '0xaaa',
@@ -745,7 +742,116 @@ describe('OwnableService', () => {
 
     await service.downloadOwnable(chain.id);
 
-    expect(hubState.getOwnerStateByCid).not.toHaveBeenCalled();
+    expect(hubState.getOwnableBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id));
+  });
+
+  it('exports replay-ordered public event detail through verification without exposing subject lookup externally', async () => {
+    const { service, storage, hubState } = await buildService();
+    const chain = await createChain();
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: expectedSubjectId(chain.id) });
+
+    storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
+    const packageZip = new JSZip();
+    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
+    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
+    hubState.listIndexedPublicEventsBySubjectId.mockResolvedValue([
+      {
+        id: 'evt-1',
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x1',
+        blockNumber: '10',
+        blockHash: '0xblock-10',
+        transactionHash: '0xaaa',
+        transactionIndex: 0,
+        logIndex: 1,
+        eventName: 'PublicEvent',
+        cid: 'cid-1',
+        ownableId: 'id-1',
+        ownerAddress: null,
+        subjectId: expectedSubjectId(chain.id),
+        sourceAddress: '0x1111111111111111111111111111111111111111',
+        eventType: 'consume',
+        dataHex: '0x0102',
+        eventTimestamp: '1710000000',
+        payloadJson: { amount: 1 },
+        indexedAt: new Date().toISOString(),
+      },
+      {
+        id: 'evt-2',
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x1',
+        blockNumber: '11',
+        blockHash: '0xblock-11',
+        transactionHash: '0xbbb',
+        transactionIndex: 1,
+        logIndex: 2,
+        eventName: 'PublicEvent',
+        cid: 'cid-1',
+        ownableId: 'id-1',
+        ownerAddress: null,
+        subjectId: expectedSubjectId(chain.id),
+        sourceAddress: '0x2222222222222222222222222222222222222222',
+        eventType: 'reject',
+        dataHex: '0x03',
+        eventTimestamp: '1710000001',
+        payloadJson: { amount: 2 },
+        indexedAt: new Date().toISOString(),
+      },
+    ]);
+
+    await expect(service.getOwnableVerification(chain.id)).resolves.toEqual(
+      expect.objectContaining({
+        ownableId: chain.id,
+        verified: false,
+        freshness: {
+          stale: true,
+          missingReplayKeys: ['0xaaa:1'],
+        },
+        ignoredPublicEvents: [
+          {
+            replayKey: '0xbbb:2',
+            transactionHash: '0xbbb',
+            logIndex: 2,
+            reason: 'register_failed',
+          },
+        ],
+        publicEvents: [
+          {
+            kind: 'public',
+            replayKey: '0xaaa:1',
+            transactionHash: '0xaaa',
+            transactionIndex: 0,
+            logIndex: 1,
+            blockNumber: '10',
+            eventTimestamp: '1710000000',
+            sourceAddress: '0x1111111111111111111111111111111111111111',
+            eventType: 'consume',
+            dataHex: '0x0102',
+            payloadJson: { amount: 1 },
+            replayStatus: 'applied',
+          },
+          {
+            kind: 'public',
+            replayKey: '0xbbb:2',
+            transactionHash: '0xbbb',
+            transactionIndex: 1,
+            logIndex: 2,
+            blockNumber: '11',
+            eventTimestamp: '1710000001',
+            sourceAddress: '0x2222222222222222222222222222222222222222',
+            eventType: 'reject',
+            dataHex: '0x03',
+            payloadJson: { amount: 2 },
+            replayStatus: 'ignored',
+            ignoredReason: 'register_failed',
+          },
+        ],
+      }),
+    );
+    expect(hubState.getOwnableBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id));
+    expect(hubState.listIndexedPublicEventsBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id));
   });
 
   it('keeps ignored public events non-fatal in verification metadata', async () => {

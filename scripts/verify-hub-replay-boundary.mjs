@@ -100,11 +100,12 @@ function buildService() {
       return { id: 'ownable-1', cid: 'cid-1', prevOwnerAddress: '0x0' };
     },
     setOwnerState: async () => undefined,
-    getOwnerStateByCid: async () => null,
-    getOwnableByCid: async () => null,
     getOwnableByNft: async () => null,
+    getOwnableBySubjectId: async () => null,
     listOwnableCidsByPrevOwner: async () => [],
-    listWalletEventsByCid: async () => [],
+    listAvailableOwnablesByOwnerAccount: async () => [],
+    listIndexedAnchorEventsByPackageCid: async () => [],
+    listIndexedPublicEventsBySubjectId: async () => [],
   };
   return {
     service: new OwnableService(config, nft, storage, hubState),
