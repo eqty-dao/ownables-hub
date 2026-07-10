@@ -6,6 +6,8 @@ import { join } from 'path';
 import { Event, EventChain } from '../test-mocks/eqty-core.js';
 import { OwnableService } from './ownable.service.js';
 import { OwnableService as CoreOwnableService } from '@ownables/core';
+import { firstValueFrom, Subject } from 'rxjs';
+import { take, toArray } from 'rxjs/operators';
 
 const PRIVATE_STATE_OWNER_WALLET = ethers.Wallet.createRandom();
 const REPLAY_OWNER_WALLET = ethers.Wallet.createRandom();
@@ -268,13 +270,19 @@ describe('OwnableService', () => {
       ]),
       listIndexedPublicEventsBySubjectId: jest.fn().mockResolvedValue([]),
     };
-    const service = new OwnableService(buildConfig() as any, nft as any, storage as any, hubState as any);
+    const ownableTransport = {
+      publishPublicEvent: jest.fn(),
+      watchPublicEvents: jest.fn(),
+      publishAvailableOwnable: jest.fn(),
+      watchAvailableOwnables: jest.fn(),
+    };
+    const service = new OwnableService(buildConfig() as any, nft as any, storage as any, hubState as any, ownableTransport as any);
     const runtimeValidatorSpy = jest
       .spyOn(service as any, 'assertSupportedOwnableRuntime')
       .mockImplementation(() => undefined);
 
     await service.onModuleInit();
-    return { service, nft, storage, hubState, runtimeValidatorSpy };
+    return { service, nft, storage, hubState, ownableTransport, runtimeValidatorSpy };
   };
 
   const createChain = async (
@@ -799,6 +807,263 @@ describe('OwnableService', () => {
     );
   });
 
+  it('returns the dedicated public-events snapshot without routing through verification', async () => {
+    const { service, hubState } = await buildService();
+    const chain = await createChain();
+    hubState.listIndexedPublicEventsBySubjectId.mockResolvedValue([
+      {
+        id: 'evt-1',
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x1',
+        blockNumber: '11',
+        blockHash: '0x1',
+        transactionHash: '0xbbb',
+        transactionIndex: 0,
+        logIndex: 3,
+        eventName: 'PublicEvent',
+        cid: 'cid-1',
+        ownableId: 'id-1',
+        ownerAddress: null,
+        subjectId: expectedSubjectId(chain.id),
+        sourceAddress: '0x1111111111111111111111111111111111111111',
+        eventType: 'transfer',
+        dataHex: '0x01',
+        eventTimestamp: '42',
+        payloadJson: {},
+        indexedAt: new Date().toISOString(),
+      },
+    ]);
+
+    await expect(service.getOwnablePublicEvents(chain.id)).resolves.toEqual({
+      ownableId: chain.id,
+      publicEvents: [
+        {
+          source: '0x1111111111111111111111111111111111111111',
+          eventType: 'transfer',
+          data: '0x01',
+          blockNumber: 11,
+          transactionHash: '0xbbb',
+          transactionIndex: 0,
+          logIndex: 3,
+          timestamp: 42,
+        },
+      ],
+    });
+    expect(hubState.listIndexedPublicEventsBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id));
+  });
+
+  it('replays public-event stream rows from the requested block and then continues live for watched ownables only', async () => {
+    const { service, hubState, ownableTransport } = await buildService();
+    const ownableA = await createChain();
+    const ownableB = new EventChain(`0x${'22'.repeat(32)}`);
+    const ownableIgnored = new EventChain(`0x${'33'.repeat(32)}`);
+    const liveSubject = new Subject<any>();
+    ownableTransport.watchPublicEvents.mockReturnValue(liveSubject);
+    hubState.listIndexedPublicEventsBySubjectId.mockImplementation(async (subjectId: string) => {
+      if (subjectId === expectedSubjectId(ownableA.id)) {
+        return [
+          {
+            id: 'evt-old',
+            slotName: 'testnet',
+            chainId: '84532',
+            anchorContractAddress: '0x1',
+            blockNumber: '10',
+            blockHash: '0x1',
+            transactionHash: '0xaaa',
+            transactionIndex: 0,
+            logIndex: 0,
+            eventName: 'PublicEvent',
+            cid: 'cid-1',
+            ownableId: 'id-a',
+            ownerAddress: null,
+            subjectId,
+            sourceAddress: '0x1111111111111111111111111111111111111111',
+            eventType: 'skip',
+            dataHex: '0x00',
+            eventTimestamp: '40',
+            payloadJson: {},
+            indexedAt: new Date().toISOString(),
+          },
+          {
+            id: 'evt-a',
+            slotName: 'testnet',
+            chainId: '84532',
+            anchorContractAddress: '0x1',
+            blockNumber: '11',
+            blockHash: '0x1',
+            transactionHash: '0xbbb',
+            transactionIndex: 0,
+            logIndex: 1,
+            eventName: 'PublicEvent',
+            cid: 'cid-1',
+            ownableId: 'id-a',
+            ownerAddress: null,
+            subjectId,
+            sourceAddress: '0x1111111111111111111111111111111111111111',
+            eventType: 'transfer',
+            dataHex: '0x01',
+            eventTimestamp: '41',
+            payloadJson: {},
+            indexedAt: new Date().toISOString(),
+          },
+        ];
+      }
+      if (subjectId === expectedSubjectId(ownableB.id)) {
+        return [
+          {
+            id: 'evt-b',
+            slotName: 'testnet',
+            chainId: '84532',
+            anchorContractAddress: '0x1',
+            blockNumber: '12',
+            blockHash: '0x2',
+            transactionHash: '0xccc',
+            transactionIndex: 1,
+            logIndex: 0,
+            eventName: 'PublicEvent',
+            cid: 'cid-2',
+            ownableId: 'id-b',
+            ownerAddress: null,
+            subjectId,
+            sourceAddress: '0x2222222222222222222222222222222222222222',
+            eventType: 'mint',
+            dataHex: '0x02',
+            eventTimestamp: '42',
+            payloadJson: {},
+            indexedAt: new Date().toISOString(),
+          },
+        ];
+      }
+      return [];
+    });
+
+    const stream = await service.streamOwnablePublicEvents([ownableA.id, ownableB.id], '11');
+    const collectedPromise = firstValueFrom(stream.pipe(take(3), toArray()));
+    liveSubject.next({
+      subjectId: expectedSubjectId(ownableIgnored.id),
+      publicEvent: {
+        source: '0x3333333333333333333333333333333333333333',
+        eventType: 'ignore',
+        data: '0x03',
+        blockNumber: 13,
+        transactionHash: '0xddd',
+        transactionIndex: 0,
+        logIndex: 0,
+        timestamp: 43,
+      },
+    });
+    liveSubject.next({
+      subjectId: expectedSubjectId(ownableA.id),
+      publicEvent: {
+        source: '0x1111111111111111111111111111111111111111',
+        eventType: 'transfer',
+        data: '0x04',
+        blockNumber: 13,
+        transactionHash: '0xeee',
+        transactionIndex: 0,
+        logIndex: 1,
+        timestamp: 44,
+      },
+    });
+
+    await expect(collectedPromise).resolves.toEqual([
+      {
+        type: 'public-event',
+        data: {
+          ownableId: ownableA.id,
+          publicEvent: {
+            source: '0x1111111111111111111111111111111111111111',
+            eventType: 'transfer',
+            data: '0x01',
+            blockNumber: 11,
+            transactionHash: '0xbbb',
+            transactionIndex: 0,
+            logIndex: 1,
+            timestamp: 41,
+          },
+        },
+      },
+      {
+        type: 'public-event',
+        data: {
+          ownableId: ownableB.id,
+          publicEvent: {
+            source: '0x2222222222222222222222222222222222222222',
+            eventType: 'mint',
+            data: '0x02',
+            blockNumber: 12,
+            transactionHash: '0xccc',
+            transactionIndex: 1,
+            logIndex: 0,
+            timestamp: 42,
+          },
+        },
+      },
+      {
+        type: 'public-event',
+        data: {
+          ownableId: ownableA.id,
+          publicEvent: {
+            source: '0x1111111111111111111111111111111111111111',
+            eventType: 'transfer',
+            data: '0x04',
+            blockNumber: 13,
+            transactionHash: '0xeee',
+            transactionIndex: 0,
+            logIndex: 1,
+            timestamp: 44,
+          },
+        },
+      },
+    ]);
+  });
+
+  it('keeps discovery stream separate and live-only for one owner account', async () => {
+    const { service, ownableTransport } = await buildService();
+    const liveSubject = new Subject<any>();
+    ownableTransport.watchAvailableOwnables.mockReturnValue(liveSubject);
+
+    const stream = service.streamAvailableOwnables(`eip155:84532:${REPLAY_OWNER_WALLET.address}`);
+    const collectedPromise = firstValueFrom(stream.pipe(take(1), toArray()));
+    liveSubject.next({
+      owner: 'eip155:84532:0xsomeoneelse',
+      entry: {
+        id: '0xignore',
+        title: 'Ignore',
+        availableAt: '2026-06-07T10:00:00.000Z',
+        package: { cid: 'cid-ignore', thumbnailUrl: null },
+      },
+    });
+    liveSubject.next({
+      owner: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
+      entry: {
+        id: '0x11',
+        title: 'Potion',
+        availableAt: '2026-06-07T10:02:00.000Z',
+        package: { cid: 'cid-1', thumbnailUrl: 'https://example.com/potion.png' },
+      },
+    });
+
+    await expect(collectedPromise).resolves.toEqual([
+      {
+        type: 'available-ownable',
+        data: {
+          owner: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
+          entry: {
+            id: '0x11',
+            title: 'Potion',
+            availableAt: '2026-06-07T10:02:00.000Z',
+            package: {
+              cid: 'cid-1',
+              thumbnailUrl: 'https://example.com/potion.png',
+            },
+          },
+        },
+      },
+    ]);
+  });
+
   it('marks verification false when indexed anchor evidence is missing for the requested key', async () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain(undefined, [{ key: { hex: '0xanchor' }, value: { hex: '0xbbb' } }]);
@@ -1038,6 +1303,56 @@ describe('OwnableService', () => {
     expect(hubState.listAvailableOwnablesByOwnerAccount).toHaveBeenCalledWith(
       `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
     );
+  });
+
+  it('publishes a discovery update after storing a newly available ownable', async () => {
+    const { service, storage, hubState, ownableTransport } = await buildService();
+    const chain = await createChain();
+    const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
+    const buffer = await createUploadBuffer(chain);
+    const packageZip = new JSZip();
+    packageZip.file(
+      'package.json',
+      JSON.stringify({
+        name: 'ownable-potion',
+        description: 'Recovered from the stored package.',
+        thumbnailUrl: 'https://example.com/potion.png',
+      }),
+    );
+    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
+    storage.getEventChain.mockResolvedValue(chainBuffer);
+    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
+    hubState.listAvailableOwnablesByOwnerAccount.mockResolvedValue([
+      {
+        ownableId: 'id-1',
+        packageCid: 'cid-uploaded',
+        subjectId: expectedSubjectId(chain.id),
+        ownerAccount: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
+        ownerStateVersion: 4,
+        availableAt: '2026-06-07T10:02:00.000Z',
+        issuerAddress: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase(),
+        nftNetwork: 'eip155:base',
+        nftContractAddress: '0xnft',
+        nftTokenId: '1',
+      },
+    ]);
+
+    await service.uploadOwnable(buffer, undefined, false);
+
+    expect(ownableTransport.publishAvailableOwnable).toHaveBeenCalledWith({
+      owner: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
+      entry: {
+        id: chain.id,
+        title: 'Potion',
+        description: 'Recovered from the stored package.',
+        issuer: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase(),
+        availableAt: '2026-06-07T10:02:00.000Z',
+        package: {
+          cid: expect.any(String),
+          thumbnailUrl: 'https://example.com/potion.png',
+        },
+      },
+    });
   });
 
   it('falls back to cid metadata when stored package metadata is unavailable', async () => {

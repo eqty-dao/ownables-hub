@@ -2,6 +2,7 @@ import { ConfigService } from '../common/config/config.service.js';
 import { HubStateRepository } from '../persistence/repos/hub-state.repository.js';
 import { IndexerService } from './indexer.service.js';
 import { Interface } from 'ethers';
+import { OwnableTransportService } from '../ownable/ownable-transport.service.js';
 
 const providerState = {
   head: 0,
@@ -29,6 +30,10 @@ describe('IndexerService', () => {
     withIndexerPersistenceTransaction: jest.fn(),
   } as unknown as HubStateRepository;
 
+  const ownableTransport = {
+    publishPublicEvent: jest.fn(),
+  } as unknown as OwnableTransportService;
+
   let service: IndexerService;
 
   beforeEach(() => {
@@ -37,7 +42,8 @@ describe('IndexerService', () => {
     (configService.getIndexerSlots as jest.Mock).mockReset();
     (hubStateRepository.getIndexerCursor as jest.Mock).mockReset();
     (hubStateRepository.withIndexerPersistenceTransaction as jest.Mock).mockReset();
-    service = new IndexerService(configService, hubStateRepository);
+    (ownableTransport.publishPublicEvent as jest.Mock).mockReset();
+    service = new IndexerService(configService, hubStateRepository, ownableTransport);
   });
 
   it('runs both slots in deterministic order', async () => {
@@ -140,6 +146,19 @@ describe('IndexerService', () => {
       eventType: 'transfer',
       dataHex: '0x12345678abcdef',
       eventTimestamp: 42n,
+    });
+    expect(ownableTransport.publishPublicEvent).toHaveBeenCalledWith({
+      subjectId: `0x${'1'.repeat(64)}`,
+      publicEvent: {
+        source: '0x00000000000000000000000000000000000000bb',
+        eventType: 'transfer',
+        data: '0x12345678abcdef',
+        blockNumber: 101,
+        transactionHash: '0xt1',
+        transactionIndex: 0,
+        logIndex: 1,
+        timestamp: 42,
+      },
     });
   });
 

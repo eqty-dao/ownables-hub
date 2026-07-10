@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Interface, JsonRpcProvider, Log } from 'ethers';
 import { ConfigService, IndexerSlotConfig } from '../common/config/config.service.js';
 import { HubStateRepository, type IndexerCursorState } from '../persistence/repos/hub-state.repository.js';
+import { OwnableTransportService } from '../ownable/ownable-transport.service.js';
 
 const ANCHOR_CURSOR_NAME = 'anchor-public-events';
 
@@ -39,6 +40,7 @@ export class IndexerService {
   constructor(
     private readonly configService: ConfigService,
     private readonly hubStateRepository: HubStateRepository,
+    private readonly ownableTransport: OwnableTransportService,
   ) {}
 
   async runAllSlots(): Promise<void> {
@@ -113,6 +115,24 @@ export class IndexerService {
         payloadJson: event.payloadJson,
       })),
     });
+    for (const event of publicEvents) {
+      if (!event.subjectId || !event.sourceAddress || !event.eventType || !event.dataHex) {
+        continue;
+      }
+      this.ownableTransport.publishPublicEvent({
+        subjectId: event.subjectId,
+        publicEvent: {
+          source: event.sourceAddress,
+          eventType: event.eventType,
+          data: event.dataHex,
+          blockNumber: Number(event.blockNumber),
+          transactionHash: event.transactionHash,
+          transactionIndex: event.transactionIndex,
+          logIndex: event.logIndex,
+          timestamp: event.eventTimestamp ? Number(event.eventTimestamp) : undefined,
+        },
+      });
+    }
 
     this.logger.log(
       `Slot ${slot.slotName}: indexed ${normalized.length} logs (${anchorEvents.length} anchor, ${publicEvents.length} public) from block ${fromBlock.toString()} to ${toBlock.toString()}`,

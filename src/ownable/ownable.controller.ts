@@ -1,4 +1,4 @@
-import { Controller, Get, Header, Query, Post, Req, Res, UseGuards, UseInterceptors, StreamableFile } from '@nestjs/common';
+import { Controller, Get, Header, MessageEvent, Post, Query, Req, Res, Sse, StreamableFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiBody, ApiProperty, ApiConsumes, ApiProduces } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { OwnableService } from './ownable.service.js';
@@ -6,6 +6,7 @@ import { Signer } from '../common/http-signature/signer.js';
 import { AuthError, UserError } from '../interfaces/error.js';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { SIWEGuard } from '../common/siwe/siwe.guard.js';
+import { Observable } from 'rxjs';
 
 interface SignerIdentity {
   address?: string;
@@ -96,6 +97,17 @@ export class OwnableController {
     }
   }
 
+  @Get(':id/public-events')
+  async publicEvents(@Req() req: Request, @Res() res: Response): Promise<Response> {
+    try {
+      const id = String(req.params.id ?? '');
+      const publicEvents = await this.ownableService.getOwnablePublicEvents(id);
+      return res.status(200).json(publicEvents);
+    } catch (err) {
+      return this.errorResponse(res, err);
+    }
+  }
+
   @Get('available')
   async available(@Query('owner') owner: string, @Res() res: Response): Promise<Response> {
     try {
@@ -104,6 +116,19 @@ export class OwnableController {
     } catch (err) {
       return this.errorResponse(res, err);
     }
+  }
+
+  @Sse('public-events/stream')
+  async publicEventsStream(
+    @Query('id') ownableIds: string[] | string | undefined,
+    @Query('from') from: string | undefined,
+  ): Promise<Observable<MessageEvent>> {
+    return await this.ownableService.streamOwnablePublicEvents(ownableIds, from);
+  }
+
+  @Sse('available/stream')
+  availableStream(@Query('owner') owner: string): Observable<MessageEvent> {
+    return this.ownableService.streamAvailableOwnables(owner);
   }
 
   private errorResponse(res: Response, err: any) {

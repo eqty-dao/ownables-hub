@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, StreamableFile } from '@nestjs/common';
+import { Injectable, MessageEvent, OnModuleInit, StreamableFile } from '@nestjs/common';
 import {
   calculateOwnablePackageCid,
   evaluateReplayFreshness,
@@ -26,6 +26,14 @@ import { ethers } from 'ethers';
 import { Readable } from 'stream';
 import { ArchiveStorageService } from '../storage/archive-storage.service.js';
 import { HubStateRepository, IndexedAnchorEvent, IndexedPublicEventRow } from '../persistence/repos/hub-state.repository.js';
+import {
+  AvailableOwnableDiscoveryMessage,
+  OwnableTransportService,
+  type AvailableOwnableDiscoveryEntry,
+  type PublicEventStreamMessage,
+} from './ownable-transport.service.js';
+import { concat, from, Observable } from 'rxjs';
+import { filter, map } from 'rxjs/operators';
 
 interface SignerIdentity {
   address?: string;
@@ -83,6 +91,11 @@ interface AvailableOwnableEntry {
     cid: string;
     thumbnailUrl?: string | null;
   };
+}
+
+interface OwnablePublicEventsResponse {
+  ownableId: string;
+  publicEvents: IndexedPublicEvent[];
 }
 
 const CANONICAL_CHAIN_FILENAME = 'chain.json';
@@ -232,6 +245,7 @@ export class OwnableService implements OnModuleInit {
     private nft: NFTService,
     private readonly storage: ArchiveStorageService,
     private readonly hubState: HubStateRepository,
+    private readonly ownableTransport: OwnableTransportService,
   ) {
     const mnemonic = this.config.getAuthoritySignerMnemonic();
     if (!mnemonic) {
@@ -636,7 +650,7 @@ export class OwnableService implements OnModuleInit {
 
     const anchorVerification = await eventChains.verify(chain as any);
     await coreOwnables.initWorker(chain.id, packageCid);
-    const privateStateDump = await coreOwnables.apply(chain, []);
+    const privateStateDump = await coreOwnables.apply(chain as any, []);
 
     const indexedEventsWithRowId = indexedPublicRows
       .map((row) => ({ rowId: row.id, event: this.toIndexedPublicEvent(row) }))
@@ -854,6 +868,81 @@ export class OwnableService implements OnModuleInit {
     };
   }
 
+  async getOwnablePublicEvents(ownableId: string): Promise<OwnablePublicEventsResponse> {
+    return {
+      ownableId,
+      publicEvents: await this.listIndexedPublicEventsForOwnable(ownableId),
+    };
+  }
+
+  async streamOwnablePublicEvents(
+    ownableIdsInput: string[] | string | undefined,
+    fromBlockInput: string | undefined,
+  ): Promise<Observable<MessageEvent>> {
+    const ownableIds = this.normalizeOwnableIds(ownableIdsInput);
+    const fromBlock = this.normalizeFromBlock(fromBlockInput);
+    const subjectToOwnableId = new Map(ownableIds.map((ownableId) => [this.publicEventSubjectId(ownableId), ownableId]));
+
+    const replayMessages = (await Promise.all(
+      ownableIds.map(async (ownableId): Promise<PublicEventStreamMessage[]> => {
+        const publicEvents = await this.listIndexedPublicEventsForOwnable(ownableId);
+        return publicEvents
+          .filter((publicEvent) => BigInt(publicEvent.blockNumber) >= fromBlock)
+          .map((publicEvent) => ({ ownableId, publicEvent }));
+      }),
+    ))
+      .flat()
+      .sort((left, right) => {
+        if (left.publicEvent.blockNumber !== right.publicEvent.blockNumber) {
+          return left.publicEvent.blockNumber - right.publicEvent.blockNumber;
+        }
+        if (left.publicEvent.transactionIndex !== right.publicEvent.transactionIndex) {
+          return left.publicEvent.transactionIndex - right.publicEvent.transactionIndex;
+        }
+        return left.publicEvent.logIndex - right.publicEvent.logIndex;
+      });
+
+    const replay$ = from(
+      replayMessages.map(
+        (message): MessageEvent => ({
+          type: 'public-event',
+          data: message,
+        }),
+      ),
+    );
+    const live$ = this.ownableTransport.watchPublicEvents().pipe(
+      filter((message) => subjectToOwnableId.has(message.subjectId)),
+      map(
+        (message): MessageEvent => ({
+          type: 'public-event',
+          data: {
+            ownableId: subjectToOwnableId.get(message.subjectId) as string,
+            publicEvent: message.publicEvent,
+          } satisfies PublicEventStreamMessage,
+        }),
+      ),
+    );
+
+    return concat(replay$, live$);
+  }
+
+  streamAvailableOwnables(ownerAccountInput: string): Observable<MessageEvent> {
+    if (!this.config.isLocalDevRecipientDiscoveryEnabled()) {
+      throw new UserError('RECIPIENT_DISCOVERY_DISABLED');
+    }
+
+    const owner = this.normalizeOwnerAccount(ownerAccountInput);
+    return this.ownableTransport.watchAvailableOwnables().pipe(
+      filter((message) => message.owner === owner),
+      map(
+        (message): MessageEvent => ({
+          type: 'available-ownable',
+          data: message,
+        }),
+      ),
+    );
+  }
+
   async uploadOwnable(buffer: Uint8Array, signer?: SignerIdentity, verbose = false): Promise<any> {
     if (verbose) console.log('unzipping Zip files into memory');
     const files = await this.unzip(buffer);
@@ -892,6 +981,7 @@ export class OwnableService implements OnModuleInit {
     await this.storage.storePackageArtifacts(cid, content, packageFiles);
     await this.storage.storeEventChain(record.id, eventChainBuffer);
     await this.hubState.setOwnerState(record.id, replayState.owner, replayState.ownerAccount, replayState.latestAppliedPublicEventId);
+    await this.publishAvailableOwnableDiscovery(replayState.ownerAccount, chain.id);
 
     return {
       ownableId: chain.id,
@@ -975,6 +1065,64 @@ export class OwnableService implements OnModuleInit {
     return {
       owner: normalizedOwnerAccount,
       entries,
+    };
+  }
+
+  private normalizeOwnableIds(ownableIdsInput: string[] | string | undefined): string[] {
+    const ownableIds = (Array.isArray(ownableIdsInput) ? ownableIdsInput : ownableIdsInput ? [ownableIdsInput] : [])
+      .map((ownableId) => ownableId.trim())
+      .filter(Boolean);
+    if (!ownableIds.length) {
+      throw new UserError('id is required');
+    }
+    return Array.from(new Set(ownableIds));
+  }
+
+  private normalizeFromBlock(fromBlockInput: string | undefined): bigint {
+    const candidate = fromBlockInput?.trim() ?? '';
+    if (!candidate) {
+      throw new UserError('from is required');
+    }
+    if (!/^\d+$/.test(candidate)) {
+      throw new UserError('from must be a non-negative integer');
+    }
+    return BigInt(candidate);
+  }
+
+  private async listIndexedPublicEventsForOwnable(ownableId: string): Promise<IndexedPublicEvent[]> {
+    return (await this.hubState.listIndexedPublicEventsBySubjectId(this.publicEventSubjectId(ownableId)))
+      .map((row) => this.toIndexedPublicEvent(row))
+      .filter((event): event is IndexedPublicEvent => Boolean(event));
+  }
+
+  private async publishAvailableOwnableDiscovery(ownerAccount: string | null, ownableId: string): Promise<void> {
+    if (!ownerAccount || !this.config.isLocalDevRecipientDiscoveryEnabled()) {
+      return;
+    }
+
+    const discovery = await this.getAvailableOwnables(ownerAccount);
+    const entry = discovery.entries.find((candidate) => candidate.id === ownableId);
+    if (!entry) {
+      return;
+    }
+
+    this.ownableTransport.publishAvailableOwnable({
+      owner: discovery.owner,
+      entry: this.toAvailableOwnableDiscoveryEntry(entry),
+    } satisfies AvailableOwnableDiscoveryMessage);
+  }
+
+  private toAvailableOwnableDiscoveryEntry(entry: AvailableOwnableEntry): AvailableOwnableDiscoveryEntry {
+    return {
+      id: entry.id,
+      title: entry.title,
+      ...(entry.description ? { description: entry.description } : {}),
+      ...(entry.issuer ? { issuer: entry.issuer } : {}),
+      availableAt: entry.availableAt,
+      package: {
+        cid: entry.package.cid,
+        thumbnailUrl: entry.package.thumbnailUrl ?? null,
+      },
     };
   }
 }
