@@ -248,8 +248,9 @@ export class OwnableService implements OnModuleInit {
     private readonly ownableTransport: OwnableTransportService,
   ) {
     const mnemonic = this.config.getAuthoritySignerMnemonic();
-    if (!mnemonic) {
-      throw new Error('Missing account mnemonic configuration');
+    const privateKey = this.config.getAuthoritySignerPrivateKey();
+    if (!mnemonic && !privateKey) {
+      throw new Error('Missing signer configuration: set SIGNER_PRIVATE_KEY or SIGNER_MNEMONIC');
     }
   }
 

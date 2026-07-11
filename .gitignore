@@ -42,3 +42,4 @@ lerna-debug.log*
 
 # Runtime data
 /storage
+.env

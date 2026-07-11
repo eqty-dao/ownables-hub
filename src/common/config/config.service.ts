@@ -27,6 +27,7 @@ interface ChainRpcUrls {
 interface RuntimeConfig {
   networkProfile: RuntimeNetworkProfile;
   authoritySignerMnemonic: string;
+  authoritySignerPrivateKey: string;
   rpcUrls: {
     testnet: ChainRpcUrls;
     mainnet: ChainRpcUrls;
@@ -170,6 +171,10 @@ export class ConfigService {
     return this.runtimeConfig.authoritySignerMnemonic;
   }
 
+  getAuthoritySignerPrivateKey(): string {
+    return this.runtimeConfig.authoritySignerPrivateKey;
+  }
+
   getRpcUrl(profile: RuntimeNetworkProfile, network: EvmNetworkName): string {
     switch (network) {
       case 'eip155:ethereum':
@@ -205,6 +210,7 @@ export class ConfigService {
     return {
       networkProfile: parseRuntimeNetworkProfile('HUB_NETWORK_PROFILE'),
       authoritySignerMnemonic: readEnv('SIGNER_MNEMONIC', ''),
+      authoritySignerPrivateKey: readEnv('SIGNER_PRIVATE_KEY', readEnv('PRIVATE_KEY', '')),
       rpcUrls: {
         testnet: {
           ethereum: readEnv('TESTNET_ETHEREUM_RPC_URL', 'https://rpc.sepolia.org'),

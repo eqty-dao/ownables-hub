@@ -24,11 +24,8 @@ export class EthersService implements OnModuleInit {
 
   onModuleInit(): void {
     this.networkProfile = this.config.getRuntimeNetworkProfile();
-    const mnemonic = this.config.getAuthoritySignerMnemonic();
     const provider = this.getProviderForNetwork('eip155:base');
-    this.signer = mnemonic
-      ? ethers.Wallet.fromPhrase(mnemonic, provider)
-      : new ethers.Wallet(ethers.id('ownables-hub-fallback-key'), provider);
+    this.signer = this.createSigner(provider);
   }
 
   public signMessage(message: string): Promise<string> {
@@ -87,13 +84,24 @@ export class EthersService implements OnModuleInit {
   public getContract(type: keyof typeof abis, networkName: string, address: string): ethers.Contract {
     if (!(type in abis)) throw new Error(`No ABI for ${type}`);
     const provider = this.getProviderForNetwork(networkName);
-    const mnemonic = this.config.getAuthoritySignerMnemonic();
-    this.signer = mnemonic
-      ? ethers.Wallet.fromPhrase(mnemonic, provider)
-      : new ethers.Wallet(ethers.id('ownables-hub-fallback-key'), provider);
+    this.signer = this.createSigner(provider);
 
     const nftContract: ethers.Contract = new ethers.Contract(address, abis[type], this.signer);
     return nftContract;
+  }
+
+  private createSigner(provider: ethers.Provider): ethers.HDNodeWallet | ethers.Wallet {
+    const privateKey = this.config.getAuthoritySignerPrivateKey();
+    if (privateKey) {
+      return new ethers.Wallet(privateKey, provider);
+    }
+
+    const mnemonic = this.config.getAuthoritySignerMnemonic();
+    if (mnemonic) {
+      return ethers.Wallet.fromPhrase(mnemonic, provider);
+    }
+
+    return new ethers.Wallet(ethers.id('ownables-hub-fallback-key'), provider);
   }
 
   // private initProviders() {
