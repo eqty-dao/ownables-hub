@@ -226,6 +226,7 @@ describe('OwnableService', () => {
 
   const buildConfig = () => ({
     getRuntimeNetworkProfile: () => 'testnet',
+    getAuthoritySignerPrivateKey: () => '',
     getAuthoritySignerMnemonic: () => PRIVATE_STATE_OWNER_WALLET.mnemonic?.phrase || '',
     getAppConfig: () => ({ publicBaseUrl: 'http://127.0.0.1:8000' }),
     isLocalDevRecipientDiscoveryEnabled: () => true,
@@ -791,7 +792,8 @@ describe('OwnableService', () => {
     ]);
 
     await expect(service.downloadOwnable(chain.id)).resolves.toBeDefined();
-    await expect(service.getOwnableVerification(chain.id)).resolves.toEqual(
+    const verification = await service.getOwnableVerification(chain.id);
+    expect(verification).toEqual(
       expect.objectContaining({
         ownableId: chain.id,
         verified: true,
@@ -805,6 +807,7 @@ describe('OwnableService', () => {
         ],
       }),
     );
+    expect(verification).not.toHaveProperty('publicEvents');
   });
 
   it('returns the dedicated public-events snapshot without routing through verification', async () => {

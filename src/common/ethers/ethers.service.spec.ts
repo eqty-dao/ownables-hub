@@ -5,6 +5,7 @@ describe('EthersService', () => {
   const mnemonic = 'test test test test test test test test test test test junk';
   const config = {
     getRuntimeNetworkProfile: () => 'testnet',
+    getAuthoritySignerPrivateKey: () => '',
     getAuthoritySignerMnemonic: () => mnemonic,
     getRpcUrl: (_profile: string, _network: string) => 'http://127.0.0.1:8545',
   };

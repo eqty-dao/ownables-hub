@@ -66,6 +66,7 @@ function buildService() {
 
   const config = {
     getRuntimeNetworkProfile: () => 'testnet',
+    getAuthoritySignerPrivateKey: () => '',
     getAuthoritySignerMnemonic: () => ethers.Wallet.createRandom().mnemonic?.phrase ?? '',
   };
   const nft = {
