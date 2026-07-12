@@ -5,6 +5,7 @@ import { HubStateRepository, type IndexerCursorState } from '../persistence/repo
 import { OwnableTransportService } from '../ownable/ownable-transport.service.js';
 
 const ANCHOR_CURSOR_NAME = 'anchor-public-events';
+const MAX_LOG_BLOCK_RANGE = 2_000n;
 
 const ANCHOR_EVENT_ABI = [
   'event Anchored(bytes32 indexed key, bytes32 value, address indexed sender, uint64 timestamp)',
@@ -67,11 +68,17 @@ export class IndexerService {
       return;
     }
 
-    const rawLogs = await provider.getLogs({
-      address: slot.anchorContractAddress,
-      fromBlock: Number(fromBlock),
-      toBlock: Number(toBlock),
-    });
+    const rawLogs: Log[] = [];
+    for (let windowFrom = fromBlock; windowFrom <= toBlock; windowFrom += MAX_LOG_BLOCK_RANGE) {
+      const windowTo = windowFrom + MAX_LOG_BLOCK_RANGE - 1n <= toBlock ? windowFrom + MAX_LOG_BLOCK_RANGE - 1n : toBlock;
+      rawLogs.push(
+        ...(await provider.getLogs({
+          address: slot.anchorContractAddress,
+          fromBlock: Number(windowFrom),
+          toBlock: Number(windowTo),
+        })),
+      );
+    }
 
     const normalized = this.normalizeLogs(rawLogs, slot);
     const anchorEvents = normalized.filter((event) => event.eventKind === 'anchor');

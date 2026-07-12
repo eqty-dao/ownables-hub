@@ -7,6 +7,7 @@ import { OwnableTransportService } from '../ownable/ownable-transport.service.js
 const providerState = {
   head: 0,
   logs: [] as any[],
+  getLogs: undefined as ((fromBlock: number, toBlock: number) => any[]) | undefined,
 };
 
 jest.mock('ethers', () => {
@@ -15,7 +16,9 @@ jest.mock('ethers', () => {
     ...actual,
     JsonRpcProvider: jest.fn().mockImplementation(() => ({
       getBlockNumber: jest.fn(async () => providerState.head),
-      getLogs: jest.fn(async () => providerState.logs),
+      getLogs: jest.fn(async ({ fromBlock, toBlock }: { fromBlock: number; toBlock: number }) =>
+        providerState.getLogs ? providerState.getLogs(fromBlock, toBlock) : providerState.logs,
+      ),
     })),
   };
 });
@@ -39,6 +42,7 @@ describe('IndexerService', () => {
   beforeEach(() => {
     providerState.head = 0;
     providerState.logs = [];
+    providerState.getLogs = undefined;
     (configService.getIndexerSlots as jest.Mock).mockReset();
     (hubStateRepository.getIndexerCursor as jest.Mock).mockReset();
     (hubStateRepository.withIndexerPersistenceTransaction as jest.Mock).mockReset();
@@ -304,6 +308,61 @@ describe('IndexerService', () => {
         lastScannedLogIndex: 3,
       }),
     );
+  });
+
+  it('bounds log requests to 2000 blocks while preserving combined ordering and cursor advancement', async () => {
+    const iface = new Interface([
+      'event PublicEvent(bytes32 indexed subjectId, address indexed source, string eventType, bytes data, uint64 timestamp)',
+    ]);
+    providerState.head = 4_205;
+    (hubStateRepository.getIndexerCursor as jest.Mock).mockResolvedValue(null);
+    providerState.getLogs = (_fromBlock, toBlock) => {
+      const encoded = iface.encodeEventLog(iface.getEvent('PublicEvent'), [
+        `0x${toBlock.toString(16).padStart(64, '0')}`,
+        '0x00000000000000000000000000000000000000bb',
+        'transfer',
+        '0x1234',
+        BigInt(toBlock),
+      ]);
+      return [
+        {
+          blockNumber: toBlock,
+          blockHash: `0xb${toBlock}`,
+          transactionHash: `0xt${toBlock}`,
+          transactionIndex: 0,
+          index: 0,
+          address: '0x1111111111111111111111111111111111111111',
+          topics: encoded.topics,
+          data: encoded.data,
+        },
+      ];
+    };
+
+    await service.runSlot({
+      slotName: 'testnet',
+      chainId: '84532',
+      rpcUrl: 'https://base-sepolia-rpc',
+      anchorContractAddress: '0x1111111111111111111111111111111111111111',
+      anchorStartBlock: 1_000n,
+    });
+
+    const provider = (jest.requireMock('ethers').JsonRpcProvider as jest.Mock).mock.results.at(-1)?.value;
+    expect(provider.getLogs.mock.calls).toEqual([
+      [{ address: '0x1111111111111111111111111111111111111111', fromBlock: 1_000, toBlock: 2_999 }],
+      [{ address: '0x1111111111111111111111111111111111111111', fromBlock: 3_000, toBlock: 4_205 }],
+    ]);
+    expect(hubStateRepository.withIndexerPersistenceTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nextFromBlock: 4_206n,
+        lastScannedBlock: 4_205n,
+        publicEvents: expect.arrayContaining([
+          expect.objectContaining({ blockNumber: 2_999n }),
+          expect.objectContaining({ blockNumber: 4_205n }),
+        ]),
+      }),
+    );
+    const input = (hubStateRepository.withIndexerPersistenceTransaction as jest.Mock).mock.calls[0][0];
+    expect(input.publicEvents.map((event: { blockNumber: bigint }) => event.blockNumber)).toEqual([2_999n, 4_205n]);
   });
 
   it('advances cursor across successive runs/windows', async () => {
