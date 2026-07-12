@@ -259,7 +259,7 @@ describe('OwnableService', () => {
       listAvailableOwnablesByOwnerAccount: jest.fn().mockResolvedValue([]),
       listOwnableCidsByPrevOwner: jest.fn().mockResolvedValue(['cid-a']),
       listWalletEventsByCid: jest.fn().mockResolvedValue([]),
-      listIndexedAnchorEventsByPackageCid: jest.fn().mockResolvedValue([
+      listIndexedAnchorEventsByAnchorKeys: jest.fn().mockResolvedValue([
         {
           transactionHash: '0xaaa',
           blockNumber: '10',
@@ -270,6 +270,7 @@ describe('OwnableService', () => {
         },
       ]),
       listIndexedPublicEventsBySubjectId: jest.fn().mockResolvedValue([]),
+      listIndexedPublicEventsBySubjectIdsAfter: jest.fn().mockResolvedValue([]),
     };
     const ownableTransport = {
       publishPublicEvent: jest.fn(),
@@ -737,6 +738,7 @@ describe('OwnableService', () => {
 
     expect(replaySpy).toHaveBeenCalled();
     expect(hubState.getOwnableBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id));
+    expect(hubState.listIndexedAnchorEventsByAnchorKeys).toHaveBeenCalledWith(chain.anchorMap.map(({ key }) => key.hex));
     expect(hubState.listIndexedPublicEventsBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id));
     expect(hubState.setOwnerState).not.toHaveBeenCalled();
   });
@@ -863,83 +865,52 @@ describe('OwnableService', () => {
     const ownableIgnored = new EventChain(`0x${'33'.repeat(32)}`);
     const liveSubject = new Subject<any>();
     ownableTransport.watchPublicEvents.mockReturnValue(liveSubject);
-    hubState.listIndexedPublicEventsBySubjectId.mockImplementation(async (subjectId: string) => {
-      if (subjectId === expectedSubjectId(ownableA.id)) {
-        return [
-          {
-            id: 'evt-old',
-            slotName: 'testnet',
-            chainId: '84532',
-            anchorContractAddress: '0x1',
-            blockNumber: '10',
-            blockHash: '0x1',
-            transactionHash: '0xaaa',
-            transactionIndex: 0,
-            logIndex: 0,
-            eventName: 'PublicEvent',
-            cid: 'cid-1',
-            ownableId: 'id-a',
-            ownerAddress: null,
-            subjectId,
-            sourceAddress: '0x1111111111111111111111111111111111111111',
-            eventType: 'skip',
-            dataHex: '0x00',
-            eventTimestamp: '40',
-            payloadJson: {},
-            indexedAt: new Date().toISOString(),
-          },
-          {
-            id: 'evt-a',
-            slotName: 'testnet',
-            chainId: '84532',
-            anchorContractAddress: '0x1',
-            blockNumber: '11',
-            blockHash: '0x1',
-            transactionHash: '0xbbb',
-            transactionIndex: 0,
-            logIndex: 1,
-            eventName: 'PublicEvent',
-            cid: 'cid-1',
-            ownableId: 'id-a',
-            ownerAddress: null,
-            subjectId,
-            sourceAddress: '0x1111111111111111111111111111111111111111',
-            eventType: 'transfer',
-            dataHex: '0x01',
-            eventTimestamp: '41',
-            payloadJson: {},
-            indexedAt: new Date().toISOString(),
-          },
-        ];
-      }
-      if (subjectId === expectedSubjectId(ownableB.id)) {
-        return [
-          {
-            id: 'evt-b',
-            slotName: 'testnet',
-            chainId: '84532',
-            anchorContractAddress: '0x1',
-            blockNumber: '12',
-            blockHash: '0x2',
-            transactionHash: '0xccc',
-            transactionIndex: 1,
-            logIndex: 0,
-            eventName: 'PublicEvent',
-            cid: 'cid-2',
-            ownableId: 'id-b',
-            ownerAddress: null,
-            subjectId,
-            sourceAddress: '0x2222222222222222222222222222222222222222',
-            eventType: 'mint',
-            dataHex: '0x02',
-            eventTimestamp: '42',
-            payloadJson: {},
-            indexedAt: new Date().toISOString(),
-          },
-        ];
-      }
-      return [];
-    });
+    hubState.listIndexedPublicEventsBySubjectIdsAfter.mockResolvedValue([
+      {
+        id: 'evt-a',
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x1',
+        blockNumber: '11',
+        blockHash: '0x1',
+        transactionHash: '0xbbb',
+        transactionIndex: 0,
+        logIndex: 1,
+        eventName: 'PublicEvent',
+        cid: 'cid-1',
+        ownableId: 'id-a',
+        ownerAddress: null,
+        subjectId: expectedSubjectId(ownableA.id),
+        sourceAddress: '0x1111111111111111111111111111111111111111',
+        eventType: 'transfer',
+        dataHex: '0x01',
+        eventTimestamp: '41',
+        payloadJson: {},
+        indexedAt: new Date().toISOString(),
+      },
+      {
+        id: 'evt-b',
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x1',
+        blockNumber: '12',
+        blockHash: '0x2',
+        transactionHash: '0xccc',
+        transactionIndex: 1,
+        logIndex: 0,
+        eventName: 'PublicEvent',
+        cid: 'cid-2',
+        ownableId: 'id-b',
+        ownerAddress: null,
+        subjectId: expectedSubjectId(ownableB.id),
+        sourceAddress: '0x2222222222222222222222222222222222222222',
+        eventType: 'mint',
+        dataHex: '0x02',
+        eventTimestamp: '42',
+        payloadJson: {},
+        indexedAt: new Date().toISOString(),
+      },
+    ]);
 
     const stream = await service.streamOwnablePublicEvents([ownableA.id, ownableB.id], '11');
     const collectedPromise = firstValueFrom(stream.pipe(take(3), toArray()));
@@ -1020,6 +991,117 @@ describe('OwnableService', () => {
         },
       },
     ]);
+    expect(hubState.listIndexedPublicEventsBySubjectIdsAfter).toHaveBeenCalledWith(
+      [expectedSubjectId(ownableA.id), expectedSubjectId(ownableB.id)],
+      11n,
+      null,
+    );
+  });
+
+  it('dedupes a live event buffered before replay completes when replay returns the same event', async () => {
+    const { service, hubState, ownableTransport } = await buildService();
+    const ownable = await createChain();
+    const liveSubject = new Subject<any>();
+    ownableTransport.watchPublicEvents.mockReturnValue(liveSubject);
+
+    let resolveReplay!: (rows: any[]) => void;
+    hubState.listIndexedPublicEventsBySubjectIdsAfter.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveReplay = resolve;
+        }),
+    );
+
+    const stream = await service.streamOwnablePublicEvents([ownable.id], '11');
+    const collectedPromise = firstValueFrom(stream.pipe(take(2), toArray()));
+
+    liveSubject.next({
+      subjectId: expectedSubjectId(ownable.id),
+      publicEvent: {
+        source: '0x1111111111111111111111111111111111111111',
+        eventType: 'transfer',
+        data: '0x01',
+        blockNumber: 11,
+        transactionHash: '0xbbb',
+        transactionIndex: 0,
+        logIndex: 1,
+        timestamp: 41,
+      },
+    });
+
+    resolveReplay([
+      {
+        id: 'evt-a',
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x1',
+        blockNumber: '11',
+        blockHash: '0x1',
+        transactionHash: '0xbbb',
+        transactionIndex: 0,
+        logIndex: 1,
+        eventName: 'PublicEvent',
+        cid: 'cid-1',
+        ownableId: 'id-a',
+        ownerAddress: null,
+        subjectId: expectedSubjectId(ownable.id),
+        sourceAddress: '0x1111111111111111111111111111111111111111',
+        eventType: 'transfer',
+        dataHex: '0x01',
+        eventTimestamp: '41',
+        payloadJson: {},
+        indexedAt: new Date().toISOString(),
+      },
+    ]);
+
+    liveSubject.next({
+      subjectId: expectedSubjectId(ownable.id),
+      publicEvent: {
+        source: '0x1111111111111111111111111111111111111111',
+        eventType: 'transfer',
+        data: '0x02',
+        blockNumber: 12,
+        transactionHash: '0xccc',
+        transactionIndex: 0,
+        logIndex: 0,
+        timestamp: 42,
+      },
+    });
+
+    await expect(collectedPromise).resolves.toEqual([
+      {
+        type: 'public-event',
+        data: {
+          ownableId: ownable.id,
+          publicEvent: {
+            source: '0x1111111111111111111111111111111111111111',
+            eventType: 'transfer',
+            data: '0x01',
+            blockNumber: 11,
+            transactionHash: '0xbbb',
+            transactionIndex: 0,
+            logIndex: 1,
+            timestamp: 41,
+          },
+        },
+      },
+      {
+        type: 'public-event',
+        data: {
+          ownableId: ownable.id,
+          publicEvent: {
+            source: '0x1111111111111111111111111111111111111111',
+            eventType: 'transfer',
+            data: '0x02',
+            blockNumber: 12,
+            transactionHash: '0xccc',
+            transactionIndex: 0,
+            logIndex: 0,
+            timestamp: 42,
+          },
+        },
+      },
+    ]);
   });
 
   it('keeps discovery stream separate and live-only for one owner account', async () => {
@@ -1071,7 +1153,7 @@ describe('OwnableService', () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain(undefined, [{ key: { hex: '0xanchor' }, value: { hex: '0xbbb' } }]);
     hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: expectedSubjectId(chain.id) });
-    hubState.listIndexedAnchorEventsByPackageCid.mockResolvedValue([
+    hubState.listIndexedAnchorEventsByAnchorKeys.mockResolvedValue([
       {
         transactionHash: '0xaaa',
         blockNumber: '10',
@@ -1111,7 +1193,7 @@ describe('OwnableService', () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain(undefined, [{ key: { hex: '0xanchor' }, value: { hex: '0xbbb' } }]);
     hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: expectedSubjectId(chain.id) });
-    hubState.listIndexedAnchorEventsByPackageCid.mockResolvedValue([
+    hubState.listIndexedAnchorEventsByAnchorKeys.mockResolvedValue([
       {
         transactionHash: '0xaaa',
         blockNumber: '10',
@@ -1153,7 +1235,7 @@ describe('OwnableService', () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain(undefined, [{ key: { hex: '0xanchor' }, value: { hex: '0xbbb' } }]);
     hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1', subjectId: expectedSubjectId(chain.id) });
-    hubState.listIndexedAnchorEventsByPackageCid.mockResolvedValue([
+    hubState.listIndexedAnchorEventsByAnchorKeys.mockResolvedValue([
       {
         transactionHash: '0xolder',
         blockNumber: '9',

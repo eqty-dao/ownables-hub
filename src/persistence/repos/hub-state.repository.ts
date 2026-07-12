@@ -86,6 +86,12 @@ export interface IndexedPublicEventRow {
   indexedAt: string;
 }
 
+export interface IndexedPublicEventCursor {
+  blockNumber: bigint;
+  transactionIndex: number;
+  logIndex: number;
+}
+
 export interface IndexerCursorState {
   slotName: 'testnet' | 'mainnet';
   cursorName: string;
@@ -698,6 +704,38 @@ export class HubStateRepository {
     return result.rows;
   }
 
+  async listIndexedAnchorEventsByAnchorKeys(anchorKeys: string[]): Promise<IndexedAnchorEvent[]> {
+    if (!anchorKeys.length) {
+      return [];
+    }
+
+    const normalizedAnchorKeys = anchorKeys.map((anchorKey) => anchorKey.toLowerCase());
+    const result = await this.db.query<IndexedAnchorEvent>(
+      `SELECT
+         id,
+         slot_name AS "slotName",
+         chain_id AS "chainId",
+         anchor_contract_address AS "anchorContractAddress",
+         block_number::text AS "blockNumber",
+         block_hash AS "blockHash",
+         transaction_hash AS "transactionHash",
+         transaction_index AS "transactionIndex",
+         log_index AS "logIndex",
+         event_name AS "eventName",
+         package_cid AS cid,
+         ownable_id AS "ownableId",
+         owner_address AS "ownerAddress",
+         payload_json AS "payloadJson",
+         indexed_at::text AS "indexedAt"
+       FROM indexed_anchor_events
+       WHERE LOWER(payload_json ->> 'key') = ANY($1::text[])
+       ORDER BY block_number ASC, transaction_index ASC, log_index ASC`,
+      [normalizedAnchorKeys],
+    );
+
+    return result.rows;
+  }
+
   async listIndexedPublicEventsBySubjectId(subjectId: string): Promise<IndexedPublicEventRow[]> {
     const result = await this.db.query<IndexedPublicEventRow>(
       `SELECT
@@ -724,6 +762,59 @@ export class HubStateRepository {
        WHERE subject_id = LOWER($1)
        ORDER BY block_number ASC, transaction_index ASC, log_index ASC`,
       [subjectId],
+    );
+
+    return result.rows;
+  }
+
+  async listIndexedPublicEventsBySubjectIdsAfter(
+    subjectIds: string[],
+    fromBlock: bigint,
+    cursor?: IndexedPublicEventCursor | null,
+  ): Promise<IndexedPublicEventRow[]> {
+    if (!subjectIds.length) {
+      return [];
+    }
+
+    const normalizedSubjectIds = subjectIds.map((subjectId) => subjectId.toLowerCase());
+    const result = await this.db.query<IndexedPublicEventRow>(
+      `SELECT
+         id,
+         slot_name AS "slotName",
+         chain_id AS "chainId",
+         anchor_contract_address AS "anchorContractAddress",
+         block_number::text AS "blockNumber",
+         block_hash AS "blockHash",
+         transaction_hash AS "transactionHash",
+         transaction_index AS "transactionIndex",
+         log_index AS "logIndex",
+         event_name AS "eventName",
+         package_cid AS cid,
+         ownable_id AS "ownableId",
+         subject_id AS "subjectId",
+         source_address AS "sourceAddress",
+         event_type AS "eventType",
+         data_hex AS "dataHex",
+         event_timestamp::text AS "eventTimestamp",
+         payload_json AS "payloadJson",
+         indexed_at::text AS "indexedAt"
+       FROM indexed_public_events
+       WHERE subject_id = ANY($1::text[])
+         AND block_number >= $2::numeric
+         AND (
+           $3::numeric IS NULL
+           OR block_number > $3::numeric
+           OR (block_number = $3::numeric AND transaction_index > $4)
+           OR (block_number = $3::numeric AND transaction_index = $4 AND log_index > $5)
+         )
+       ORDER BY block_number ASC, transaction_index ASC, log_index ASC`,
+      [
+        normalizedSubjectIds,
+        fromBlock.toString(),
+        cursor ? cursor.blockNumber.toString() : null,
+        cursor?.transactionIndex ?? null,
+        cursor?.logIndex ?? null,
+      ],
     );
 
     return result.rows;

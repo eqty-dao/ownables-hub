@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '../common/config/config.service.js';
-import { Pool, type PoolClient, type QueryResult } from 'pg';
+import { Pool, type Notification, type PoolClient, type QueryResult } from 'pg';
 
 @Injectable()
 export class PostgresService implements OnModuleDestroy {
@@ -34,6 +34,39 @@ export class PostgresService implements OnModuleDestroy {
     } finally {
       client.release();
     }
+  }
+
+  async notify(channel: string, payload: string): Promise<void> {
+    await this.pool.query('SELECT pg_notify($1, $2)', [channel, payload]);
+  }
+
+  async listen(channel: string, onPayload: (payload: string) => void): Promise<() => Promise<void>> {
+    const client = await this.pool.connect();
+    const onNotification = (message: Notification) => {
+      if (message.channel !== channel || typeof message.payload !== 'string') {
+        return;
+      }
+      onPayload(message.payload);
+    };
+
+    client.on('notification', onNotification);
+
+    try {
+      await client.query(`LISTEN ${channel}`);
+    } catch (error) {
+      client.off('notification', onNotification);
+      client.release();
+      throw error;
+    }
+
+    return async () => {
+      client.off('notification', onNotification);
+      try {
+        await client.query(`UNLISTEN ${channel}`);
+      } finally {
+        client.release();
+      }
+    };
   }
 
   async onModuleDestroy(): Promise<void> {

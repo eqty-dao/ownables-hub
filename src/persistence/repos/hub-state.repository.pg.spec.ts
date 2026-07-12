@@ -147,7 +147,7 @@ describeWithDatabase('HubStateRepository recipient discovery postgres integratio
     });
   });
 
-  it('returns indexed anchor and public replay inputs by package cid and ownable subject id', async () => {
+  it('returns indexed anchor and public replay inputs by anchor key and ownable subject id', async () => {
     await withSchema(null, async (repo, client) => {
       const ownableId = '00000000-0000-0000-0000-000000000501';
       const subjectId = `0x${'5'.repeat(64)}`;
@@ -167,10 +167,10 @@ describeWithDatabase('HubStateRepository recipient discovery postgres integratio
         transactionIndex: 1,
         logIndex: 2,
         eventName: 'Anchored',
-        cid: 'cid-proof-1',
+        cid: null,
         ownableId,
         ownerAddress: '0xowner',
-        payloadJson: { anchor: true },
+        payloadJson: { key: `0x${'7'.repeat(64)}`, value: `0x${'8'.repeat(64)}` },
       });
 
       await repo.upsertIndexedPublicEvent({
@@ -191,7 +191,7 @@ describeWithDatabase('HubStateRepository recipient discovery postgres integratio
         payloadJson: { public: true },
       });
 
-      const anchorRows = await repo.listIndexedAnchorEventsByPackageCid('cid-proof-1');
+      const anchorRows = await repo.listIndexedAnchorEventsByAnchorKeys([`0x${'7'.repeat(64)}`]);
       const publicRows = await repo.listIndexedPublicEventsBySubjectId(subjectId);
 
       expect(anchorRows).toEqual([

@@ -7,7 +7,7 @@ import { OwnableTransportService } from '../ownable/ownable-transport.service.js
 const ANCHOR_CURSOR_NAME = 'anchor-public-events';
 
 const ANCHOR_EVENT_ABI = [
-  'event Anchored(bytes32 indexed cidHash, string cid, address indexed owner)',
+  'event Anchored(bytes32 indexed key, bytes32 value, address indexed sender, uint64 timestamp)',
   'event PublicEvent(bytes32 indexed subjectId, address indexed source, string eventType, bytes data, uint64 timestamp)',
 ] as const;
 
@@ -174,13 +174,14 @@ export class IndexerService {
         continue;
       }
 
-      const cid = this.asNullableString(parsed.args.cid);
-      const ownerAddress = this.asNullableString(parsed.args.owner)?.toLowerCase() ?? null;
+      const anchorKey = eventKind === 'anchor' ? this.asNullableString(parsed.args.key)?.toLowerCase() ?? null : null;
+      const anchorValue = eventKind === 'anchor' ? this.asNullableString(parsed.args.value)?.toLowerCase() ?? null : null;
+      const ownerAddress = eventKind === 'anchor' ? this.asNullableString(parsed.args.sender)?.toLowerCase() ?? null : null;
       const subjectId = eventKind === 'public' ? this.asNullableString(parsed.args.subjectId)?.toLowerCase() ?? null : null;
       const sourceAddress = eventKind === 'public' ? this.asNullableString(parsed.args.source)?.toLowerCase() ?? null : null;
       const eventType = eventKind === 'public' ? this.asNullableString(parsed.args.eventType) : null;
       const dataHex = eventKind === 'public' ? this.asNullableString(parsed.args.data)?.toLowerCase() ?? null : null;
-      const rawTimestamp = eventKind === 'public' ? parsed.args.timestamp : null;
+      const rawTimestamp = parsed.args.timestamp;
       const eventTimestamp =
         rawTimestamp === null || rawTimestamp === undefined
           ? null
@@ -199,7 +200,7 @@ export class IndexerService {
         transactionIndex: log.transactionIndex,
         logIndex: log.index,
         eventName: parsed.name,
-        cid,
+        cid: null,
         ownerAddress,
         subjectId,
         sourceAddress,
@@ -216,8 +217,10 @@ export class IndexerService {
                 timestamp: eventTimestamp?.toString() ?? null,
               }
             : {
-                cid,
+                key: anchorKey,
+                value: anchorValue,
                 ownerAddress,
+                timestamp: eventTimestamp?.toString() ?? null,
               },
       });
     }

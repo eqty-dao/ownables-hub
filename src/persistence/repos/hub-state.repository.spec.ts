@@ -248,7 +248,7 @@ describe('HubStateRepository', () => {
     expect(query).toHaveBeenCalledWith(expect.stringContaining('ORDER BY "blockNumber"::numeric ASC, "transactionIndex" ASC, "logIndex" ASC'), ['cid-abc']);
   });
 
-  it('queries indexed anchor events by package cid in replay order', async () => {
+  it('queries indexed anchor events by anchor key in replay order', async () => {
     query.mockResolvedValueOnce({
       rows: [
         {
@@ -262,7 +262,7 @@ describe('HubStateRepository', () => {
       ],
     });
 
-    const rows = await repo.listIndexedAnchorEventsByPackageCid('cid-abc');
+    const rows = await repo.listIndexedAnchorEventsByAnchorKeys([`0x${'7'.repeat(64)}`]);
 
     expect(rows).toEqual([
       expect.objectContaining({
@@ -275,8 +275,8 @@ describe('HubStateRepository', () => {
       }),
     ]);
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining('FROM indexed_anchor_events'),
-      ['cid-abc'],
+      expect.stringContaining("LOWER(payload_json ->> 'key') = ANY($1::text[])"),
+      [[`0x${'7'.repeat(64)}`]],
     );
   });
 
@@ -318,6 +318,61 @@ describe('HubStateRepository', () => {
       expect.stringContaining('WHERE subject_id = LOWER($1)'),
       [`0x${'6'.repeat(64)}`],
     );
+  });
+
+  it('queries incremental indexed public events across watched subject ids after the replay cursor', async () => {
+    const watchedSubjectId = `0x${'7'.repeat(64)}`;
+    query.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'public-2',
+          subjectId: watchedSubjectId,
+          transactionHash: '0xccc',
+          blockNumber: '12',
+          transactionIndex: 1,
+          logIndex: 0,
+          sourceAddress: '0x00000000000000000000000000000000000000cc',
+          eventType: 'mint',
+          dataHex: '0x02',
+          eventTimestamp: '43',
+        },
+      ],
+    });
+
+    const rows = await repo.listIndexedPublicEventsBySubjectIdsAfter(
+      [watchedSubjectId.toUpperCase(), `0x${'8'.repeat(64)}`],
+      11n,
+      { blockNumber: 11n, transactionIndex: 0, logIndex: 5 },
+    );
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: 'public-2',
+        subjectId: watchedSubjectId,
+        transactionHash: '0xccc',
+        blockNumber: '12',
+        transactionIndex: 1,
+        logIndex: 0,
+      }),
+    ]);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('WHERE subject_id = ANY($1::text[])'),
+      [[watchedSubjectId, `0x${'8'.repeat(64)}`], '11', '11', 0, 5],
+    );
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('block_number = $3::numeric AND transaction_index = $4 AND log_index > $5'), [
+      [watchedSubjectId, `0x${'8'.repeat(64)}`],
+      '11',
+      '11',
+      0,
+      5,
+    ]);
+  });
+
+  it('skips the incremental replay query when no watched subject ids are provided', async () => {
+    const rows = await repo.listIndexedPublicEventsBySubjectIdsAfter([], 11n, null);
+
+    expect(rows).toEqual([]);
+    expect(query).not.toHaveBeenCalled();
   });
 
   it('resolves public events by ownable_records subject linkage when indexed before upload', async () => {

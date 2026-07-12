@@ -29,10 +29,11 @@ import { HubStateRepository, IndexedAnchorEvent, IndexedPublicEventRow } from '.
 import {
   AvailableOwnableDiscoveryMessage,
   OwnableTransportService,
+  type LiveIndexedPublicEvent,
   type AvailableOwnableDiscoveryEntry,
   type PublicEventStreamMessage,
 } from './ownable-transport.service.js';
-import { concat, from, Observable } from 'rxjs';
+import { Observable } from 'rxjs';
 import { filter, map } from 'rxjs/operators';
 
 interface SignerIdentity {
@@ -594,7 +595,10 @@ export class OwnableService implements OnModuleInit {
     const files = await this.unzip(await zipped.generateAsync({ type: 'uint8array' }));
     this.assertSupportedOwnableRuntime(files);
 
-    const indexedAnchorEvents = await this.hubState.listIndexedAnchorEventsByPackageCid(packageCid);
+    const anchorPairs = chain.anchorMap.map(({ key, value }) => ({ key, value }));
+    const indexedAnchorEvents = await this.hubState.listIndexedAnchorEventsByAnchorKeys(
+      anchorPairs.map(({ key }) => key.hex),
+    );
     const indexedPublicRows = await this.hubState.listIndexedPublicEventsBySubjectId(this.publicEventSubjectId(chain.id));
 
     const stateStore = new InMemoryStateStore();
@@ -609,11 +613,7 @@ export class OwnableService implements OnModuleInit {
         throw new Error('emitPublicEvent is not supported in hub replay');
       },
       verifyAnchors: async (...anchors: Array<{ key: { hex: string }; value: { hex: string } }>) =>
-        this.buildAnchorVerificationResult(
-          indexedAnchorEvents,
-          anchors,
-          chain.events.at(-1)?.signerAddress?.toLowerCase(),
-        ),
+        this.buildAnchorVerificationResult(indexedAnchorEvents, anchors, chain.events.at(-1)?.signerAddress?.toLowerCase()),
     };
 
     const packageInfo: TypedPackage = {
@@ -883,48 +883,78 @@ export class OwnableService implements OnModuleInit {
     const ownableIds = this.normalizeOwnableIds(ownableIdsInput);
     const fromBlock = this.normalizeFromBlock(fromBlockInput);
     const subjectToOwnableId = new Map(ownableIds.map((ownableId) => [this.publicEventSubjectId(ownableId), ownableId]));
+    const watchedSubjectIds = Array.from(subjectToOwnableId.keys());
 
-    const replayMessages = (await Promise.all(
-      ownableIds.map(async (ownableId): Promise<PublicEventStreamMessage[]> => {
-        const publicEvents = await this.listIndexedPublicEventsForOwnable(ownableId);
-        return publicEvents
-          .filter((publicEvent) => BigInt(publicEvent.blockNumber) >= fromBlock)
-          .map((publicEvent) => ({ ownableId, publicEvent }));
-      }),
-    ))
-      .flat()
-      .sort((left, right) => {
-        if (left.publicEvent.blockNumber !== right.publicEvent.blockNumber) {
-          return left.publicEvent.blockNumber - right.publicEvent.blockNumber;
-        }
-        if (left.publicEvent.transactionIndex !== right.publicEvent.transactionIndex) {
-          return left.publicEvent.transactionIndex - right.publicEvent.transactionIndex;
-        }
-        return left.publicEvent.logIndex - right.publicEvent.logIndex;
-      });
+    return new Observable<MessageEvent>((subscriber) => {
+      const seenEventKeys = new Set<string>();
+      const bufferedLiveMessages: LiveIndexedPublicEvent[] = [];
+      let replayReady = false;
 
-    const replay$ = from(
-      replayMessages.map(
-        (message): MessageEvent => ({
-          type: 'public-event',
-          data: message,
-        }),
-      ),
-    );
-    const live$ = this.ownableTransport.watchPublicEvents().pipe(
-      filter((message) => subjectToOwnableId.has(message.subjectId)),
-      map(
-        (message): MessageEvent => ({
+      const emitLiveMessage = (message: LiveIndexedPublicEvent) => {
+        const dedupeKey = this.publicEventStreamDedupKey(message.subjectId, message.publicEvent);
+        if (seenEventKeys.has(dedupeKey)) {
+          return;
+        }
+        seenEventKeys.add(dedupeKey);
+        subscriber.next({
           type: 'public-event',
           data: {
             ownableId: subjectToOwnableId.get(message.subjectId) as string,
             publicEvent: message.publicEvent,
           } satisfies PublicEventStreamMessage,
-        }),
-      ),
-    );
+        });
+      };
 
-    return concat(replay$, live$);
+      const liveSubscription = this.ownableTransport
+        .watchPublicEvents()
+        .pipe(filter((message) => subjectToOwnableId.has(message.subjectId)))
+        .subscribe({
+          next: (message) => {
+            if (!replayReady) {
+              bufferedLiveMessages.push(message);
+              return;
+            }
+            emitLiveMessage(message);
+          },
+          error: (error) => subscriber.error(error),
+        });
+
+      void (async () => {
+        try {
+          const replayRows = await this.hubState.listIndexedPublicEventsBySubjectIdsAfter(watchedSubjectIds, fromBlock, null);
+
+          for (const row of replayRows) {
+            const publicEvent = this.toIndexedPublicEvent(row);
+            if (!publicEvent) {
+              continue;
+            }
+
+            const ownableId = subjectToOwnableId.get(row.subjectId ?? '');
+            if (!ownableId) {
+              continue;
+            }
+
+            seenEventKeys.add(this.publicEventStreamDedupKey(row.subjectId, publicEvent));
+            subscriber.next({
+              type: 'public-event',
+              data: {
+                ownableId,
+                publicEvent,
+              } satisfies PublicEventStreamMessage,
+            });
+          }
+
+          replayReady = true;
+          for (const message of bufferedLiveMessages) {
+            emitLiveMessage(message);
+          }
+        } catch (error) {
+          subscriber.error(error);
+        }
+      })();
+
+      return () => liveSubscription.unsubscribe();
+    });
   }
 
   streamAvailableOwnables(ownerAccountInput: string): Observable<MessageEvent> {
@@ -1088,6 +1118,16 @@ export class OwnableService implements OnModuleInit {
       throw new UserError('from must be a non-negative integer');
     }
     return BigInt(candidate);
+  }
+
+  private publicEventStreamDedupKey(subjectId: string, publicEvent: IndexedPublicEvent): string {
+    return [
+      subjectId.toLowerCase(),
+      publicEvent.blockNumber,
+      publicEvent.transactionHash.toLowerCase(),
+      publicEvent.transactionIndex,
+      publicEvent.logIndex,
+    ].join(':');
   }
 
   private async listIndexedPublicEventsForOwnable(ownableId: string): Promise<IndexedPublicEvent[]> {

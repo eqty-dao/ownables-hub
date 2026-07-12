@@ -6,6 +6,7 @@ import { AppModule } from '../app.module.js';
 import { OwnableController } from './ownable.controller.js';
 import { UserError } from '../interfaces/error.js';
 import { OwnableService } from './ownable.service.js';
+import { OwnableTransportService } from './ownable-transport.service.js';
 import { of } from 'rxjs';
 
 jest.mock('eqty-core', () => require('../test-mocks/eqty-core.ts'));
@@ -238,6 +239,14 @@ describe('OwnableController recipient discovery route behavior', () => {
     streamOwnablePublicEvents: jest.fn(),
     streamAvailableOwnables: jest.fn(),
   };
+  const ownableTransport = {
+    watchPublicEvents: jest.fn(),
+    watchAvailableOwnables: jest.fn(),
+    publishPublicEvent: jest.fn(),
+    publishAvailableOwnable: jest.fn(),
+    onModuleInit: jest.fn(),
+    onModuleDestroy: jest.fn(),
+  };
 
   let app: INestApplication;
 
@@ -250,6 +259,8 @@ describe('OwnableController recipient discovery route behavior', () => {
     })
       .overrideProvider(OwnableService)
       .useValue(ownableService)
+      .overrideProvider(OwnableTransportService)
+      .useValue(ownableTransport)
       .compile();
 
     app = moduleRef.createNestApplication();
@@ -264,6 +275,12 @@ describe('OwnableController recipient discovery route behavior', () => {
     ownableService.getAvailableOwnables.mockReset();
     ownableService.streamOwnablePublicEvents.mockReset();
     ownableService.streamAvailableOwnables.mockReset();
+    ownableTransport.watchPublicEvents.mockReset();
+    ownableTransport.watchAvailableOwnables.mockReset();
+    ownableTransport.publishPublicEvent.mockReset();
+    ownableTransport.publishAvailableOwnable.mockReset();
+    ownableTransport.onModuleInit.mockReset();
+    ownableTransport.onModuleDestroy.mockReset();
   });
 
   it('serves recipient discovery without SIWE auth on the canonical route', async () => {

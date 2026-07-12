@@ -73,13 +73,14 @@ describe('IndexerService', () => {
 
   it('persists anchor/public events and advances cursor from start block when no cursor exists', async () => {
     const iface = new Interface([
-      'event Anchored(bytes32 indexed cidHash, string cid, address indexed owner)',
+      'event Anchored(bytes32 indexed key, bytes32 value, address indexed sender, uint64 timestamp)',
       'event PublicEvent(bytes32 indexed subjectId, address indexed source, string eventType, bytes data, uint64 timestamp)',
     ]);
     const anchoredLog = iface.encodeEventLog(iface.getEvent('Anchored'), [
-      '0x' + '0'.repeat(64),
-      'cid-1',
+      '0x' + '2'.repeat(64),
+      '0x' + '3'.repeat(64),
       '0x00000000000000000000000000000000000000aa',
+      41n,
     ]);
     const publicLog = iface.encodeEventLog(iface.getEvent('PublicEvent'), [
       '0x' + '1'.repeat(64),
@@ -139,6 +140,16 @@ describe('IndexerService', () => {
     expect(input.anchorEvents).toHaveLength(1);
     expect(input.publicEvents).toHaveLength(1);
     expect(input.anchorEvents[0].transactionIndex).toBe(1);
+    expect(input.anchorEvents[0]).toMatchObject({
+      cid: null,
+      ownerAddress: '0x00000000000000000000000000000000000000aa',
+      payloadJson: {
+        key: `0x${'2'.repeat(64)}`,
+        value: `0x${'3'.repeat(64)}`,
+        ownerAddress: '0x00000000000000000000000000000000000000aa',
+        timestamp: '41',
+      },
+    });
     expect(input.publicEvents[0].transactionIndex).toBe(0);
     expect(input.publicEvents[0]).toMatchObject({
       subjectId: `0x${'1'.repeat(64)}`,
@@ -190,13 +201,14 @@ describe('IndexerService', () => {
 
   it('resumes within current head range and advances cursor from the resumed window', async () => {
     const iface = new Interface([
-      'event Anchored(bytes32 indexed cidHash, string cid, address indexed owner)',
+      'event Anchored(bytes32 indexed key, bytes32 value, address indexed sender, uint64 timestamp)',
       'event PublicEvent(bytes32 indexed subjectId, address indexed source, string eventType, bytes data, uint64 timestamp)',
     ]);
     const anchoredLog = iface.encodeEventLog(iface.getEvent('Anchored'), [
-      '0x' + '0'.repeat(64),
-      'cid-resume',
+      '0x' + '4'.repeat(64),
+      '0x' + '5'.repeat(64),
       '0x00000000000000000000000000000000000000aa',
+      99n,
     ]);
 
     providerState.head = 120;
