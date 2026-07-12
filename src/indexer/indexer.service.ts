@@ -53,7 +53,12 @@ export class IndexerService {
   async runSlot(slot: IndexerSlotConfig): Promise<void> {
     const provider = new JsonRpcProvider(slot.rpcUrl);
     const head = await provider.getBlockNumber();
-    const cursor = await this.hubStateRepository.getIndexerCursor(slot.slotName, ANCHOR_CURSOR_NAME);
+    const cursor = await this.hubStateRepository.getIndexerCursor(
+      slot.slotName,
+      ANCHOR_CURSOR_NAME,
+      slot.chainId,
+      slot.anchorContractAddress,
+    );
 
     const fromBlock = this.resolveFromBlock(slot, cursor);
     const toBlock = BigInt(head);

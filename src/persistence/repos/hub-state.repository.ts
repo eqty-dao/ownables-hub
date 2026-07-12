@@ -278,7 +278,12 @@ export class HubStateRepository {
     return this.db.query<T>(text, values);
   }
 
-  async getIndexerCursor(slotName: 'testnet' | 'mainnet', cursorName: string): Promise<IndexerCursorState | null> {
+  async getIndexerCursor(
+    slotName: 'testnet' | 'mainnet',
+    cursorName: string,
+    chainId: string,
+    anchorContractAddress: string,
+  ): Promise<IndexerCursorState | null> {
     const result = await this.db.query<IndexerCursorState>(
       `SELECT
          slot_name AS "slotName",
@@ -291,8 +296,8 @@ export class HubStateRepository {
          last_scanned_tx_index AS "lastScannedTxIndex",
          last_scanned_log_index AS "lastScannedLogIndex"
        FROM indexer_cursors
-       WHERE slot_name = $1 AND cursor_name = $2`,
-      [slotName, cursorName],
+       WHERE slot_name = $1 AND cursor_name = $2 AND chain_id = $3 AND anchor_contract_address = LOWER($4)`,
+      [slotName, cursorName, chainId, anchorContractAddress],
     );
     const row = result.rows[0];
     if (!row) {
@@ -333,10 +338,8 @@ export class HubStateRepository {
          last_scanned_tx_hash,
          last_scanned_tx_index,
          last_scanned_log_index
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       ON CONFLICT (slot_name, cursor_name) DO UPDATE SET
-         chain_id = EXCLUDED.chain_id,
-         anchor_contract_address = EXCLUDED.anchor_contract_address,
+       ) VALUES ($1, $2, $3, LOWER($4), $5, $6, $7, $8, $9)
+       ON CONFLICT (slot_name, cursor_name, chain_id, anchor_contract_address) DO UPDATE SET
          next_from_block = EXCLUDED.next_from_block,
          last_scanned_block = EXCLUDED.last_scanned_block,
          last_scanned_tx_hash = EXCLUDED.last_scanned_tx_hash,

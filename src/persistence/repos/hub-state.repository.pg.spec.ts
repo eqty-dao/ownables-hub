@@ -111,6 +111,113 @@ describeWithDatabase('HubStateRepository recipient discovery postgres integratio
     });
   });
 
+  it('keeps cursor progress isolated by chain and normalized anchor identity', async () => {
+    await withSchema(null, async (repo, client) => {
+      const anchorA = '0x00000000000000000000000000000000000000AA';
+      const anchorB = '0xE518BB784B8cB17e6F16e445A9275A16d61700b5';
+
+      await repo.upsertIndexerCursor({
+        slotName: 'testnet',
+        cursorName: 'anchor-public-events',
+        chainId: '84532',
+        anchorContractAddress: anchorA,
+        nextFromBlock: 26n,
+      });
+
+      expect(
+        await repo.getIndexerCursor('testnet', 'anchor-public-events', '84532', anchorB),
+      ).toBeNull();
+
+      await repo.upsertIndexerCursor({
+        slotName: 'testnet',
+        cursorName: 'anchor-public-events',
+        chainId: '84532',
+        anchorContractAddress: anchorB,
+        nextFromBlock: 100n,
+      });
+      await repo.upsertIndexerCursor({
+        slotName: 'testnet',
+        cursorName: 'anchor-public-events',
+        chainId: '84532',
+        anchorContractAddress: anchorA.toLowerCase(),
+        nextFromBlock: 40n,
+      });
+
+      expect(
+        await repo.getIndexerCursor('testnet', 'anchor-public-events', '84532', anchorA),
+      ).toEqual(expect.objectContaining({ nextFromBlock: 40n, anchorContractAddress: anchorA.toLowerCase() }));
+      expect(
+        await repo.getIndexerCursor('testnet', 'anchor-public-events', '84532', anchorB),
+      ).toEqual(expect.objectContaining({ nextFromBlock: 100n, anchorContractAddress: anchorB.toLowerCase() }));
+
+      const rows = await client.query(
+        `SELECT slot_name, cursor_name, chain_id, anchor_contract_address, next_from_block
+         FROM indexer_cursors ORDER BY anchor_contract_address`,
+      );
+      expect(rows.rows).toEqual([
+        expect.objectContaining({ anchor_contract_address: anchorA.toLowerCase(), next_from_block: '40' }),
+        expect.objectContaining({ anchor_contract_address: anchorB.toLowerCase(), next_from_block: '100' }),
+      ]);
+    });
+  });
+
+  it('upgrades the pre-partition schema without deleting the old cursor partition', async () => {
+    const schema = `hub_cursor_migration_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    runMigrationsForSchema(schema, '1717196000000');
+
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    await client.query(`SET search_path TO "${schema}", public`);
+    try {
+      await client.query(
+        `INSERT INTO indexer_cursors (
+           slot_name, cursor_name, chain_id, anchor_contract_address, next_from_block
+         ) VALUES ('testnet', 'anchor-public-events', '84532', '0x00000000000000000000000000000000000000AA', 26)`,
+      );
+
+      runMigrationsForSchema(schema, null);
+
+      const repo = new HubStateRepository({
+        query: <TResult = unknown>(text: string, values: unknown[] = []) => client.query<TResult>(text, values),
+        withClient: async <TResult>(fn: (dbClient: Client) => Promise<TResult>) => fn(client),
+      } as any);
+
+      expect(
+        await repo.getIndexerCursor(
+          'testnet',
+          'anchor-public-events',
+          '84532',
+          '0xe518BB784B8cB17e6F16e445A9275A16d61700b5',
+        ),
+      ).toBeNull();
+      await repo.upsertIndexerCursor({
+        slotName: 'testnet',
+        cursorName: 'anchor-public-events',
+        chainId: '84532',
+        anchorContractAddress: '0xe518BB784B8cB17e6F16e445A9275A16d61700b5',
+        nextFromBlock: 100n,
+      });
+
+      const rows = await client.query(
+        `SELECT anchor_contract_address, next_from_block
+         FROM indexer_cursors ORDER BY anchor_contract_address`,
+      );
+      expect(rows.rows).toEqual([
+        { anchor_contract_address: '0x00000000000000000000000000000000000000aa', next_from_block: '26' },
+        { anchor_contract_address: '0xe518bb784b8cb17e6f16e445a9275a16d61700b5', next_from_block: '100' },
+      ]);
+    } finally {
+      await client.end();
+      const cleanupClient = new Client({ connectionString: databaseUrl });
+      await cleanupClient.connect();
+      try {
+        await cleanupClient.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      } finally {
+        await cleanupClient.end();
+      }
+    }
+  });
+
   it('increments owner state version only when availability materially changes', async () => {
     await withSchema(null, async (repo, client) => {
       await client.query(

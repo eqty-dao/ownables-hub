@@ -89,7 +89,7 @@ describe('HubStateRepository', () => {
       lastScannedTxIndex: 3,
       lastScannedLogIndex: 7,
     });
-    const cursor = await repo.getIndexerCursor('testnet', 'anchor');
+    const cursor = await repo.getIndexerCursor('testnet', 'anchor', '84532', '0xAnchor');
 
     expect(query).toHaveBeenNthCalledWith(
       1,
@@ -512,18 +512,18 @@ describe('HubStateRepository', () => {
       anchorContractAddress: '0xAnchor2',
       nextFromBlock: 101n,
     });
-    await repo.getIndexerCursor('testnet', 'anchor-public-events');
-    await repo.getIndexerCursor('mainnet', 'anchor-public-events');
+    await repo.getIndexerCursor('testnet', 'anchor-public-events', '84532', '0xAnchor1');
+    await repo.getIndexerCursor('mainnet', 'anchor-public-events', '8453', '0xAnchor2');
 
     expect(query).toHaveBeenNthCalledWith(
       3,
-      expect.stringContaining('WHERE slot_name = $1 AND cursor_name = $2'),
-      ['testnet', 'anchor-public-events'],
+      expect.stringContaining('WHERE slot_name = $1 AND cursor_name = $2 AND chain_id = $3'),
+      ['testnet', 'anchor-public-events', '84532', '0xAnchor1'],
     );
     expect(query).toHaveBeenNthCalledWith(
       4,
-      expect.stringContaining('WHERE slot_name = $1 AND cursor_name = $2'),
-      ['mainnet', 'anchor-public-events'],
+      expect.stringContaining('WHERE slot_name = $1 AND cursor_name = $2 AND chain_id = $3'),
+      ['mainnet', 'anchor-public-events', '8453', '0xAnchor2'],
     );
   });
 
@@ -569,7 +569,7 @@ describe('HubStateRepository', () => {
       lastScannedLogIndex: 2,
     });
 
-    const cursor = await repo.getIndexerCursor('testnet', 'anchor-public-events');
+    const cursor = await repo.getIndexerCursor('testnet', 'anchor-public-events', '84532', '0xAnchor');
     expect(cursor?.nextFromBlock).toBe(30n);
     expect(cursor?.lastScannedBlock).toBe(29n);
     expect(cursor?.lastScannedTxIndex).toBe(1);

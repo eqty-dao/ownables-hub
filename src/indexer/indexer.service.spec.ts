@@ -124,7 +124,12 @@ describe('IndexerService', () => {
       anchorStartBlock: 100n,
     });
 
-    expect(hubStateRepository.getIndexerCursor).toHaveBeenCalledWith('testnet', 'anchor-public-events');
+    expect(hubStateRepository.getIndexerCursor).toHaveBeenCalledWith(
+      'testnet',
+      'anchor-public-events',
+      '84532',
+      '0x1111111111111111111111111111111111111111',
+    );
     expect(hubStateRepository.withIndexerPersistenceTransaction).toHaveBeenCalledWith(
       expect.objectContaining({
         slotName: 'testnet',
@@ -171,6 +176,50 @@ describe('IndexerService', () => {
         timestamp: 42,
       },
     });
+  });
+
+  it('starts at the current anchor start block when only another anchor partition exists', async () => {
+    providerState.head = 40;
+    (hubStateRepository.getIndexerCursor as jest.Mock).mockResolvedValue({
+      slotName: 'testnet',
+      cursorName: 'anchor-public-events',
+      chainId: '84532',
+      anchorContractAddress: '0x00000000000000000000000000000000000000aa',
+      nextFromBlock: 26n,
+      lastScannedBlock: 25n,
+      lastScannedTxHash: '0xold',
+      lastScannedTxIndex: 0,
+      lastScannedLogIndex: 0,
+    });
+
+    await service.runSlot({
+      slotName: 'testnet',
+      chainId: '84532',
+      rpcUrl: 'https://base-sepolia-rpc',
+      anchorContractAddress: '0xe518BB784B8cB17e6F16e445A9275A16d61700b5',
+      anchorStartBlock: 35n,
+    });
+
+    expect(hubStateRepository.getIndexerCursor).toHaveBeenCalledWith(
+      'testnet',
+      'anchor-public-events',
+      '84532',
+      '0xe518BB784B8cB17e6F16e445A9275A16d61700b5',
+    );
+    const provider = (jest.requireMock('ethers').JsonRpcProvider as jest.Mock).mock.results.at(-1)?.value;
+    expect(provider.getLogs).toHaveBeenCalledWith({
+      address: '0xe518BB784B8cB17e6F16e445A9275A16d61700b5',
+      fromBlock: 35,
+      toBlock: 40,
+    });
+    expect(hubStateRepository.withIndexerPersistenceTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0xe518BB784B8cB17e6F16e445A9275A16d61700b5',
+        nextFromBlock: 41n,
+      }),
+    );
   });
 
   it('resumes from cursor next block and remains idempotent across reruns', async () => {
