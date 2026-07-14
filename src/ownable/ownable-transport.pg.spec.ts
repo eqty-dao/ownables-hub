@@ -1,24 +1,70 @@
 import { firstValueFrom } from 'rxjs';
 import { take, timeout } from 'rxjs/operators';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+import { Client } from 'pg';
 import { HubStateRepository } from '../persistence/repos/hub-state.repository.js';
 import { PostgresService } from '../persistence/postgres.service.js';
 import { OwnableTransportService } from './ownable-transport.service.js';
 
 const databaseUrl = process.env.DATABASE_URL;
+const repoRoot = path.resolve(__dirname, '../..');
+const migrateBin = path.join(repoRoot, 'node_modules/node-pg-migrate/bin/node-pg-migrate');
+const migrationsDir = path.join(repoRoot, 'migrations');
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
 
 describeWithDatabase('OwnableTransportService split-process public-event delivery', () => {
-  const config = {
-    getAppConfig: () => ({
-      databaseUrl,
-    }),
-  };
-
   async function resetConnections(...services: PostgresService[]) {
     await Promise.all(services.map((service) => service.onModuleDestroy()));
   }
 
+  function migrateSchema(schema: string) {
+    execFileSync(
+      process.execPath,
+      [
+        migrateBin,
+        'up',
+        '--migrations-dir',
+        migrationsDir,
+        '--schema',
+        schema,
+        '--create-schema',
+        '--migrations-schema',
+        schema,
+        '--create-migrations-schema',
+      ],
+      {
+        cwd: repoRoot,
+        env: { ...process.env, DATABASE_URL: databaseUrl },
+        stdio: 'pipe',
+      },
+    );
+  }
+
+  function databaseUrlForSchema(schema: string) {
+    const url = new URL(databaseUrl!);
+    url.searchParams.set('options', `-c search_path=${schema},public`);
+    return url.toString();
+  }
+
+  async function dropSchema(schema: string) {
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    try {
+      await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    } finally {
+      await client.end();
+    }
+  }
+
   it('delivers a separately indexed public event to an already-open subscriber without reconnect', async () => {
+    const schema = `ownable_transport_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    migrateSchema(schema);
+    const config = {
+      getAppConfig: () => ({
+        databaseUrl: databaseUrlForSchema(schema),
+      }),
+    };
     const listenerDb = new PostgresService(config as any);
     const publisherDb = new PostgresService(config as any);
     const publisherRepo = new HubStateRepository(publisherDb);
@@ -92,6 +138,7 @@ describeWithDatabase('OwnableTransportService split-process public-event deliver
     } finally {
       await Promise.all([listener.onModuleDestroy(), publisher.onModuleDestroy()]);
       await resetConnections(listenerDb, publisherDb);
+      await dropSchema(schema);
     }
   });
 });
