@@ -2,11 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Interface, JsonRpcProvider, Log } from 'ethers';
 import { ConfigService, IndexerSlotConfig } from '../common/config/config.service.js';
 import { HubStateRepository, type IndexerCursorState } from '../persistence/repos/hub-state.repository.js';
+import { OwnableTransportService } from '../ownable/ownable-transport.service.js';
 
 const ANCHOR_CURSOR_NAME = 'anchor-public-events';
+const MAX_LOG_BLOCK_RANGE = 2_000n;
 
 const ANCHOR_EVENT_ABI = [
-  'event Anchored(bytes32 indexed cidHash, string cid, address indexed owner)',
+  'event Anchored(bytes32 indexed key, bytes32 value, address indexed sender, uint64 timestamp)',
   'event PublicEvent(bytes32 indexed subjectId, address indexed source, string eventType, bytes data, uint64 timestamp)',
 ] as const;
 
@@ -39,6 +41,7 @@ export class IndexerService {
   constructor(
     private readonly configService: ConfigService,
     private readonly hubStateRepository: HubStateRepository,
+    private readonly ownableTransport: OwnableTransportService,
   ) {}
 
   async runAllSlots(): Promise<void> {
@@ -51,7 +54,12 @@ export class IndexerService {
   async runSlot(slot: IndexerSlotConfig): Promise<void> {
     const provider = new JsonRpcProvider(slot.rpcUrl);
     const head = await provider.getBlockNumber();
-    const cursor = await this.hubStateRepository.getIndexerCursor(slot.slotName, ANCHOR_CURSOR_NAME);
+    const cursor = await this.hubStateRepository.getIndexerCursor(
+      slot.slotName,
+      ANCHOR_CURSOR_NAME,
+      slot.chainId,
+      slot.anchorContractAddress,
+    );
 
     const fromBlock = this.resolveFromBlock(slot, cursor);
     const toBlock = BigInt(head);
@@ -60,11 +68,17 @@ export class IndexerService {
       return;
     }
 
-    const rawLogs = await provider.getLogs({
-      address: slot.anchorContractAddress,
-      fromBlock: Number(fromBlock),
-      toBlock: Number(toBlock),
-    });
+    const rawLogs: Log[] = [];
+    for (let windowFrom = fromBlock; windowFrom <= toBlock; windowFrom += MAX_LOG_BLOCK_RANGE) {
+      const windowTo = windowFrom + MAX_LOG_BLOCK_RANGE - 1n <= toBlock ? windowFrom + MAX_LOG_BLOCK_RANGE - 1n : toBlock;
+      rawLogs.push(
+        ...(await provider.getLogs({
+          address: slot.anchorContractAddress,
+          fromBlock: Number(windowFrom),
+          toBlock: Number(windowTo),
+        })),
+      );
+    }
 
     const normalized = this.normalizeLogs(rawLogs, slot);
     const anchorEvents = normalized.filter((event) => event.eventKind === 'anchor');
@@ -113,6 +127,24 @@ export class IndexerService {
         payloadJson: event.payloadJson,
       })),
     });
+    for (const event of publicEvents) {
+      if (!event.subjectId || !event.sourceAddress || !event.eventType || !event.dataHex) {
+        continue;
+      }
+      this.ownableTransport.publishPublicEvent({
+        subjectId: event.subjectId,
+        publicEvent: {
+          source: event.sourceAddress,
+          eventType: event.eventType,
+          data: event.dataHex,
+          blockNumber: Number(event.blockNumber),
+          transactionHash: event.transactionHash,
+          transactionIndex: event.transactionIndex,
+          logIndex: event.logIndex,
+          timestamp: event.eventTimestamp ? Number(event.eventTimestamp) : undefined,
+        },
+      });
+    }
 
     this.logger.log(
       `Slot ${slot.slotName}: indexed ${normalized.length} logs (${anchorEvents.length} anchor, ${publicEvents.length} public) from block ${fromBlock.toString()} to ${toBlock.toString()}`,
@@ -154,13 +186,14 @@ export class IndexerService {
         continue;
       }
 
-      const cid = this.asNullableString(parsed.args.cid);
-      const ownerAddress = this.asNullableString(parsed.args.owner)?.toLowerCase() ?? null;
+      const anchorKey = eventKind === 'anchor' ? this.asNullableString(parsed.args.key)?.toLowerCase() ?? null : null;
+      const anchorValue = eventKind === 'anchor' ? this.asNullableString(parsed.args.value)?.toLowerCase() ?? null : null;
+      const ownerAddress = eventKind === 'anchor' ? this.asNullableString(parsed.args.sender)?.toLowerCase() ?? null : null;
       const subjectId = eventKind === 'public' ? this.asNullableString(parsed.args.subjectId)?.toLowerCase() ?? null : null;
       const sourceAddress = eventKind === 'public' ? this.asNullableString(parsed.args.source)?.toLowerCase() ?? null : null;
       const eventType = eventKind === 'public' ? this.asNullableString(parsed.args.eventType) : null;
       const dataHex = eventKind === 'public' ? this.asNullableString(parsed.args.data)?.toLowerCase() ?? null : null;
-      const rawTimestamp = eventKind === 'public' ? parsed.args.timestamp : null;
+      const rawTimestamp = parsed.args.timestamp;
       const eventTimestamp =
         rawTimestamp === null || rawTimestamp === undefined
           ? null
@@ -179,7 +212,7 @@ export class IndexerService {
         transactionIndex: log.transactionIndex,
         logIndex: log.index,
         eventName: parsed.name,
-        cid,
+        cid: null,
         ownerAddress,
         subjectId,
         sourceAddress,
@@ -196,8 +229,10 @@ export class IndexerService {
                 timestamp: eventTimestamp?.toString() ?? null,
               }
             : {
-                cid,
+                key: anchorKey,
+                value: anchorValue,
                 ownerAddress,
+                timestamp: eventTimestamp?.toString() ?? null,
               },
       });
     }

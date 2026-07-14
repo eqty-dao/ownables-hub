@@ -152,7 +152,9 @@ CORS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173 \
 yarn start:dev
 ```
 
-The runtime targets Node 24 and ESM. For local browser integration, point the SDK at the Hub origin through `VITE_HUB` and optionally enable recipient discovery with `LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED=true`.
+The runtime targets Node 24 and ESM. `yarn start:dev` uses `scripts/start-dev.sh` to work around the current Nest watch-mode ESM entrypoint issue on Node 24 by watching the built `dist/main.js` output directly. For local browser integration, point the SDK at the Hub origin through `VITE_HUB` and optionally enable recipient discovery with `LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED=true`.
+
+You can also copy `.env.example` to `.env` for the local runtime.
 
 ## Required configuration (minimum)
 
@@ -164,7 +166,7 @@ Set these env vars for local runtime:
 
 Additional runtime configuration (feature-dependent):
 
-- `SIGNER_MNEMONIC`
+- `SIGNER_PRIVATE_KEY` or `SIGNER_MNEMONIC`
 - `HUB_NETWORK_PROFILE` (`testnet` default, or `mainnet`)
 - `TESTNET_*_RPC_URL` / `MAINNET_*_RPC_URL` overrides
 - `SIWE_DOMAIN`

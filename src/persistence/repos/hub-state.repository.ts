@@ -46,6 +46,52 @@ export interface IndexedWalletEvent {
   indexedAt: string;
 }
 
+export interface IndexedAnchorEvent {
+  id: string;
+  slotName: string;
+  chainId: string;
+  anchorContractAddress: string;
+  blockNumber: string;
+  blockHash: string;
+  transactionHash: string;
+  transactionIndex: number;
+  logIndex: number;
+  eventName: string;
+  cid: string | null;
+  ownableId: string | null;
+  ownerAddress: string | null;
+  payloadJson: unknown;
+  indexedAt: string;
+}
+
+export interface IndexedPublicEventRow {
+  id: string;
+  slotName: string;
+  chainId: string;
+  anchorContractAddress: string;
+  blockNumber: string;
+  blockHash: string;
+  transactionHash: string;
+  transactionIndex: number;
+  logIndex: number;
+  eventName: string;
+  cid: string | null;
+  ownableId: string | null;
+  subjectId: string | null;
+  sourceAddress: string | null;
+  eventType: string | null;
+  dataHex: string | null;
+  eventTimestamp: string | null;
+  payloadJson: unknown;
+  indexedAt: string;
+}
+
+export interface IndexedPublicEventCursor {
+  blockNumber: bigint;
+  transactionIndex: number;
+  logIndex: number;
+}
+
 export interface IndexerCursorState {
   slotName: 'testnet' | 'mainnet';
   cursorName: string;
@@ -232,7 +278,12 @@ export class HubStateRepository {
     return this.db.query<T>(text, values);
   }
 
-  async getIndexerCursor(slotName: 'testnet' | 'mainnet', cursorName: string): Promise<IndexerCursorState | null> {
+  async getIndexerCursor(
+    slotName: 'testnet' | 'mainnet',
+    cursorName: string,
+    chainId: string,
+    anchorContractAddress: string,
+  ): Promise<IndexerCursorState | null> {
     const result = await this.db.query<IndexerCursorState>(
       `SELECT
          slot_name AS "slotName",
@@ -245,8 +296,8 @@ export class HubStateRepository {
          last_scanned_tx_index AS "lastScannedTxIndex",
          last_scanned_log_index AS "lastScannedLogIndex"
        FROM indexer_cursors
-       WHERE slot_name = $1 AND cursor_name = $2`,
-      [slotName, cursorName],
+       WHERE slot_name = $1 AND cursor_name = $2 AND chain_id = $3 AND anchor_contract_address = LOWER($4)`,
+      [slotName, cursorName, chainId, anchorContractAddress],
     );
     const row = result.rows[0];
     if (!row) {
@@ -287,10 +338,8 @@ export class HubStateRepository {
          last_scanned_tx_hash,
          last_scanned_tx_index,
          last_scanned_log_index
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       ON CONFLICT (slot_name, cursor_name) DO UPDATE SET
-         chain_id = EXCLUDED.chain_id,
-         anchor_contract_address = EXCLUDED.anchor_contract_address,
+       ) VALUES ($1, $2, $3, LOWER($4), $5, $6, $7, $8, $9)
+       ON CONFLICT (slot_name, cursor_name, chain_id, anchor_contract_address) DO UPDATE SET
          next_from_block = EXCLUDED.next_from_block,
          last_scanned_block = EXCLUDED.last_scanned_block,
          last_scanned_tx_hash = EXCLUDED.last_scanned_tx_hash,
@@ -626,6 +675,149 @@ export class HubStateRepository {
        ) wallet_events
        ORDER BY "blockNumber"::numeric ASC, "transactionIndex" ASC, "logIndex" ASC`,
       [cid],
+    );
+
+    return result.rows;
+  }
+
+  async listIndexedAnchorEventsByPackageCid(packageCid: string): Promise<IndexedAnchorEvent[]> {
+    const result = await this.db.query<IndexedAnchorEvent>(
+      `SELECT
+         id,
+         slot_name AS "slotName",
+         chain_id AS "chainId",
+         anchor_contract_address AS "anchorContractAddress",
+         block_number::text AS "blockNumber",
+         block_hash AS "blockHash",
+         transaction_hash AS "transactionHash",
+         transaction_index AS "transactionIndex",
+         log_index AS "logIndex",
+         event_name AS "eventName",
+         package_cid AS cid,
+         ownable_id AS "ownableId",
+         owner_address AS "ownerAddress",
+         payload_json AS "payloadJson",
+         indexed_at::text AS "indexedAt"
+       FROM indexed_anchor_events
+       WHERE package_cid = $1
+       ORDER BY block_number ASC, transaction_index ASC, log_index ASC`,
+      [packageCid],
+    );
+
+    return result.rows;
+  }
+
+  async listIndexedAnchorEventsByAnchorKeys(anchorKeys: string[]): Promise<IndexedAnchorEvent[]> {
+    if (!anchorKeys.length) {
+      return [];
+    }
+
+    const normalizedAnchorKeys = anchorKeys.map((anchorKey) => anchorKey.toLowerCase());
+    const result = await this.db.query<IndexedAnchorEvent>(
+      `SELECT
+         id,
+         slot_name AS "slotName",
+         chain_id AS "chainId",
+         anchor_contract_address AS "anchorContractAddress",
+         block_number::text AS "blockNumber",
+         block_hash AS "blockHash",
+         transaction_hash AS "transactionHash",
+         transaction_index AS "transactionIndex",
+         log_index AS "logIndex",
+         event_name AS "eventName",
+         package_cid AS cid,
+         ownable_id AS "ownableId",
+         owner_address AS "ownerAddress",
+         payload_json AS "payloadJson",
+         indexed_at::text AS "indexedAt"
+       FROM indexed_anchor_events
+       WHERE LOWER(payload_json ->> 'key') = ANY($1::text[])
+       ORDER BY block_number ASC, transaction_index ASC, log_index ASC`,
+      [normalizedAnchorKeys],
+    );
+
+    return result.rows;
+  }
+
+  async listIndexedPublicEventsBySubjectId(subjectId: string): Promise<IndexedPublicEventRow[]> {
+    const result = await this.db.query<IndexedPublicEventRow>(
+      `SELECT
+         id,
+         slot_name AS "slotName",
+         chain_id AS "chainId",
+         anchor_contract_address AS "anchorContractAddress",
+         block_number::text AS "blockNumber",
+         block_hash AS "blockHash",
+         transaction_hash AS "transactionHash",
+         transaction_index AS "transactionIndex",
+         log_index AS "logIndex",
+         event_name AS "eventName",
+         package_cid AS cid,
+         ownable_id AS "ownableId",
+         subject_id AS "subjectId",
+         source_address AS "sourceAddress",
+         event_type AS "eventType",
+         data_hex AS "dataHex",
+         event_timestamp::text AS "eventTimestamp",
+         payload_json AS "payloadJson",
+         indexed_at::text AS "indexedAt"
+       FROM indexed_public_events
+       WHERE subject_id = LOWER($1)
+       ORDER BY block_number ASC, transaction_index ASC, log_index ASC`,
+      [subjectId],
+    );
+
+    return result.rows;
+  }
+
+  async listIndexedPublicEventsBySubjectIdsAfter(
+    subjectIds: string[],
+    fromBlock: bigint,
+    cursor?: IndexedPublicEventCursor | null,
+  ): Promise<IndexedPublicEventRow[]> {
+    if (!subjectIds.length) {
+      return [];
+    }
+
+    const normalizedSubjectIds = subjectIds.map((subjectId) => subjectId.toLowerCase());
+    const result = await this.db.query<IndexedPublicEventRow>(
+      `SELECT
+         id,
+         slot_name AS "slotName",
+         chain_id AS "chainId",
+         anchor_contract_address AS "anchorContractAddress",
+         block_number::text AS "blockNumber",
+         block_hash AS "blockHash",
+         transaction_hash AS "transactionHash",
+         transaction_index AS "transactionIndex",
+         log_index AS "logIndex",
+         event_name AS "eventName",
+         package_cid AS cid,
+         ownable_id AS "ownableId",
+         subject_id AS "subjectId",
+         source_address AS "sourceAddress",
+         event_type AS "eventType",
+         data_hex AS "dataHex",
+         event_timestamp::text AS "eventTimestamp",
+         payload_json AS "payloadJson",
+         indexed_at::text AS "indexedAt"
+       FROM indexed_public_events
+       WHERE subject_id = ANY($1::text[])
+         AND block_number >= $2::numeric
+         AND (
+           $3::numeric IS NULL
+           OR block_number > $3::numeric
+           OR (block_number = $3::numeric AND transaction_index > $4)
+           OR (block_number = $3::numeric AND transaction_index = $4 AND log_index > $5)
+         )
+       ORDER BY block_number ASC, transaction_index ASC, log_index ASC`,
+      [
+        normalizedSubjectIds,
+        fromBlock.toString(),
+        cursor ? cursor.blockNumber.toString() : null,
+        cursor?.transactionIndex ?? null,
+        cursor?.logIndex ?? null,
+      ],
     );
 
     return result.rows;

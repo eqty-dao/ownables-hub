@@ -2,10 +2,12 @@ import { ConfigService } from '../common/config/config.service.js';
 import { HubStateRepository } from '../persistence/repos/hub-state.repository.js';
 import { IndexerService } from './indexer.service.js';
 import { Interface } from 'ethers';
+import { OwnableTransportService } from '../ownable/ownable-transport.service.js';
 
 const providerState = {
   head: 0,
   logs: [] as any[],
+  getLogs: undefined as ((fromBlock: number, toBlock: number) => any[]) | undefined,
 };
 
 jest.mock('ethers', () => {
@@ -14,7 +16,9 @@ jest.mock('ethers', () => {
     ...actual,
     JsonRpcProvider: jest.fn().mockImplementation(() => ({
       getBlockNumber: jest.fn(async () => providerState.head),
-      getLogs: jest.fn(async () => providerState.logs),
+      getLogs: jest.fn(async ({ fromBlock, toBlock }: { fromBlock: number; toBlock: number }) =>
+        providerState.getLogs ? providerState.getLogs(fromBlock, toBlock) : providerState.logs,
+      ),
     })),
   };
 });
@@ -29,15 +33,21 @@ describe('IndexerService', () => {
     withIndexerPersistenceTransaction: jest.fn(),
   } as unknown as HubStateRepository;
 
+  const ownableTransport = {
+    publishPublicEvent: jest.fn(),
+  } as unknown as OwnableTransportService;
+
   let service: IndexerService;
 
   beforeEach(() => {
     providerState.head = 0;
     providerState.logs = [];
+    providerState.getLogs = undefined;
     (configService.getIndexerSlots as jest.Mock).mockReset();
     (hubStateRepository.getIndexerCursor as jest.Mock).mockReset();
     (hubStateRepository.withIndexerPersistenceTransaction as jest.Mock).mockReset();
-    service = new IndexerService(configService, hubStateRepository);
+    (ownableTransport.publishPublicEvent as jest.Mock).mockReset();
+    service = new IndexerService(configService, hubStateRepository, ownableTransport);
   });
 
   it('runs both slots in deterministic order', async () => {
@@ -67,13 +77,14 @@ describe('IndexerService', () => {
 
   it('persists anchor/public events and advances cursor from start block when no cursor exists', async () => {
     const iface = new Interface([
-      'event Anchored(bytes32 indexed cidHash, string cid, address indexed owner)',
+      'event Anchored(bytes32 indexed key, bytes32 value, address indexed sender, uint64 timestamp)',
       'event PublicEvent(bytes32 indexed subjectId, address indexed source, string eventType, bytes data, uint64 timestamp)',
     ]);
     const anchoredLog = iface.encodeEventLog(iface.getEvent('Anchored'), [
-      '0x' + '0'.repeat(64),
-      'cid-1',
+      '0x' + '2'.repeat(64),
+      '0x' + '3'.repeat(64),
       '0x00000000000000000000000000000000000000aa',
+      41n,
     ]);
     const publicLog = iface.encodeEventLog(iface.getEvent('PublicEvent'), [
       '0x' + '1'.repeat(64),
@@ -117,7 +128,12 @@ describe('IndexerService', () => {
       anchorStartBlock: 100n,
     });
 
-    expect(hubStateRepository.getIndexerCursor).toHaveBeenCalledWith('testnet', 'anchor-public-events');
+    expect(hubStateRepository.getIndexerCursor).toHaveBeenCalledWith(
+      'testnet',
+      'anchor-public-events',
+      '84532',
+      '0x1111111111111111111111111111111111111111',
+    );
     expect(hubStateRepository.withIndexerPersistenceTransaction).toHaveBeenCalledWith(
       expect.objectContaining({
         slotName: 'testnet',
@@ -133,6 +149,16 @@ describe('IndexerService', () => {
     expect(input.anchorEvents).toHaveLength(1);
     expect(input.publicEvents).toHaveLength(1);
     expect(input.anchorEvents[0].transactionIndex).toBe(1);
+    expect(input.anchorEvents[0]).toMatchObject({
+      cid: null,
+      ownerAddress: '0x00000000000000000000000000000000000000aa',
+      payloadJson: {
+        key: `0x${'2'.repeat(64)}`,
+        value: `0x${'3'.repeat(64)}`,
+        ownerAddress: '0x00000000000000000000000000000000000000aa',
+        timestamp: '41',
+      },
+    });
     expect(input.publicEvents[0].transactionIndex).toBe(0);
     expect(input.publicEvents[0]).toMatchObject({
       subjectId: `0x${'1'.repeat(64)}`,
@@ -141,6 +167,63 @@ describe('IndexerService', () => {
       dataHex: '0x12345678abcdef',
       eventTimestamp: 42n,
     });
+    expect(ownableTransport.publishPublicEvent).toHaveBeenCalledWith({
+      subjectId: `0x${'1'.repeat(64)}`,
+      publicEvent: {
+        source: '0x00000000000000000000000000000000000000bb',
+        eventType: 'transfer',
+        data: '0x12345678abcdef',
+        blockNumber: 101,
+        transactionHash: '0xt1',
+        transactionIndex: 0,
+        logIndex: 1,
+        timestamp: 42,
+      },
+    });
+  });
+
+  it('starts at the current anchor start block when only another anchor partition exists', async () => {
+    providerState.head = 40;
+    (hubStateRepository.getIndexerCursor as jest.Mock).mockResolvedValue({
+      slotName: 'testnet',
+      cursorName: 'anchor-public-events',
+      chainId: '84532',
+      anchorContractAddress: '0x00000000000000000000000000000000000000aa',
+      nextFromBlock: 26n,
+      lastScannedBlock: 25n,
+      lastScannedTxHash: '0xold',
+      lastScannedTxIndex: 0,
+      lastScannedLogIndex: 0,
+    });
+
+    await service.runSlot({
+      slotName: 'testnet',
+      chainId: '84532',
+      rpcUrl: 'https://base-sepolia-rpc',
+      anchorContractAddress: '0xe518BB784B8cB17e6F16e445A9275A16d61700b5',
+      anchorStartBlock: 35n,
+    });
+
+    expect(hubStateRepository.getIndexerCursor).toHaveBeenCalledWith(
+      'testnet',
+      'anchor-public-events',
+      '84532',
+      '0xe518BB784B8cB17e6F16e445A9275A16d61700b5',
+    );
+    const provider = (jest.requireMock('ethers').JsonRpcProvider as jest.Mock).mock.results.at(-1)?.value;
+    expect(provider.getLogs).toHaveBeenCalledWith({
+      address: '0xe518BB784B8cB17e6F16e445A9275A16d61700b5',
+      fromBlock: 35,
+      toBlock: 40,
+    });
+    expect(hubStateRepository.withIndexerPersistenceTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0xe518BB784B8cB17e6F16e445A9275A16d61700b5',
+        nextFromBlock: 41n,
+      }),
+    );
   });
 
   it('resumes from cursor next block and remains idempotent across reruns', async () => {
@@ -171,13 +254,14 @@ describe('IndexerService', () => {
 
   it('resumes within current head range and advances cursor from the resumed window', async () => {
     const iface = new Interface([
-      'event Anchored(bytes32 indexed cidHash, string cid, address indexed owner)',
+      'event Anchored(bytes32 indexed key, bytes32 value, address indexed sender, uint64 timestamp)',
       'event PublicEvent(bytes32 indexed subjectId, address indexed source, string eventType, bytes data, uint64 timestamp)',
     ]);
     const anchoredLog = iface.encodeEventLog(iface.getEvent('Anchored'), [
-      '0x' + '0'.repeat(64),
-      'cid-resume',
+      '0x' + '4'.repeat(64),
+      '0x' + '5'.repeat(64),
       '0x00000000000000000000000000000000000000aa',
+      99n,
     ]);
 
     providerState.head = 120;
@@ -224,6 +308,61 @@ describe('IndexerService', () => {
         lastScannedLogIndex: 3,
       }),
     );
+  });
+
+  it('bounds log requests to 2000 blocks while preserving combined ordering and cursor advancement', async () => {
+    const iface = new Interface([
+      'event PublicEvent(bytes32 indexed subjectId, address indexed source, string eventType, bytes data, uint64 timestamp)',
+    ]);
+    providerState.head = 4_205;
+    (hubStateRepository.getIndexerCursor as jest.Mock).mockResolvedValue(null);
+    providerState.getLogs = (_fromBlock, toBlock) => {
+      const encoded = iface.encodeEventLog(iface.getEvent('PublicEvent'), [
+        `0x${toBlock.toString(16).padStart(64, '0')}`,
+        '0x00000000000000000000000000000000000000bb',
+        'transfer',
+        '0x1234',
+        BigInt(toBlock),
+      ]);
+      return [
+        {
+          blockNumber: toBlock,
+          blockHash: `0xb${toBlock}`,
+          transactionHash: `0xt${toBlock}`,
+          transactionIndex: 0,
+          index: 0,
+          address: '0x1111111111111111111111111111111111111111',
+          topics: encoded.topics,
+          data: encoded.data,
+        },
+      ];
+    };
+
+    await service.runSlot({
+      slotName: 'testnet',
+      chainId: '84532',
+      rpcUrl: 'https://base-sepolia-rpc',
+      anchorContractAddress: '0x1111111111111111111111111111111111111111',
+      anchorStartBlock: 1_000n,
+    });
+
+    const provider = (jest.requireMock('ethers').JsonRpcProvider as jest.Mock).mock.results.at(-1)?.value;
+    expect(provider.getLogs.mock.calls).toEqual([
+      [{ address: '0x1111111111111111111111111111111111111111', fromBlock: 1_000, toBlock: 2_999 }],
+      [{ address: '0x1111111111111111111111111111111111111111', fromBlock: 3_000, toBlock: 4_205 }],
+    ]);
+    expect(hubStateRepository.withIndexerPersistenceTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nextFromBlock: 4_206n,
+        lastScannedBlock: 4_205n,
+        publicEvents: expect.arrayContaining([
+          expect.objectContaining({ blockNumber: 2_999n }),
+          expect.objectContaining({ blockNumber: 4_205n }),
+        ]),
+      }),
+    );
+    const input = (hubStateRepository.withIndexerPersistenceTransaction as jest.Mock).mock.calls[0][0];
+    expect(input.publicEvents.map((event: { blockNumber: bigint }) => event.blockNumber)).toEqual([2_999n, 4_205n]);
   });
 
   it('advances cursor across successive runs/windows', async () => {

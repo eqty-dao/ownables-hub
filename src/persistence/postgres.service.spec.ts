@@ -6,6 +6,7 @@ import { PostgresService } from './postgres.service.js';
 const queryMock = jest.fn();
 const connectMock = jest.fn();
 const endMock = jest.fn();
+const releaseMock = jest.fn();
 
 class MockPool extends EventEmitter {
   query = queryMock;
@@ -28,6 +29,7 @@ describe('PostgresService', () => {
     queryMock.mockReset();
     connectMock.mockReset();
     endMock.mockReset();
+    releaseMock.mockReset();
     jest.restoreAllMocks();
   });
 
@@ -57,5 +59,45 @@ describe('PostgresService', () => {
 
     await expect(service.query('SELECT 1')).rejects.toThrow('terminating connection due to administrator command');
     await expect(service.query('SELECT 1')).resolves.toEqual({ rows: [{ '?column?': 1 }] });
+  });
+
+  it('bridges LISTEN notifications through a dedicated client and cleans up on unsubscribe', async () => {
+    const listenerClient = new EventEmitter() as EventEmitter & {
+      query: typeof queryMock;
+      release: typeof releaseMock;
+    };
+    listenerClient.query = jest.fn().mockResolvedValue({ rows: [] });
+    listenerClient.release = releaseMock;
+    connectMock.mockResolvedValue(listenerClient);
+
+    const service = new PostgresService(config);
+    const received: string[] = [];
+    const stop = await service.listen('ownables_public_events', (payload) => received.push(payload));
+
+    expect(listenerClient.query).toHaveBeenCalledWith('LISTEN ownables_public_events');
+
+    listenerClient.emit('notification', {
+      channel: 'ownables_public_events',
+      payload: '{"ok":true}',
+    });
+    listenerClient.emit('notification', {
+      channel: 'ignored_channel',
+      payload: '{"ignored":true}',
+    });
+
+    expect(received).toEqual(['{"ok":true}']);
+
+    await stop();
+
+    expect(listenerClient.query).toHaveBeenCalledWith('UNLISTEN ownables_public_events');
+    expect(releaseMock).toHaveBeenCalled();
+  });
+
+  it('publishes NOTIFY payloads through pg_notify', async () => {
+    const service = new PostgresService(config);
+
+    await service.notify('ownables_public_events', '{"ok":true}');
+
+    expect(queryMock).toHaveBeenCalledWith('SELECT pg_notify($1, $2)', ['ownables_public_events', '{"ok":true}']);
   });
 });

@@ -89,7 +89,7 @@ describe('HubStateRepository', () => {
       lastScannedTxIndex: 3,
       lastScannedLogIndex: 7,
     });
-    const cursor = await repo.getIndexerCursor('testnet', 'anchor');
+    const cursor = await repo.getIndexerCursor('testnet', 'anchor', '84532', '0xAnchor');
 
     expect(query).toHaveBeenNthCalledWith(
       1,
@@ -248,6 +248,133 @@ describe('HubStateRepository', () => {
     expect(query).toHaveBeenCalledWith(expect.stringContaining('ORDER BY "blockNumber"::numeric ASC, "transactionIndex" ASC, "logIndex" ASC'), ['cid-abc']);
   });
 
+  it('queries indexed anchor events by anchor key in replay order', async () => {
+    query.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'anchor-1',
+          transactionHash: '0xaaa',
+          blockNumber: '10',
+          transactionIndex: 1,
+          logIndex: 2,
+          ownerAddress: '0xowner',
+        },
+      ],
+    });
+
+    const rows = await repo.listIndexedAnchorEventsByAnchorKeys([`0x${'7'.repeat(64)}`]);
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: 'anchor-1',
+        transactionHash: '0xaaa',
+        blockNumber: '10',
+        transactionIndex: 1,
+        logIndex: 2,
+        ownerAddress: '0xowner',
+      }),
+    ]);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("LOWER(payload_json ->> 'key') = ANY($1::text[])"),
+      [[`0x${'7'.repeat(64)}`]],
+    );
+  });
+
+  it('queries indexed public events by ownable subject id in replay order', async () => {
+    query.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'public-1',
+          subjectId: `0x${'6'.repeat(64)}`,
+          transactionHash: '0xbbb',
+          blockNumber: '11',
+          transactionIndex: 0,
+          logIndex: 3,
+          sourceAddress: '0x00000000000000000000000000000000000000bb',
+          eventType: 'transfer',
+          dataHex: '0x01',
+          eventTimestamp: '42',
+        },
+      ],
+    });
+
+    const rows = await repo.listIndexedPublicEventsBySubjectId(`0x${'6'.repeat(64)}`);
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: 'public-1',
+        subjectId: `0x${'6'.repeat(64)}`,
+        transactionHash: '0xbbb',
+        blockNumber: '11',
+        transactionIndex: 0,
+        logIndex: 3,
+        sourceAddress: '0x00000000000000000000000000000000000000bb',
+        eventType: 'transfer',
+        dataHex: '0x01',
+        eventTimestamp: '42',
+      }),
+    ]);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('WHERE subject_id = LOWER($1)'),
+      [`0x${'6'.repeat(64)}`],
+    );
+  });
+
+  it('queries incremental indexed public events across watched subject ids after the replay cursor', async () => {
+    const watchedSubjectId = `0x${'7'.repeat(64)}`;
+    query.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 'public-2',
+          subjectId: watchedSubjectId,
+          transactionHash: '0xccc',
+          blockNumber: '12',
+          transactionIndex: 1,
+          logIndex: 0,
+          sourceAddress: '0x00000000000000000000000000000000000000cc',
+          eventType: 'mint',
+          dataHex: '0x02',
+          eventTimestamp: '43',
+        },
+      ],
+    });
+
+    const rows = await repo.listIndexedPublicEventsBySubjectIdsAfter(
+      [watchedSubjectId.toUpperCase(), `0x${'8'.repeat(64)}`],
+      11n,
+      { blockNumber: 11n, transactionIndex: 0, logIndex: 5 },
+    );
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: 'public-2',
+        subjectId: watchedSubjectId,
+        transactionHash: '0xccc',
+        blockNumber: '12',
+        transactionIndex: 1,
+        logIndex: 0,
+      }),
+    ]);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('WHERE subject_id = ANY($1::text[])'),
+      [[watchedSubjectId, `0x${'8'.repeat(64)}`], '11', '11', 0, 5],
+    );
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('block_number = $3::numeric AND transaction_index = $4 AND log_index > $5'), [
+      [watchedSubjectId, `0x${'8'.repeat(64)}`],
+      '11',
+      '11',
+      0,
+      5,
+    ]);
+  });
+
+  it('skips the incremental replay query when no watched subject ids are provided', async () => {
+    const rows = await repo.listIndexedPublicEventsBySubjectIdsAfter([], 11n, null);
+
+    expect(rows).toEqual([]);
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it('resolves public events by ownable_records subject linkage when indexed before upload', async () => {
     query.mockResolvedValueOnce({ rows: [] });
 
@@ -385,18 +512,18 @@ describe('HubStateRepository', () => {
       anchorContractAddress: '0xAnchor2',
       nextFromBlock: 101n,
     });
-    await repo.getIndexerCursor('testnet', 'anchor-public-events');
-    await repo.getIndexerCursor('mainnet', 'anchor-public-events');
+    await repo.getIndexerCursor('testnet', 'anchor-public-events', '84532', '0xAnchor1');
+    await repo.getIndexerCursor('mainnet', 'anchor-public-events', '8453', '0xAnchor2');
 
     expect(query).toHaveBeenNthCalledWith(
       3,
-      expect.stringContaining('WHERE slot_name = $1 AND cursor_name = $2'),
-      ['testnet', 'anchor-public-events'],
+      expect.stringContaining('WHERE slot_name = $1 AND cursor_name = $2 AND chain_id = $3'),
+      ['testnet', 'anchor-public-events', '84532', '0xAnchor1'],
     );
     expect(query).toHaveBeenNthCalledWith(
       4,
-      expect.stringContaining('WHERE slot_name = $1 AND cursor_name = $2'),
-      ['mainnet', 'anchor-public-events'],
+      expect.stringContaining('WHERE slot_name = $1 AND cursor_name = $2 AND chain_id = $3'),
+      ['mainnet', 'anchor-public-events', '8453', '0xAnchor2'],
     );
   });
 
@@ -442,7 +569,7 @@ describe('HubStateRepository', () => {
       lastScannedLogIndex: 2,
     });
 
-    const cursor = await repo.getIndexerCursor('testnet', 'anchor-public-events');
+    const cursor = await repo.getIndexerCursor('testnet', 'anchor-public-events', '84532', '0xAnchor');
     expect(cursor?.nextFromBlock).toBe(30n);
     expect(cursor?.lastScannedBlock).toBe(29n);
     expect(cursor?.lastScannedTxIndex).toBe(1);

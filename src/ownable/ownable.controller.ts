@@ -1,4 +1,4 @@
-import { Controller, Get, Header, Query, Post, Req, Res, UseGuards, UseInterceptors, StreamableFile } from '@nestjs/common';
+import { Controller, Get, Header, MessageEvent, Post, Query, Req, Res, Sse, StreamableFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiBody, ApiProperty, ApiConsumes, ApiProduces } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { OwnableService } from './ownable.service.js';
@@ -6,6 +6,7 @@ import { Signer } from '../common/http-signature/signer.js';
 import { AuthError, UserError } from '../interfaces/error.js';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { SIWEGuard } from '../common/siwe/siwe.guard.js';
+import { Observable } from 'rxjs';
 
 interface SignerIdentity {
   address?: string;
@@ -61,13 +62,13 @@ export class OwnableController {
     return this.uploadOwnable(req, res, signer);
   }
 
-  @Get(':cid/download')
+  @Get(':id/bundle')
   @Header('Content-type', 'application/zip')
   @ApiProduces('application/zip')
   async download(@Req() req: Request, @Res({ passthrough: true }) res: Response): Promise<StreamableFile | Response> {
     try {
-      const cid = String(req.params.cid ?? '');
-      return await this.ownableService.downloadOwnable(cid);
+      const id = String(req.params.id ?? '');
+      return await this.ownableService.downloadOwnable(id);
     } catch (err) {
       return this.errorResponse(res, err);
     }
@@ -85,19 +86,23 @@ export class OwnableController {
     }
   }
 
-  @Get('claim')
-  @Header('Content-type', 'application/zip')
-  @ApiProduces('application/zip')
-  async claim(@Query('cid') cid: string, @Res({ passthrough: true }) res: Response): Promise<StreamableFile | Response> {
-    return this.download({ params: { cid } } as unknown as Request, res);
+  @Get(':id/verification')
+  async verification(@Req() req: Request, @Res() res: Response): Promise<Response> {
+    try {
+      const id = String(req.params.id ?? '');
+      const verification = await this.ownableService.getOwnableVerification(id);
+      return res.status(200).json(verification);
+    } catch (err) {
+      return this.errorResponse(res, err);
+    }
   }
 
-  @Get(':cid/events')
-  async events(@Req() req: Request, @Res() res: Response): Promise<Response> {
+  @Get(':id/public-events')
+  async publicEvents(@Req() req: Request, @Res() res: Response): Promise<Response> {
     try {
-      const cid = String(req.params.cid ?? '');
-      const events = await this.ownableService.getOwnableEvents(cid);
-      return res.status(200).json({ cid, events });
+      const id = String(req.params.id ?? '');
+      const publicEvents = await this.ownableService.getOwnablePublicEvents(id);
+      return res.status(200).json(publicEvents);
     } catch (err) {
       return this.errorResponse(res, err);
     }
@@ -113,6 +118,19 @@ export class OwnableController {
     }
   }
 
+  @Sse('public-events/stream')
+  async publicEventsStream(
+    @Query('id') ownableIds: string[] | string | undefined,
+    @Query('from') from: string | undefined,
+  ): Promise<Observable<MessageEvent>> {
+    return await this.ownableService.streamOwnablePublicEvents(ownableIds, from);
+  }
+
+  @Sse('available/stream')
+  availableStream(@Query('owner') owner: string): Observable<MessageEvent> {
+    return this.ownableService.streamAvailableOwnables(owner);
+  }
+
   private errorResponse(res: Response, err: any) {
     if (err instanceof AuthError) return res.status(403).json({ code: 'AUTH_ERROR', message: err.message });
     if (err instanceof UserError && err.message === 'RECIPIENT_DISCOVERY_DISABLED') return res.status(404).send('Not Found');
@@ -125,11 +143,12 @@ export class OwnableController {
     return res.status(500).send('Unexpected error');
   }
 
-  @Get('proof')
+  @Get(':id/unlock-proof')
   @UseGuards(SIWEGuard)
-  async getUnlockProof(@Query('cid') cid: string, @Signer() signer?: SignerIdentity, @Res() res?: Response) {
+  async getUnlockProof(@Req() req: Request, @Signer() signer?: SignerIdentity, @Res() res?: Response) {
     try {
-      const unlockProof = await this.ownableService.getUnlockProof(cid, signer);
+      const id = String(req.params.id ?? '');
+      const unlockProof = await this.ownableService.getUnlockProof(id, signer);
       if (res) return res.status(200).json({ unlockProof });
       return { unlockProof };
     } catch (e) {
@@ -165,15 +184,6 @@ export class OwnableController {
   async GetAvailableNftChains() {
     try {
       return await this.ownableService.getAvailableNftChains();
-    } catch (e) {
-      return { error: `${e}` };
-    }
-  }
-
-  @Get('cid')
-  async getOwnableCidFromNFT(@Query('network') network: string, @Query('address') address: string, @Query('id') id: string) {
-    try {
-      return await this.ownableService.getOwnableCidFromNFT({ network, address, id });
     } catch (e) {
       return { error: `${e}` };
     }
