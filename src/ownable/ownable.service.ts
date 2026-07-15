@@ -519,10 +519,13 @@ export class OwnableService {
     anchors: Array<{ key: { hex: string }; value: { hex: string } }>,
     expectedOwner?: string,
   ): AnchorValidationResult {
-    const indexedRecords = anchorEvents
+    return this.replay.validateAnchors(anchors, this.buildIndexedAnchorRecords(anchorEvents, expectedOwner));
+  }
+
+  private buildIndexedAnchorRecords(anchorEvents: IndexedAnchorEvent[], expectedOwner?: string): IndexedAnchorRecord[] {
+    return anchorEvents
       .map((row) => this.toIndexedAnchorRecord(row, expectedOwner))
       .filter((record): record is IndexedAnchorRecord => Boolean(record));
-    return this.replay.validateAnchors(anchors, indexedRecords);
   }
 
   private sanitizeIgnoredPublicEvents(ignoredPublicEvents: ReplayIgnoredPublicEvent[]) {
@@ -609,6 +612,10 @@ export class OwnableService {
     const indexedAnchorEvents = await this.hubState.listIndexedAnchorEventsByAnchorKeys(
       anchorPairs.map(({ key }) => key.hex),
     );
+    const indexedAnchorRecords = this.buildIndexedAnchorRecords(
+      indexedAnchorEvents,
+      chain.events.at(-1)?.signerAddress?.toLowerCase(),
+    );
     const indexedPublicRows = await this.hubState.listIndexedPublicEventsBySubjectId(
       this.publicEventSubjectId(chain.id),
     );
@@ -660,7 +667,7 @@ export class OwnableService {
       packageAssetIO,
     );
     try {
-      const anchorVerification = await eventChains.verify(chain as any);
+      const anchorVerification = await eventChains.verify(chain as any, { indexedRecords: indexedAnchorRecords });
       await coreOwnables.initWorker(chain.id, packageCid);
       const privateStateDump = await coreOwnables.apply(chain as any, []);
 

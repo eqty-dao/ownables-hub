@@ -74,10 +74,12 @@ jest.mock('@ownables/core', () => {
   class MockCoreEventChainService {
     constructor(
       private readonly _stateStore: any,
-      private readonly anchorProvider: any,
+      private readonly _anchorProvider: any,
+      private readonly anchorValidation?: { validateAgainstIndexedRecords: (anchors: any[], records: any[]) => any },
     ) {}
-    async verify(chain: any) {
-      return this.anchorProvider.verifyAnchors(...(chain.anchorMap ?? []));
+    async verify(chain: any, anchorEvidence?: { indexedRecords: any[] }) {
+      if (!anchorEvidence) throw new Error('AnchorValidationService source is not configured');
+      return this.anchorValidation?.validateAgainstIndexedRecords(chain.anchorMap ?? [], anchorEvidence.indexedRecords);
     }
   }
 
@@ -336,7 +338,11 @@ describe('OwnableService', () => {
             applied,
           ),
         createRuntime: jest.fn((stateStore, anchorProvider) => ({
-          eventChains: new (jest.requireMock('@ownables/core').EventChainService)(stateStore, anchorProvider),
+          eventChains: new (jest.requireMock('@ownables/core').EventChainService)(
+            stateStore,
+            anchorProvider,
+            new AnchorValidationService(),
+          ),
           ownables: new (jest.requireMock('@ownables/core').OwnableService)(),
         })),
       } as any,
@@ -514,7 +520,7 @@ describe('OwnableService', () => {
     ]);
   };
 
-  it('accepts upload without SIWE signer ownership gating', async () => {
+  it('accepts upload by passing indexed anchor evidence through EventChainService verification', async () => {
     const { service, storage, hubState, nft } = await buildService();
     const chain = await createChain();
     const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
