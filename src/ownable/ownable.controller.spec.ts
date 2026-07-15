@@ -11,12 +11,10 @@ import { of } from 'rxjs';
 
 jest.mock('eqty-core', () => require('../test-mocks/eqty-core.ts'));
 jest.mock('@ownables/core', () => ({
-  calculateOwnablePackageCid: jest.fn(),
   evaluateReplayFreshness: jest.fn(),
   OwnableService: class {},
   EventChainService: class {},
   AnchorValidationService: class {},
-  OwnablePackageCidService: class {},
   PublicEventReplayService: class {},
 }));
 jest.mock('@ownables/platform-node', () => ({

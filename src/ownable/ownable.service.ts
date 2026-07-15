@@ -1,6 +1,5 @@
 import { Injectable, MessageEvent, StreamableFile } from '@nestjs/common';
 import {
-  OwnablePackageCidService,
   type AnchorValidationResult,
   type IndexedAnchorRecord,
   type IndexedPublicEvent,
@@ -9,6 +8,7 @@ import {
   type TypedPackage,
   type AnchorProvider,
 } from '@ownables/core';
+import { calculateOwnablePackageCid, type OwnablePackageCidEntry } from '@ownables/core/utils';
 import { NodePackageAssetIO } from '@ownables/platform-node';
 import { ConfigService, RuntimeNetworkProfile } from '../common/config/config.service.js';
 import { resolveCaip2Reference } from '../common/config/evm-network.util.js';
@@ -249,7 +249,6 @@ export class OwnableService {
     private readonly storage: ArchiveStorageService,
     private readonly hubState: HubStateRepository,
     private readonly ownableTransport: OwnableTransportService,
-    private readonly packageCid: OwnablePackageCidService,
     private readonly replay: OwnableReplayService,
   ) {
     const mnemonic = this.config.getAuthoritySignerMnemonic();
@@ -820,9 +819,11 @@ export class OwnableService {
   }
 
   private async getCid(files: Map<string, Buffer>): Promise<string> {
-    return this.packageCid.calculate(
-      Array.from(files.entries()).map(([filename, content]) => ({ path: filename, content })),
-    );
+    const entries: OwnablePackageCidEntry[] = Array.from(files.entries()).map(([filename, content]) => ({
+      path: filename,
+      content,
+    }));
+    return calculateOwnablePackageCid(entries);
   }
 
   public async getUnlockProof(ownableId: string, signer?: SignerIdentity): Promise<string> {

@@ -7,7 +7,6 @@ import { Event, EventChain } from '../test-mocks/eqty-core.js';
 import { OwnableService } from './ownable.service.js';
 import {
   AnchorValidationService,
-  OwnablePackageCidService,
   PublicEventReplayService,
   OwnableService as CoreOwnableService,
 } from '@ownables/core';
@@ -23,6 +22,13 @@ let mockReplayFailure: Error | null;
 const mockClearRpc = jest.fn();
 
 jest.mock('eqty-core', () => require('../test-mocks/eqty-core.ts'));
+jest.mock('@ownables/core/utils', () => ({
+  calculateOwnablePackageCid: (entries: Array<{ path: string; content?: Uint8Array | Buffer }>) =>
+    `cid-${entries
+      .map((entry) => `${entry.path}:${Buffer.from(entry.content ?? []).toString('hex')}`)
+      .sort()
+      .join('-')}`,
+}));
 jest.mock('@ownables/core', () => {
   const validateAnchorsAgainstIndexedRecords = (
     anchors: Array<{ key: { hex: string }; value: { hex: string } }>,
@@ -141,14 +147,6 @@ jest.mock('@ownables/core', () => {
   }
 
   return {
-    calculateOwnablePackageCid: (entries: Array<{ path: string; content?: Uint8Array | Buffer }>) =>
-      `cid-${entries
-        .map((entry) => {
-          const content = Buffer.from(entry.content ?? []).toString('hex');
-          return `${entry.path}:${content}`;
-        })
-        .sort()
-        .join('-')}`,
     evaluateReplayFreshness: (events: any[], appliedReplayKeys: string[]) => {
       const keys = events.map((event) => `${event.transactionHash}:${event.logIndex}`);
       const missingReplayKeys = keys.filter((key) => !appliedReplayKeys.includes(key));
@@ -159,14 +157,6 @@ jest.mock('@ownables/core', () => {
     AnchorValidationService: class {
       validateAgainstIndexedRecords(anchors: any[], records: any[]) {
         return validateAnchorsAgainstIndexedRecords(anchors, records);
-      }
-    },
-    OwnablePackageCidService: class {
-      calculate(entries: Array<{ path: string; content?: Uint8Array | Buffer }>) {
-        return `cid-${entries
-          .map((entry) => `${entry.path}:${Buffer.from(entry.content ?? []).toString('hex')}`)
-          .sort()
-          .join('-')}`;
       }
     },
     PublicEventReplayService: class {
@@ -335,7 +325,6 @@ describe('OwnableService', () => {
       storage as any,
       hubState as any,
       ownableTransport as any,
-      new OwnablePackageCidService(),
       {
         validateAnchors: (anchors: any[], records: any[]) =>
           new AnchorValidationService().validateAgainstIndexedRecords(anchors, records),

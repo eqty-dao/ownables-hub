@@ -1,16 +1,17 @@
-import { AnchorValidationService, OwnablePackageCidService, PublicEventReplayService } from '@ownables/core';
+import { AnchorValidationService, PublicEventReplayService } from '@ownables/core';
+import { calculateOwnablePackageCid } from '@ownables/core/utils';
 import { NodeRuntimeRpcProvider, NodeRuntimeSourceProvider } from '@ownables/platform-node';
 import { Event, EventChain } from 'eqty-core';
 import { ethers } from 'ethers';
 
 async function main() {
-  const cid = await new OwnablePackageCidService().calculate([
+  const cid = await calculateOwnablePackageCid([
     { path: 'package.json', content: Buffer.from('{"name":"compat"}') },
     { path: 'index.html', content: Buffer.from('<h1>compat</h1>') },
   ]);
 
   if (typeof cid !== 'string' || cid.length === 0) {
-    throw new Error('Failed to compute CID from @ownables/core package root import');
+    throw new Error('Failed to compute CID from @ownables/core/utils import');
   }
 
   const services = [
