@@ -1,4 +1,6 @@
-import { calculateOwnablePackageCid } from '@ownables/core';
+import { AnchorValidationService, PublicEventReplayService } from '@ownables/core';
+import { calculateOwnablePackageCid } from '@ownables/core/utils';
+import { NodeRuntimeRpcProvider, NodeRuntimeSourceProvider } from '@ownables/platform-node';
 import { Event, EventChain } from 'eqty-core';
 import { ethers } from 'ethers';
 
@@ -9,8 +11,16 @@ async function main() {
   ]);
 
   if (typeof cid !== 'string' || cid.length === 0) {
-    throw new Error('Failed to compute CID from @ownables/core package root import');
+    throw new Error('Failed to compute CID from @ownables/core/utils import');
   }
+
+  const services = [
+    new AnchorValidationService(),
+    new PublicEventReplayService(),
+    new NodeRuntimeSourceProvider(),
+    new NodeRuntimeRpcProvider(),
+  ];
+  if (services.some((service) => typeof service !== 'object')) throw new Error('Failed to construct service API');
 
   const wallet = ethers.Wallet.createRandom();
   const chain = EventChain.create(wallet.address, 84532);

@@ -63,6 +63,13 @@ yarn install
 
 Built with [NestJS](https://nestjs.com/).
 
+### Ownables service API migration
+
+The Hub consumes the breaking class-based Ownables API through Nest injection. Package CID calculation,
+anchor validation, and public-event replay are injected service instances; the per-archive runtime graph is
+created by `OwnableReplayService`. Legacy root function imports and positional `OwnableService` construction
+are intentionally unsupported.
+
 ## Authentication (SIWE)
 
 Protected hub routes use SIWE-authenticated request context.

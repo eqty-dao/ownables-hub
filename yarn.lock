@@ -2019,16 +2019,16 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@ownables/core@npm:0.9.0, @ownables/core@npm:^0.9.0":
+"@ownables/core@file:/tmp/eqty-class-based-service-boundaries/ownables-js-843e957/ownables-core-0.9.0.tgz::locator=%40ownables%2Fhub%40workspace%3A.":
   version: 0.9.0
-  resolution: "@ownables/core@npm:0.9.0"
+  resolution: "@ownables/core@file:/tmp/eqty-class-based-service-boundaries/ownables-js-843e957/ownables-core-0.9.0.tgz#/tmp/eqty-class-based-service-boundaries/ownables-js-843e957/ownables-core-0.9.0.tgz::hash=56526e&locator=%40ownables%2Fhub%40workspace%3A."
   dependencies:
     blockstore-core: "npm:^6.1.2"
     cbor-x: "npm:^1.6.0"
     eqty-core: "npm:^1.1.1"
     ipfs-unixfs-importer: "npm:^16.1.4"
     jszip: "npm:^3.10.1"
-  checksum: 10c0/3071c1791a4f59531304817c76ed974995fd34eef5324d6663c079708ca53208b8bd47277d66f0d99cd3033d7294e951208cde685b97b2906c69fb8f4e603a6b
+  checksum: 10c0/1b2ec3a81650ec6e59f24c8531f047819d25ff4a6a3086fa98ff1ddeed931b19595be68282b352dd733de4c1d49443b798e0404fd5e3b8975c97cf6d153de031
   languageName: node
   linkType: hard
 
@@ -2045,8 +2045,8 @@ __metadata:
     "@nestjs/schematics": "npm:^11.1.0"
     "@nestjs/swagger": "npm:^11.4.4"
     "@nestjs/testing": "npm:^11.1.24"
-    "@ownables/core": "npm:^0.9.0"
-    "@ownables/platform-node": "npm:^0.9.0"
+    "@ownables/core": "file:/tmp/eqty-class-based-service-boundaries/ownables-js-843e957/ownables-core-0.9.0.tgz"
+    "@ownables/platform-node": "file:/tmp/eqty-class-based-service-boundaries/ownables-js-843e957/ownables-platform-node-0.9.0.tgz"
     "@semantic-release/commit-analyzer": "npm:^13.0.1"
     "@semantic-release/github": "npm:^12.0.8"
     "@semantic-release/release-notes-generator": "npm:^14.1.1"
@@ -2085,9 +2085,9 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@ownables/platform-node@npm:^0.9.0":
+"@ownables/platform-node@file:/tmp/eqty-class-based-service-boundaries/ownables-js-843e957/ownables-platform-node-0.9.0.tgz::locator=%40ownables%2Fhub%40workspace%3A.":
   version: 0.9.0
-  resolution: "@ownables/platform-node@npm:0.9.0"
+  resolution: "@ownables/platform-node@file:/tmp/eqty-class-based-service-boundaries/ownables-js-843e957/ownables-platform-node-0.9.0.tgz#/tmp/eqty-class-based-service-boundaries/ownables-js-843e957/ownables-platform-node-0.9.0.tgz::hash=a3e121&locator=%40ownables%2Fhub%40workspace%3A."
   dependencies:
     "@babel/core": "npm:^7.28.4"
     "@ownables/core": "npm:0.9.0"
@@ -2095,7 +2095,7 @@ __metadata:
     babel-plugin-remove-import-export: "npm:^1.1.1"
     cbor-x: "npm:^1.6.0"
     jszip: "npm:^3.10.1"
-  checksum: 10c0/b6e2b2341e0b15f1809e45cddf138ddcc02bc39c0e859b2f7190dd42034983dc11b6c827e3c9134809b6f18e64ab675cb4e489716855c6d390e2456767476370
+  checksum: 10c0/0f5e7a481d1dd77df47f4674fcbf1a570b69cacce0253672b72e6a1bfa6b3cc65372e332c2c6c53c42eef8bac3cba9af78c61fba7c3b4cbef0e443f9b369e9b8
   languageName: node
   linkType: hard
 

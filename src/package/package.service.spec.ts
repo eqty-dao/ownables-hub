@@ -3,7 +3,7 @@ import { PackageService } from './package.service.js';
 import JSZip from 'jszip';
 import { ArchiveStorageService } from '../storage/archive-storage.service.js';
 
-jest.mock('@ownables/core', () => ({
+jest.mock('@ownables/core/utils', () => ({
   calculateOwnablePackageCid: (entries: Array<{ path: string; content: Buffer }>) =>
     `cid-${entries.map((entry) => entry.path).sort().join('-')}`,
 }));
@@ -30,7 +30,11 @@ describe('PackageService', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
-      providers: [PackageService, { provide: JSZip, useValue: zip }, { provide: ArchiveStorageService, useValue: storage }],
+      providers: [
+        PackageService,
+        { provide: JSZip, useValue: zip },
+        { provide: ArchiveStorageService, useValue: storage },
+      ],
     }).compile();
     await module.init();
 
