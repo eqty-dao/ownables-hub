@@ -87,7 +87,7 @@ describe('OwnableReplayService', () => {
     const first = service.createRuntime(stateStore as any, anchorProvider as any, packages as any);
     const second = service.createRuntime(stateStore as any, anchorProvider as any, packages as any);
 
-    expect(first).not.toEqual(second);
+    expect(first).not.toBe(second);
     expect(mockRuntimeSources).toHaveLength(2);
     expect(mockRuntimeRpcs).toHaveLength(2);
     expect(mockRuntimeSources[0]).not.toBe(mockRuntimeSources[1]);
