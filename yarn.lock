@@ -2032,19 +2032,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@ownables/core@npm:0.9.0":
-  version: 0.9.0
-  resolution: "@ownables/core@npm:0.9.0"
-  dependencies:
-    blockstore-core: "npm:^6.1.2"
-    cbor-x: "npm:^1.6.0"
-    eqty-core: "npm:^1.1.1"
-    ipfs-unixfs-importer: "npm:^16.1.4"
-    jszip: "npm:^3.10.1"
-  checksum: 10c0/3071c1791a4f59531304817c76ed974995fd34eef5324d6663c079708ca53208b8bd47277d66f0d99cd3033d7294e951208cde685b97b2906c69fb8f4e603a6b
-  languageName: node
-  linkType: hard
-
 "@ownables/hub@workspace:.":
   version: 0.0.0-use.local
   resolution: "@ownables/hub@workspace:."

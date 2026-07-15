@@ -17,6 +17,9 @@ jest.mock('@ownables/core', () => ({
   AnchorValidationService: class {},
   PublicEventReplayService: class {},
 }));
+jest.mock('@ownables/core/utils', () => ({
+  calculateOwnablePackageCid: jest.fn(),
+}));
 jest.mock('@ownables/platform-node', () => ({
   NodePackageAssetIO: class {},
   NodeSandboxOwnableRPC: class {},
