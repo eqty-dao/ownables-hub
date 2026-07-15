@@ -19,6 +19,8 @@ const REPLAY_OWNER_WALLET = ethers.Wallet.createRandom();
 const REPLAY_NFT_INFO = { network: 'eip155:base', address: '0xabc', id: '1' };
 const DEFAULT_ANCHORS = [{ key: { hex: '0xanchor' }, value: { hex: '0xbbb' } }];
 let mockReplayInfo: Record<string, unknown>;
+let mockReplayFailure: Error | null;
+const mockClearRpc = jest.fn();
 
 jest.mock('eqty-core', () => require('../test-mocks/eqty-core.ts'));
 jest.mock('@ownables/core', () => {
@@ -92,6 +94,7 @@ jest.mock('@ownables/core', () => {
       });
     }
     async apply(_chain: any, _state: any[]) {
+      if (mockReplayFailure) throw mockReplayFailure;
       return [];
     }
     async attemptReplayIndexedPublicEvents(_chainId: string, stateDump: any[], indexedPublicEvents: any[]) {
@@ -132,7 +135,9 @@ jest.mock('@ownables/core', () => {
     rpc(id: string) {
       return this.rpcStore.get(id);
     }
-    clearRpc(_id: string) {}
+    clearRpc(id: string) {
+      mockClearRpc(id);
+    }
   }
 
   return {
@@ -256,6 +261,8 @@ jest.mock('@ownables/platform-node', () => {
 
 describe('OwnableService', () => {
   beforeEach(() => {
+    mockClearRpc.mockReset();
+    mockReplayFailure = null;
     mockReplayInfo = {
       owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
       nft: REPLAY_NFT_INFO,
@@ -545,6 +552,18 @@ describe('OwnableService', () => {
       `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
       null,
     );
+    expect(mockClearRpc).toHaveBeenCalledWith(chain.id);
+  });
+
+  it('clears the archive-scoped RPC when replay fails after worker initialization', async () => {
+    const { service } = await buildService();
+    const chain = await createChain();
+    const buffer = await createUploadBuffer(chain);
+    mockReplayFailure = new Error('replay failed');
+
+    await expect(service.uploadOwnable(buffer, undefined, false)).rejects.toThrow('replay failed');
+
+    expect(mockClearRpc).toHaveBeenCalledWith(chain.id);
   });
 
   it('accepts localhost-issued uploads when nft metadata is only available from replayed ownable info', async () => {

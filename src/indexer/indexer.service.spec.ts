@@ -3,6 +3,8 @@ import { HubStateRepository } from '../persistence/repos/hub-state.repository.js
 import { IndexerService } from './indexer.service.js';
 import { Interface, JsonRpcProvider } from 'ethers';
 import { OwnableTransportService } from '../ownable/ownable-transport.service.js';
+import { Test, type TestingModule } from '@nestjs/testing';
+import { EVM_RPC_PROVIDER_FACTORY } from './indexer.tokens.js';
 
 const providerState = {
   head: 0,
@@ -38,8 +40,10 @@ describe('IndexerService', () => {
   } as unknown as OwnableTransportService;
 
   let service: IndexerService;
+  let module: TestingModule;
+  const providerFactory = jest.fn(() => new JsonRpcProvider());
 
-  beforeEach(() => {
+  beforeEach(async () => {
     providerState.head = 0;
     providerState.logs = [];
     providerState.getLogs = undefined;
@@ -47,8 +51,20 @@ describe('IndexerService', () => {
     (hubStateRepository.getIndexerCursor as jest.Mock).mockReset();
     (hubStateRepository.withIndexerPersistenceTransaction as jest.Mock).mockReset();
     (ownableTransport.publishPublicEvent as jest.Mock).mockReset();
-    service = new IndexerService(configService, hubStateRepository, ownableTransport, () => new JsonRpcProvider());
+    providerFactory.mockClear();
+    module = await Test.createTestingModule({
+      providers: [
+        IndexerService,
+        { provide: ConfigService, useValue: configService },
+        { provide: HubStateRepository, useValue: hubStateRepository },
+        { provide: OwnableTransportService, useValue: ownableTransport },
+        { provide: EVM_RPC_PROVIDER_FACTORY, useValue: providerFactory },
+      ],
+    }).compile();
+    service = module.get(IndexerService);
   });
+
+  afterEach(async () => module.close());
 
   it('runs both slots in deterministic order', async () => {
     const runSlotSpy = jest.spyOn(service, 'runSlot').mockResolvedValue();
@@ -127,6 +143,8 @@ describe('IndexerService', () => {
       anchorContractAddress: '0x1111111111111111111111111111111111111111',
       anchorStartBlock: 100n,
     });
+
+    expect(providerFactory).toHaveBeenCalledWith(expect.objectContaining({ slotName: 'testnet' }));
 
     expect(hubStateRepository.getIndexerCursor).toHaveBeenCalledWith(
       'testnet',
