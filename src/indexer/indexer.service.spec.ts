@@ -1,7 +1,7 @@
 import { ConfigService } from '../common/config/config.service.js';
 import { HubStateRepository } from '../persistence/repos/hub-state.repository.js';
 import { IndexerService } from './indexer.service.js';
-import { Interface } from 'ethers';
+import { Interface, JsonRpcProvider } from 'ethers';
 import { OwnableTransportService } from '../ownable/ownable-transport.service.js';
 
 const providerState = {
@@ -47,7 +47,7 @@ describe('IndexerService', () => {
     (hubStateRepository.getIndexerCursor as jest.Mock).mockReset();
     (hubStateRepository.withIndexerPersistenceTransaction as jest.Mock).mockReset();
     (ownableTransport.publishPublicEvent as jest.Mock).mockReset();
-    service = new IndexerService(configService, hubStateRepository, ownableTransport);
+    service = new IndexerService(configService, hubStateRepository, ownableTransport, () => new JsonRpcProvider());
   });
 
   it('runs both slots in deterministic order', async () => {

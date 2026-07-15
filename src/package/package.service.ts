@@ -1,17 +1,16 @@
-import { Injectable, OnModuleInit, StreamableFile } from '@nestjs/common';
-import { calculateOwnablePackageCid } from '@ownables/core';
+import { Injectable, StreamableFile } from '@nestjs/common';
+import { OwnablePackageCidService } from '@ownables/core';
 import JSZip from 'jszip';
 import { ArchiveStorageService } from '../storage/archive-storage.service.js';
 import { Readable } from 'stream';
 
 @Injectable()
-export class PackageService implements OnModuleInit {
+export class PackageService {
   constructor(
     private readonly zip: JSZip,
     private readonly storage: ArchiveStorageService,
+    private readonly packageCid: OwnablePackageCidService,
   ) {}
-
-  async onModuleInit() {}
 
   private async unzip(data: Uint8Array): Promise<Map<string, Buffer>> {
     const archive = await this.zip.loadAsync(data, { createFolders: true });
@@ -26,7 +25,7 @@ export class PackageService implements OnModuleInit {
   }
 
   private async getCid(files: Map<string, Buffer>): Promise<string> {
-    return calculateOwnablePackageCid(Array.from(files.entries()).map(([filename, content]) => ({
+    return this.packageCid.calculate(Array.from(files.entries()).map(([filename, content]) => ({
       path: filename,
       content,
     })));

@@ -1,20 +1,11 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
-import { ConfigService } from '../common/config/config.service.js';
+import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Pool, type Notification, type PoolClient, type QueryResult } from 'pg';
+import { POSTGRES_POOL } from './persistence.tokens.js';
 
 @Injectable()
 export class PostgresService implements OnModuleDestroy {
   private static readonly logger = new Logger(PostgresService.name);
-  private readonly pool: Pool;
-
-  constructor(config: ConfigService) {
-    const databaseUrl = config.getAppConfig().databaseUrl;
-    if (!databaseUrl) {
-      throw new Error('DATABASE_URL is required');
-    }
-    this.pool = new Pool({
-      connectionString: databaseUrl,
-    });
+  constructor(@Inject(POSTGRES_POOL) private readonly pool: Pool) {
     this.pool.on('error', (error) => {
       PostgresService.logger.error(
         'Postgres pool reported an idle client error; keeping Hub alive and waiting for DB recovery',

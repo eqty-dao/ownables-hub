@@ -15,6 +15,9 @@ jest.mock('@ownables/core', () => ({
   evaluateReplayFreshness: jest.fn(),
   OwnableService: class {},
   EventChainService: class {},
+  AnchorValidationService: class {},
+  OwnablePackageCidService: class {},
+  PublicEventReplayService: class {},
 }));
 jest.mock('@ownables/platform-node', () => ({
   NodePackageAssetIO: class {},

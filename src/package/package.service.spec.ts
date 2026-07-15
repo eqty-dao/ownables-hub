@@ -1,11 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { PackageService } from './package.service.js';
+import { OwnablePackageCidService } from '@ownables/core';
 import JSZip from 'jszip';
 import { ArchiveStorageService } from '../storage/archive-storage.service.js';
 
 jest.mock('@ownables/core', () => ({
-  calculateOwnablePackageCid: (entries: Array<{ path: string; content: Buffer }>) =>
-    `cid-${entries.map((entry) => entry.path).sort().join('-')}`,
+  OwnablePackageCidService: class {
+    calculate(entries: Array<{ path: string; content: Buffer }>) {
+      return `cid-${entries.map((entry) => entry.path).sort().join('-')}`;
+    }
+  },
 }));
 
 describe('PackageService', () => {
@@ -30,7 +34,12 @@ describe('PackageService', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
-      providers: [PackageService, { provide: JSZip, useValue: zip }, { provide: ArchiveStorageService, useValue: storage }],
+      providers: [
+        PackageService,
+        { provide: JSZip, useValue: zip },
+        { provide: ArchiveStorageService, useValue: storage },
+        { provide: OwnablePackageCidService, useValue: new OwnablePackageCidService() },
+      ],
     }).compile();
     await module.init();
 

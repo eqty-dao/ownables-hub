@@ -5,6 +5,7 @@ import path from 'node:path';
 import { Client } from 'pg';
 import { HubStateRepository } from '../persistence/repos/hub-state.repository.js';
 import { PostgresService } from '../persistence/postgres.service.js';
+import { Pool } from 'pg';
 import { OwnableTransportService } from './ownable-transport.service.js';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -65,8 +66,8 @@ describeWithDatabase('OwnableTransportService split-process public-event deliver
         databaseUrl: databaseUrlForSchema(schema),
       }),
     };
-    const listenerDb = new PostgresService(config as any);
-    const publisherDb = new PostgresService(config as any);
+    const listenerDb = new PostgresService(new Pool({ connectionString: config.getAppConfig().databaseUrl }));
+    const publisherDb = new PostgresService(new Pool({ connectionString: config.getAppConfig().databaseUrl }));
     const publisherRepo = new HubStateRepository(publisherDb);
     const listener = new OwnableTransportService(listenerDb);
     const publisher = new OwnableTransportService(publisherDb);

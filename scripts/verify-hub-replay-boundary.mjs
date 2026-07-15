@@ -7,7 +7,9 @@ import { Event, EventChain } from 'eqty-core';
 import { ethers } from 'ethers';
 import { OwnableController } from '../dist/ownable/ownable.controller.js';
 import { OwnableService } from '../dist/ownable/ownable.service.js';
+import { OwnableReplayService } from '../dist/ownable/ownable-replay.service.js';
 import { UserError } from '../dist/interfaces/error.js';
+import { AnchorValidationService, OwnablePackageCidService, PublicEventReplayService } from '@ownables/core';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const EXPECTED_ERROR_PREFIX = "Invalid package: unsupported Ownable runtime in 'ownable_bg.wasm'.";
@@ -108,7 +110,15 @@ function buildService() {
     listWalletEventsByCid: async () => [],
   };
   return {
-    service: new OwnableService(config, nft, storage, hubState),
+    service: new OwnableService(
+      config,
+      nft,
+      storage,
+      hubState,
+      {},
+      new OwnablePackageCidService(),
+      new OwnableReplayService(new AnchorValidationService(), new PublicEventReplayService()),
+    ),
     storageCalls,
     upsertCalls,
   };

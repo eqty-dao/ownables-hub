@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '../common/config/config.service.js';
 import { PostgresService } from './postgres.service.js';
+import { Pool } from 'pg';
 
 const queryMock = jest.fn();
 const connectMock = jest.fn();
@@ -35,7 +36,7 @@ describe('PostgresService', () => {
 
   it('logs idle client errors without crashing the process', () => {
     const loggerSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
-    const service = new PostgresService(config);
+    const service = new PostgresService(new Pool({ connectionString: config.getAppConfig().databaseUrl }));
 
     expect(() =>
       (service as unknown as { pool: MockPool }).pool.emit('error', new Error('terminating connection due to administrator command')),
@@ -48,7 +49,7 @@ describe('PostgresService', () => {
   });
 
   it('continues serving queries after an idle client error once the database is reachable again', async () => {
-    const service = new PostgresService(config);
+    const service = new PostgresService(new Pool({ connectionString: config.getAppConfig().databaseUrl }));
     const pool = (service as unknown as { pool: MockPool }).pool;
 
     queryMock
@@ -70,7 +71,7 @@ describe('PostgresService', () => {
     listenerClient.release = releaseMock;
     connectMock.mockResolvedValue(listenerClient);
 
-    const service = new PostgresService(config);
+    const service = new PostgresService(new Pool({ connectionString: config.getAppConfig().databaseUrl }));
     const received: string[] = [];
     const stop = await service.listen('ownables_public_events', (payload) => received.push(payload));
 
@@ -94,7 +95,7 @@ describe('PostgresService', () => {
   });
 
   it('publishes NOTIFY payloads through pg_notify', async () => {
-    const service = new PostgresService(config);
+    const service = new PostgresService(new Pool({ connectionString: config.getAppConfig().databaseUrl }));
 
     await service.notify('ownables_public_events', '{"ok":true}');
 

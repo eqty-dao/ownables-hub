@@ -10,6 +10,8 @@ import { HttpModule } from '@nestjs/axios';
 import { PersistenceModule } from '../persistence/persistence.module.js';
 import { StorageModule } from '../storage/storage.module.js';
 import { OwnableTransportModule } from './ownable-transport.module.js';
+import { OwnablesCoreServicesModule } from '../common/ownables-core/ownables-core-services.module.js';
+import { OwnableReplayService } from './ownable-replay.service.js';
 
 @Module({
   imports: [
@@ -22,8 +24,9 @@ import { OwnableTransportModule } from './ownable-transport.module.js';
     PersistenceModule,
     StorageModule,
     OwnableTransportModule,
+    OwnablesCoreServicesModule,
   ],
-  providers: [OwnableService],
+  providers: [OwnableReplayService, OwnableService],
   controllers: [OwnableController],
 })
 export class OwnableModule {}
