@@ -4,10 +4,9 @@ import { PackageController } from './package.controller.js';
 import { ConfigModule } from '../common/config/config.module.js';
 import { JszipModule } from '../common/jszip/jszip.module.js';
 import { StorageModule } from '../storage/storage.module.js';
-import { OwnablesCoreServicesModule } from '../common/ownables-core/ownables-core-services.module.js';
 
 @Module({
-  imports: [ConfigModule, JszipModule, StorageModule, OwnablesCoreServicesModule],
+  imports: [ConfigModule, JszipModule, StorageModule],
   providers: [PackageService],
   controllers: [PackageController],
   exports: [PackageService],
