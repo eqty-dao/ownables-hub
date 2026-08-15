@@ -1,3 +1,8 @@
+jest.mock('@ownables/core/utils', () => ({
+  calculateOwnablePackageCid: (entries: Array<{ path: string }>) =>
+    `cid-${entries.map((entry) => entry.path).sort().join('-')}`,
+}));
+
 import { Test } from '@nestjs/testing';
 import { AnchorValidationService, PublicEventReplayService } from '@ownables/core';
 import { ConfigService } from '../common/config/config.service.js';
