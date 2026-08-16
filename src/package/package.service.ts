@@ -6,13 +6,10 @@ import { Readable } from 'stream';
 
 @Injectable()
 export class PackageService {
-  constructor(
-    private readonly zip: JSZip,
-    private readonly storage: ArchiveStorageService,
-  ) {}
+  constructor(private readonly storage: ArchiveStorageService) {}
 
   private async unzip(data: Uint8Array): Promise<Map<string, Buffer>> {
-    const archive = await this.zip.loadAsync(data, { createFolders: true });
+    const archive = await new JSZip().loadAsync(data, { createFolders: true });
 
     const entries: Array<[string, Buffer]> = await Promise.all(
       Object.entries(archive.files)
@@ -58,7 +55,7 @@ export class PackageService {
 
   async zipped(cid: string): Promise<JSZip> {
     const data = await this.storage.getPackageZip(cid);
-    return await this.zip.loadAsync(data, { createFolders: true });
+    return await new JSZip().loadAsync(data, { createFolders: true });
   }
 
   async hasMethod(cid: string, msgType: string, method: string): Promise<boolean> {
