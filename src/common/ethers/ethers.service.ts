@@ -1,31 +1,35 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ethers } from 'ethers';
-import { ConfigService, RuntimeNetworkProfile } from '../config/config.service.js';
+import { ConfigService, EvmNetworkName, RuntimeNetworkProfile } from '../config/config.service.js';
 import { resolveEvmNetwork } from '../config/evm-network.util.js';
 import * as abis from './abi/index.js';
-// import { throwError } from 'rxjs';
-// import { Networkish } from '@ethersproject/networks';
-
-// type NetworkSettings = {
-//   id: number;
-//   name: string;
-//   provider: 'jsonrpc' | 'etherscan' | 'infura' | 'alchemy' | 'cloudflare' | 'pocket' | 'ankr';
-//   url?: string;
-// };
+import { ETHERS_RPC_PROVIDER_FACTORY, EthersRpcProviderFactory } from './ethers.tokens.js';
 
 @Injectable()
-export class EthersService implements OnModuleInit {
+export class EthersService implements OnModuleInit, OnModuleDestroy {
   private wallet: ethers.Wallet;
   private signer: ethers.HDNodeWallet | ethers.Wallet;
   private networkProfile: RuntimeNetworkProfile;
-  private readonly providers: Map<string | number, ethers.Provider> = new Map();
+  private readonly providers = new Map<EvmNetworkName, ethers.JsonRpcProvider>();
 
-  constructor(private config: ConfigService) { }
+  constructor(
+    private readonly config: ConfigService,
+    @Inject(ETHERS_RPC_PROVIDER_FACTORY) private readonly providerFactory: EthersRpcProviderFactory,
+  ) { }
 
   onModuleInit(): void {
     this.networkProfile = this.config.getRuntimeNetworkProfile();
     const provider = this.getProviderForNetwork('eip155:base');
     this.signer = this.createSigner(provider);
+  }
+
+  onModuleDestroy(): void {
+    const providers = new Set(this.providers.values());
+    this.providers.clear();
+
+    for (const provider of providers) {
+      provider.destroy();
+    }
   }
 
   public signMessage(message: string): Promise<string> {
@@ -54,7 +58,12 @@ export class EthersService implements OnModuleInit {
     return ethers.formatUnits(await provider.getBalance(this.signer.address), 'ether').toString();
   }
 
-  private getNetwork(networkName: string): [string, number, string] {
+  private getNetwork(networkName: string): {
+    name: EvmNetworkName;
+    rpcName: string;
+    chainId: number;
+    rpcUrl: string;
+  } {
     const profile = this.networkProfile;
     switch (networkName) {
       case 'eip155:ethereum':
@@ -71,14 +80,29 @@ export class EthersService implements OnModuleInit {
     );
   }
 
-  private getResolvedNetworkTuple(networkName: 'eip155:ethereum' | 'eip155:arbitrum' | 'eip155:polygon' | 'eip155:base', profile: RuntimeNetworkProfile) {
+  private getResolvedNetwork(networkName: EvmNetworkName, profile: RuntimeNetworkProfile) {
     const resolved = resolveEvmNetwork(networkName, profile);
-    return [resolved.rpcName, resolved.chainId, this.config.getRpcUrl(profile, networkName)] as [string, number, string];
+    return {
+      name: networkName,
+      rpcName: resolved.rpcName,
+      chainId: resolved.chainId,
+      rpcUrl: this.config.getRpcUrl(profile, networkName),
+    };
   }
 
   private getProviderForNetwork(networkName: string): ethers.JsonRpcProvider {
-    const [networkMappedName, chainId, rpcUrl] = this.getNetwork(networkName);
-    return new ethers.JsonRpcProvider(rpcUrl, { name: networkMappedName, chainId });
+    const network = this.getNetwork(networkName);
+    const cachedProvider = this.providers.get(network.name);
+    if (cachedProvider) {
+      return cachedProvider;
+    }
+
+    const provider = this.providerFactory(network.rpcUrl, {
+      name: network.rpcName,
+      chainId: network.chainId,
+    });
+    this.providers.set(network.name, provider);
+    return provider;
   }
 
   public getContract(type: keyof typeof abis, networkName: string, address: string): ethers.Contract {
@@ -103,47 +127,4 @@ export class EthersService implements OnModuleInit {
 
     return new ethers.Wallet(ethers.id('ownables-hub-fallback-key'), provider);
   }
-
-  // private initProviders() {
-  //   const networks = this.config.get('eth.networks');
-  //   const providerKeys = this.config.get('eth.providers');
-
-  //   for (const network of networks) {
-  //     const provider = this.createProvider(network, providerKeys);
-  //     this.providers.set(network.id, provider);
-  //     this.providers.set(network.name, provider);
-  //   }
-  // }
-
-  // private createProvider(network: NetworkSettings, providerKeys: { [_: string]: string }): ethers.providers.Provider {
-  //   switch (network.provider) {
-  //     case 'jsonrpc':
-  //       return new ethers.providers.JsonRpcProvider(network.url, {
-  //         name: network.name,
-  //         chainId: network.id,
-  //       });
-  //     case 'etherscan':
-  //       return new ethers.providers.EtherscanProvider(network.id, providerKeys.etherscan);
-  //     case 'infura':
-  //       return new ethers.providers.InfuraProvider(network.id, providerKeys.infura);
-  //     case 'alchemy':
-  //       return new ethers.providers.AlchemyProvider(network.id, providerKeys.alchemy);
-  //     case 'cloudflare':
-  //       return new ethers.providers.CloudflareProvider(network.id, providerKeys.cloudflare);
-  //     case 'pocket':
-  //       return new ethers.providers.PocketProvider(network.id, providerKeys.pocket);
-  //     case 'ankr':
-  //       return new ethers.providers.AnkrProvider(network.id, providerKeys.ankr);
-  //   }
-  // }
-
-  // public getContract(type: keyof typeof abis, network: Networkish, address: string): ethers.Contract {
-  //   if (!(type in abis)) throw new Error(`No ABI for ${type}`);
-
-  //   const networkId = typeof network === 'object' ? network.chainId : network;
-  //   const provider = this.providers.get(networkId);
-  //   if (!provider) throw new Error(`No provider for network ${networkId}`);
-
-  //   return new ethers.Contract(address, abis[type], provider);
-  // }
 }
