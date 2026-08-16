@@ -1,11 +1,5 @@
-import { Injectable, MessageEvent, OnModuleInit, StreamableFile } from '@nestjs/common';
+import { Injectable, MessageEvent, StreamableFile } from '@nestjs/common';
 import {
-  calculateOwnablePackageCid,
-  evaluateReplayFreshness,
-  OwnableService as CoreOwnableService,
-  EventChainService as CoreEventChainService,
-  publicEventReplayKey,
-  validateAnchorsAgainstIndexedRecords,
   type AnchorValidationResult,
   type IndexedAnchorRecord,
   type IndexedPublicEvent,
@@ -14,7 +8,8 @@ import {
   type TypedPackage,
   type AnchorProvider,
 } from '@ownables/core';
-import { NodePackageAssetIO, NodeSandboxOwnableRPC } from '@ownables/platform-node';
+import { calculateOwnablePackageCid, type OwnablePackageCidEntry } from '@ownables/core/utils';
+import { NodePackageAssetIO } from '@ownables/platform-node';
 import { ConfigService, RuntimeNetworkProfile } from '../common/config/config.service.js';
 import { resolveCaip2Reference } from '../common/config/evm-network.util.js';
 import { NFTInfo } from '../interfaces/OwnableInfo.js';
@@ -25,7 +20,11 @@ import { EventChain } from 'eqty-core';
 import { ethers } from 'ethers';
 import { Readable } from 'stream';
 import { ArchiveStorageService } from '../storage/archive-storage.service.js';
-import { HubStateRepository, IndexedAnchorEvent, IndexedPublicEventRow } from '../persistence/repos/hub-state.repository.js';
+import {
+  HubStateRepository,
+  IndexedAnchorEvent,
+  IndexedPublicEventRow,
+} from '../persistence/repos/hub-state.repository.js';
 import {
   AvailableOwnableDiscoveryMessage,
   OwnableTransportService,
@@ -35,6 +34,7 @@ import {
 } from './ownable-transport.service.js';
 import { Observable } from 'rxjs';
 import { filter, map } from 'rxjs/operators';
+import { OwnableReplayService } from './ownable-replay.service.js';
 
 interface SignerIdentity {
   address?: string;
@@ -115,18 +115,20 @@ const REQUIRED_OWNABLE_RUNTIME_EXPORTS = [
   'ownable_ingest',
   'ownable_encode_public_event',
 ] as const;
-const REQUIRED_OWNABLE_RUNTIME_EXPORT_KINDS: Record<(typeof REQUIRED_OWNABLE_RUNTIME_EXPORTS)[number], WebAssembly.ImportExportKind> =
-  {
-    memory: 'memory',
-    ownable_alloc: 'function',
-    ownable_free: 'function',
-    ownable_instantiate: 'function',
-    ownable_execute: 'function',
-    ownable_query: 'function',
-    ownable_register: 'function',
-    ownable_ingest: 'function',
-    ownable_encode_public_event: 'function',
-  };
+const REQUIRED_OWNABLE_RUNTIME_EXPORT_KINDS: Record<
+  (typeof REQUIRED_OWNABLE_RUNTIME_EXPORTS)[number],
+  WebAssembly.ImportExportKind
+> = {
+  memory: 'memory',
+  ownable_alloc: 'function',
+  ownable_free: 'function',
+  ownable_instantiate: 'function',
+  ownable_execute: 'function',
+  ownable_query: 'function',
+  ownable_register: 'function',
+  ownable_ingest: 'function',
+  ownable_encode_public_event: 'function',
+};
 
 function normalizeEvmAddress(address: string, errorMessage = 'Invalid EVM address'): string {
   const normalized = address.trim().toLowerCase();
@@ -240,13 +242,14 @@ class InMemoryStateStore implements StateStore {
 }
 
 @Injectable()
-export class OwnableService implements OnModuleInit {
+export class OwnableService {
   constructor(
     private config: ConfigService,
     private nft: NFTService,
     private readonly storage: ArchiveStorageService,
     private readonly hubState: HubStateRepository,
     private readonly ownableTransport: OwnableTransportService,
+    private readonly replay: OwnableReplayService,
   ) {
     const mnemonic = this.config.getAuthoritySignerMnemonic();
     const privateKey = this.config.getAuthoritySignerPrivateKey();
@@ -254,8 +257,6 @@ export class OwnableService implements OnModuleInit {
       throw new Error('Missing signer configuration: set SIGNER_PRIVATE_KEY or SIGNER_MNEMONIC');
     }
   }
-
-  async onModuleInit() {}
 
   public async GetServerETHBalance(networkName: string): Promise<string> {
     return await this.nft.GetServerETHBalance(networkName);
@@ -288,11 +289,13 @@ export class OwnableService implements OnModuleInit {
     };
   }
 
-  private parseNftInfoFromRecord(record: {
-    nftNetwork: string | null;
-    nftContractAddress: string | null;
-    nftTokenId: string | null;
-  } | null): NFTInfo | null {
+  private parseNftInfoFromRecord(
+    record: {
+      nftNetwork: string | null;
+      nftContractAddress: string | null;
+      nftTokenId: string | null;
+    } | null,
+  ): NFTInfo | null {
     if (!record?.nftNetwork || !record.nftContractAddress || record.nftTokenId === null) {
       return null;
     }
@@ -322,7 +325,10 @@ export class OwnableService implements OnModuleInit {
     try {
       return this.parseNftInfoFromChain(chain);
     } catch (error) {
-      if (!(error instanceof UserError) || error.message !== 'Invalid event chain: missing NFT metadata in first event') {
+      if (
+        !(error instanceof UserError) ||
+        error.message !== 'Invalid event chain: missing NFT metadata in first event'
+      ) {
         throw error;
       }
     }
@@ -452,8 +458,7 @@ export class OwnableService implements OnModuleInit {
       };
       const explicitTitle = this.normalizeOptionalText(packageJson.title);
       const packageName = this.normalizeOptionalText(packageJson.name);
-      const title =
-        explicitTitle ?? (packageName ? this.deriveAvailableOwnableTitle(packageName) : fallback.title);
+      const title = explicitTitle ?? (packageName ? this.deriveAvailableOwnableTitle(packageName) : fallback.title);
 
       return {
         title,
@@ -513,10 +518,13 @@ export class OwnableService implements OnModuleInit {
     anchors: Array<{ key: { hex: string }; value: { hex: string } }>,
     expectedOwner?: string,
   ): AnchorValidationResult {
-    const indexedRecords = anchorEvents
+    return this.replay.validateAnchors(anchors, this.buildIndexedAnchorRecords(anchorEvents, expectedOwner));
+  }
+
+  private buildIndexedAnchorRecords(anchorEvents: IndexedAnchorEvent[], expectedOwner?: string): IndexedAnchorRecord[] {
+    return anchorEvents
       .map((row) => this.toIndexedAnchorRecord(row, expectedOwner))
       .filter((record): record is IndexedAnchorRecord => Boolean(record));
-    return validateAnchorsAgainstIndexedRecords(anchors, indexedRecords);
   }
 
   private sanitizeIgnoredPublicEvents(ignoredPublicEvents: ReplayIgnoredPublicEvent[]) {
@@ -585,7 +593,11 @@ export class OwnableService implements OnModuleInit {
     }
   }
 
-  private async replayOwnable(packageCid: string, eventChainBuffer: Buffer, packageZipBuffer: Buffer): Promise<ReplayDerivedState> {
+  private async replayOwnable(
+    packageCid: string,
+    eventChainBuffer: Buffer,
+    packageZipBuffer: Buffer,
+  ): Promise<ReplayDerivedState> {
     const chain = EventChain.from(JSON.parse(eventChainBuffer.toString('utf8')));
     this.validateEventChain(chain);
 
@@ -599,7 +611,13 @@ export class OwnableService implements OnModuleInit {
     const indexedAnchorEvents = await this.hubState.listIndexedAnchorEventsByAnchorKeys(
       anchorPairs.map(({ key }) => key.hex),
     );
-    const indexedPublicRows = await this.hubState.listIndexedPublicEventsBySubjectId(this.publicEventSubjectId(chain.id));
+    const indexedAnchorRecords = this.buildIndexedAnchorRecords(
+      indexedAnchorEvents,
+      chain.events.at(-1)?.signerAddress?.toLowerCase(),
+    );
+    const indexedPublicRows = await this.hubState.listIndexedPublicEventsBySubjectId(
+      this.publicEventSubjectId(chain.id),
+    );
 
     const stateStore = new InMemoryStateStore();
     const anchorProvider: AnchorProvider = {
@@ -613,7 +631,11 @@ export class OwnableService implements OnModuleInit {
         throw new Error('emitPublicEvent is not supported in hub replay');
       },
       verifyAnchors: async (...anchors: Array<{ key: { hex: string }; value: { hex: string } }>) =>
-        this.buildAnchorVerificationResult(indexedAnchorEvents, anchors, chain.events.at(-1)?.signerAddress?.toLowerCase()),
+        this.buildAnchorVerificationResult(
+          indexedAnchorEvents,
+          anchors,
+          chain.events.at(-1)?.signerAddress?.toLowerCase(),
+        ),
     };
 
     const packageInfo: TypedPackage = {
@@ -638,60 +660,54 @@ export class OwnableService implements OnModuleInit {
       assetList: async () => Array.from(files.keys()),
     });
 
-    const eventChains = new CoreEventChainService(stateStore, anchorProvider);
-    const coreOwnables = new CoreOwnableService(
+    const { eventChains, ownables: coreOwnables } = this.replay.createRuntime(
       stateStore,
-      eventChains,
       anchorProvider,
       packageAssetIO,
-      undefined,
-      console,
-      { create: (id: string) => new NodeSandboxOwnableRPC(id) },
     );
+    try {
+      const anchorVerification = await eventChains.verify(chain as any, { indexedRecords: indexedAnchorRecords });
+      await coreOwnables.initWorker(chain.id, packageCid);
+      const privateStateDump = await coreOwnables.apply(chain as any, []);
 
-    const anchorVerification = await eventChains.verify(chain as any);
-    await coreOwnables.initWorker(chain.id, packageCid);
-    const privateStateDump = await coreOwnables.apply(chain as any, []);
+      const indexedEventsWithRowId = indexedPublicRows
+        .map((row) => ({ rowId: row.id, event: this.toIndexedPublicEvent(row) }))
+        .filter((value): value is { rowId: string; event: IndexedPublicEvent } => Boolean(value.event));
+      const indexedEvents = indexedEventsWithRowId.map(({ event }) => event);
+      const replay = await coreOwnables.attemptReplayIndexedPublicEvents(chain.id, privateStateDump, indexedEvents);
 
-    const indexedEventsWithRowId = indexedPublicRows
-      .map((row) => ({ rowId: row.id, event: this.toIndexedPublicEvent(row) }))
-      .filter((value): value is { rowId: string; event: IndexedPublicEvent } => Boolean(value.event));
-    const indexedEvents = indexedEventsWithRowId.map(({ event }) => event);
-    const replay = await coreOwnables.attemptReplayIndexedPublicEvents(chain.id, privateStateDump, indexedEvents);
+      const ignoredReplayKeys = new Set(replay.ignoredPublicEvents.map(({ replayKey }) => replayKey));
+      const freshness = this.replay.freshness(indexedEvents, replay.appliedReplayKeys, ignoredReplayKeys);
 
-    const ignoredReplayKeys = new Set(replay.ignoredPublicEvents.map(({ replayKey }) => replayKey));
-    const freshness = evaluateReplayFreshness(
-      indexedEvents.filter((event) => !ignoredReplayKeys.has(publicEventReplayKey(event))),
-      replay.appliedReplayKeys,
-    );
+      const info = await coreOwnables.rpc(chain.id).query({ get_info: {} }, replay.stateDump);
+      const owner = String(info.owner ?? '').toLowerCase();
+      if (!owner) throw new UserError('Unable to derive owner from replayed state');
 
-    const info = await coreOwnables.rpc(chain.id).query({ get_info: {} }, replay.stateDump);
-    const owner = String(info.owner ?? '').toLowerCase();
-    if (!owner) throw new UserError('Unable to derive owner from replayed state');
+      const latestAppliedPublicEvent = replay.appliedEvents.at(-1);
+      const latestAppliedPublicEventId =
+        latestAppliedPublicEvent === undefined
+          ? null
+          : (indexedEventsWithRowId.find(
+              ({ event }) =>
+                event.transactionHash === latestAppliedPublicEvent.transactionHash &&
+                event.logIndex === latestAppliedPublicEvent.logIndex,
+            )?.rowId ?? null);
 
-    const latestAppliedPublicEvent = replay.appliedEvents.at(-1);
-    const latestAppliedPublicEventId =
-      latestAppliedPublicEvent === undefined
-        ? null
-        : indexedEventsWithRowId.find(
-            ({ event }) =>
-              event.transactionHash === latestAppliedPublicEvent.transactionHash &&
-              event.logIndex === latestAppliedPublicEvent.logIndex,
-          )?.rowId ?? null;
+      const nftInfo = await this.deriveNftInfo(chain, info);
 
-    const nftInfo = await this.deriveNftInfo(chain, info);
-    coreOwnables.clearRpc(chain.id);
-
-    return {
-      anchorVerification,
-      freshness,
-      ignoredPublicEvents: replay.ignoredPublicEvents,
-      nftInfo,
-      ownerNetwork: this.deriveOwnerNetwork(chain, nftInfo),
-      ownerAccount: this.deriveOwnerAccount(owner, this.deriveOwnerNetwork(chain, nftInfo)),
-      owner,
-      latestAppliedPublicEventId: latestAppliedPublicEventId ?? null,
-    };
+      return {
+        anchorVerification,
+        freshness,
+        ignoredPublicEvents: replay.ignoredPublicEvents,
+        nftInfo,
+        ownerNetwork: this.deriveOwnerNetwork(chain, nftInfo),
+        ownerAccount: this.deriveOwnerAccount(owner, this.deriveOwnerNetwork(chain, nftInfo)),
+        owner,
+        latestAppliedPublicEventId: latestAppliedPublicEventId ?? null,
+      };
+    } finally {
+      coreOwnables.clearRpc(chain.id);
+    }
   }
 
   private async replayStoredOwnable(ownableId: string, packageCid: string): Promise<ReplayDerivedState> {
@@ -803,9 +819,11 @@ export class OwnableService implements OnModuleInit {
   }
 
   private async getCid(files: Map<string, Buffer>): Promise<string> {
-    return calculateOwnablePackageCid(
-      Array.from(files.entries()).map(([filename, content]) => ({ path: filename, content })),
-    );
+    const entries: OwnablePackageCidEntry[] = Array.from(files.entries()).map(([filename, content]) => ({
+      path: filename,
+      content,
+    }));
+    return calculateOwnablePackageCid(entries);
   }
 
   public async getUnlockProof(ownableId: string, signer?: SignerIdentity): Promise<string> {
@@ -882,7 +900,9 @@ export class OwnableService implements OnModuleInit {
   ): Promise<Observable<MessageEvent>> {
     const ownableIds = this.normalizeOwnableIds(ownableIdsInput);
     const fromBlock = this.normalizeFromBlock(fromBlockInput);
-    const subjectToOwnableId = new Map(ownableIds.map((ownableId) => [this.publicEventSubjectId(ownableId), ownableId]));
+    const subjectToOwnableId = new Map(
+      ownableIds.map((ownableId) => [this.publicEventSubjectId(ownableId), ownableId]),
+    );
     const watchedSubjectIds = Array.from(subjectToOwnableId.keys());
 
     return new Observable<MessageEvent>((subscriber) => {
@@ -921,7 +941,11 @@ export class OwnableService implements OnModuleInit {
 
       void (async () => {
         try {
-          const replayRows = await this.hubState.listIndexedPublicEventsBySubjectIdsAfter(watchedSubjectIds, fromBlock, null);
+          const replayRows = await this.hubState.listIndexedPublicEventsBySubjectIdsAfter(
+            watchedSubjectIds,
+            fromBlock,
+            null,
+          );
 
           for (const row of replayRows) {
             const publicEvent = this.toIndexedPublicEvent(row);
@@ -983,7 +1007,8 @@ export class OwnableService implements OnModuleInit {
     this.validateEventChain(chain);
     this.assertSupportedOwnableRuntime(files);
 
-    const ownerFromPrivateState = chain.events.at(-1)?.signerAddress?.toLowerCase() ?? signer?.address?.toLowerCase() ?? '';
+    const ownerFromPrivateState =
+      chain.events.at(-1)?.signerAddress?.toLowerCase() ?? signer?.address?.toLowerCase() ?? '';
 
     if (verbose) console.log(`normalizing ${chainAliases.join(', ')} into ${CANONICAL_CHAIN_FILENAME} to create CID`);
     const normalizedFiles = new Map(files);
@@ -1011,7 +1036,12 @@ export class OwnableService implements OnModuleInit {
     });
     await this.storage.storePackageArtifacts(cid, content, packageFiles);
     await this.storage.storeEventChain(record.id, eventChainBuffer);
-    await this.hubState.setOwnerState(record.id, replayState.owner, replayState.ownerAccount, replayState.latestAppliedPublicEventId);
+    await this.hubState.setOwnerState(
+      record.id,
+      replayState.owner,
+      replayState.ownerAccount,
+      replayState.latestAppliedPublicEventId,
+    );
     await this.publishAvailableOwnableDiscovery(replayState.ownerAccount, chain.id);
 
     return {

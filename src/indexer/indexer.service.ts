@@ -1,8 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { Interface, JsonRpcProvider, Log } from 'ethers';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Interface, Log } from 'ethers';
 import { ConfigService, IndexerSlotConfig } from '../common/config/config.service.js';
 import { HubStateRepository, type IndexerCursorState } from '../persistence/repos/hub-state.repository.js';
 import { OwnableTransportService } from '../ownable/ownable-transport.service.js';
+import { EVM_RPC_PROVIDER_FACTORY, type EvmRpcProviderFactory } from './indexer.tokens.js';
 
 const ANCHOR_CURSOR_NAME = 'anchor-public-events';
 const MAX_LOG_BLOCK_RANGE = 2_000n;
@@ -42,6 +43,7 @@ export class IndexerService {
     private readonly configService: ConfigService,
     private readonly hubStateRepository: HubStateRepository,
     private readonly ownableTransport: OwnableTransportService,
+    @Inject(EVM_RPC_PROVIDER_FACTORY) private readonly providerFactory: EvmRpcProviderFactory,
   ) {}
 
   async runAllSlots(): Promise<void> {
@@ -52,7 +54,7 @@ export class IndexerService {
   }
 
   async runSlot(slot: IndexerSlotConfig): Promise<void> {
-    const provider = new JsonRpcProvider(slot.rpcUrl);
+    const provider = this.providerFactory(slot);
     const head = await provider.getBlockNumber();
     const cursor = await this.hubStateRepository.getIndexerCursor(
       slot.slotName,

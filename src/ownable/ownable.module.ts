@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AnchorValidationService, PublicEventReplayService } from '@ownables/core';
 import { OwnableController } from './ownable.controller.js';
 import { CosmWasmModule } from '../cosmwasm/cosmwasm.module.js';
 import { PackageModule } from '../package/package.module.js';
@@ -10,6 +11,7 @@ import { HttpModule } from '@nestjs/axios';
 import { PersistenceModule } from '../persistence/persistence.module.js';
 import { StorageModule } from '../storage/storage.module.js';
 import { OwnableTransportModule } from './ownable-transport.module.js';
+import { OwnableReplayService } from './ownable-replay.service.js';
 
 @Module({
   imports: [
@@ -23,7 +25,12 @@ import { OwnableTransportModule } from './ownable-transport.module.js';
     StorageModule,
     OwnableTransportModule,
   ],
-  providers: [OwnableService],
+  providers: [
+    { provide: AnchorValidationService, useClass: AnchorValidationService },
+    { provide: PublicEventReplayService, useClass: PublicEventReplayService },
+    OwnableReplayService,
+    OwnableService,
+  ],
   controllers: [OwnableController],
 })
 export class OwnableModule {}

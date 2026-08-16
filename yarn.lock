@@ -2019,16 +2019,16 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@ownables/core@npm:0.9.0, @ownables/core@npm:^0.9.0":
-  version: 0.9.0
-  resolution: "@ownables/core@npm:0.9.0"
+"@ownables/core@npm:0.10.0, @ownables/core@npm:^0.10.0":
+  version: 0.10.0
+  resolution: "@ownables/core@npm:0.10.0"
   dependencies:
     blockstore-core: "npm:^6.1.2"
     cbor-x: "npm:^1.6.0"
     eqty-core: "npm:^1.1.1"
     ipfs-unixfs-importer: "npm:^16.1.4"
     jszip: "npm:^3.10.1"
-  checksum: 10c0/3071c1791a4f59531304817c76ed974995fd34eef5324d6663c079708ca53208b8bd47277d66f0d99cd3033d7294e951208cde685b97b2906c69fb8f4e603a6b
+  checksum: 10c0/bf03cd28f2aad42ec222fc628dd231d2baade1d543f8ad1a90da59554e0df3a7a85876748ddf8bafae5464eb211232ff27511c03d2339f68c219ad97d5688ad8
   languageName: node
   linkType: hard
 
@@ -2045,8 +2045,8 @@ __metadata:
     "@nestjs/schematics": "npm:^11.1.0"
     "@nestjs/swagger": "npm:^11.4.4"
     "@nestjs/testing": "npm:^11.1.24"
-    "@ownables/core": "npm:^0.9.0"
-    "@ownables/platform-node": "npm:^0.9.0"
+    "@ownables/core": "npm:^0.10.0"
+    "@ownables/platform-node": "npm:^0.10.0"
     "@semantic-release/commit-analyzer": "npm:^13.0.1"
     "@semantic-release/github": "npm:^12.0.8"
     "@semantic-release/release-notes-generator": "npm:^14.1.1"
@@ -2085,17 +2085,17 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@ownables/platform-node@npm:^0.9.0":
-  version: 0.9.0
-  resolution: "@ownables/platform-node@npm:0.9.0"
+"@ownables/platform-node@npm:^0.10.0":
+  version: 0.10.0
+  resolution: "@ownables/platform-node@npm:0.10.0"
   dependencies:
     "@babel/core": "npm:^7.28.4"
-    "@ownables/core": "npm:0.9.0"
+    "@ownables/core": "npm:0.10.0"
     any-bucket: "npm:^0.1.6"
     babel-plugin-remove-import-export: "npm:^1.1.1"
     cbor-x: "npm:^1.6.0"
     jszip: "npm:^3.10.1"
-  checksum: 10c0/b6e2b2341e0b15f1809e45cddf138ddcc02bc39c0e859b2f7190dd42034983dc11b6c827e3c9134809b6f18e64ab675cb4e489716855c6d390e2456767476370
+  checksum: 10c0/a8b4159c5b6ead769844f00d74aa869f5e7538f54092a2089e473e8bbf875ceab231aa8e11058962be16485d572a758cee7b48da6535945131bf6f930de05d6f
   languageName: node
   linkType: hard
 

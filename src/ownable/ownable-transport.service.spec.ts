@@ -1,4 +1,6 @@
 import { OwnableTransportService } from './ownable-transport.service.js';
+import { Test } from '@nestjs/testing';
+import { PostgresService } from '../persistence/postgres.service.js';
 
 describe('OwnableTransportService', () => {
   const listen = jest.fn();
@@ -17,12 +19,15 @@ describe('OwnableTransportService', () => {
       return stop;
     });
 
-    const service = new OwnableTransportService({
-      listen,
-      notify,
-    } as any);
+    const module = await Test.createTestingModule({
+      providers: [
+        OwnableTransportService,
+        { provide: PostgresService, useValue: { listen, notify } },
+      ],
+    }).compile();
+    const service = module.get(OwnableTransportService);
 
-    await service.onModuleInit();
+    await module.init();
 
     const received: any[] = [];
     const subscription = service.watchPublicEvents().subscribe((message) => received.push(message));
@@ -80,7 +85,7 @@ describe('OwnableTransportService', () => {
     ]);
 
     subscription.unsubscribe();
-    await service.onModuleDestroy();
-    expect(stop).toHaveBeenCalled();
+    await module.close();
+    expect(stop).toHaveBeenCalledTimes(1);
   });
 });
