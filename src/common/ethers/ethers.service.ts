@@ -67,13 +67,13 @@ export class EthersService implements OnModuleInit, OnModuleDestroy {
     const profile = this.networkProfile;
     switch (networkName) {
       case 'eip155:ethereum':
-        return this.getResolvedNetworkTuple('eip155:ethereum', profile);
+        return this.getResolvedNetwork('eip155:ethereum', profile);
       case 'eip155:arbitrum':
-        return this.getResolvedNetworkTuple('eip155:arbitrum', profile);
+        return this.getResolvedNetwork('eip155:arbitrum', profile);
       case 'eip155:polygon':
-        return this.getResolvedNetworkTuple('eip155:polygon', profile);
+        return this.getResolvedNetwork('eip155:polygon', profile);
       case 'eip155:base':
-        return this.getResolvedNetworkTuple('eip155:base', profile);
+        return this.getResolvedNetwork('eip155:base', profile);
     }
     throw new Error(
       `Incorrect network name. Supported network names: eip155:ethereum eip155:arbitrum eip155:polygon eip155:base`,
