@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import process from 'node:process';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { pathToFileURL } from 'node:url';
 import { AnchorValidationService, PublicEventReplayService } from '@ownables/core';
 import { calculateOwnablePackageCid } from '@ownables/core/utils';
 import { NodeRuntimeRpcProvider, NodeRuntimeSourceProvider } from '@ownables/platform-node';
@@ -34,7 +38,7 @@ async function reservePort() {
   return address.port;
 }
 
-function startHub(port) {
+function startHub(port, storageRoot) {
   const hub = {
     child: undefined,
     stdout: '',
@@ -53,6 +57,7 @@ function startHub(port) {
       NODE_ENV: 'test',
       PORT: String(port),
       PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
+      OWNABLES_STORAGE: pathToFileURL(storageRoot).href,
       SIGNER_MNEMONIC: process.env.SIGNER_MNEMONIC || TEST_SIGNER_MNEMONIC,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -178,9 +183,14 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   assert.ok(process.env.DATABASE_URL, 'DATABASE_URL is required for the compiled Hub E2E test');
 
   const port = await reservePort();
-  const hub = startHub(port);
+  const storageRoot = await mkdtemp(join(tmpdir(), 'ownables-hub-e2e-'));
+  const hub = startHub(port, storageRoot);
   t.after(async () => {
-    await stopHub(hub);
+    try {
+      await stopHub(hub);
+    } finally {
+      await rm(storageRoot, { recursive: true, force: true });
+    }
   });
 
   const response = await waitForReady(hub, port);
