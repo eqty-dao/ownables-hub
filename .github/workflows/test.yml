@@ -92,7 +92,7 @@ jobs:
           }
           trap cleanup EXIT
           test -f dist/main.js
-          ! rg -n -- '--preserve-symlinks' package.json
+          ! grep -nF -- '--preserve-symlinks' package.json
           env \
             NODE_ENV=test \
             PORT=3101 \
@@ -110,7 +110,7 @@ jobs:
             sleep 1
           done
           test -n "$ready"
-          ps -ax -o pid=,command= | rg '[d]ist/main\.js'
+          ps -ax -o pid=,command= | grep '[d]ist/main\.js'
           curl -fsS http://127.0.0.1:3101/ownables/chains >"$chains_body"
           node -e "const fs = require('node:fs'); const health = JSON.parse(fs.readFileSync(process.argv[1])); JSON.parse(fs.readFileSync(process.argv[2])); if (health.status !== 'ok') throw new Error('Expected /health status ok');" "$health_body" "$chains_body"
           cat "$health_body"
@@ -136,7 +136,7 @@ jobs:
           }
           trap cleanup EXIT
           test -f dist/main.js
-          ! rg -n -- '--preserve-symlinks' package.json
+          ! grep -nF -- '--preserve-symlinks' package.json
           env \
             NODE_ENV=test \
             PORT=3102 \
@@ -154,7 +154,7 @@ jobs:
             sleep 1
           done
           test -n "$ready"
-          ps -ax -o pid=,command= | rg '[d]ist/main\.js'
+          ps -ax -o pid=,command= | grep '[d]ist/main\.js'
           curl -fsS http://127.0.0.1:3102/ownables/chains >"$chains_body"
           node -e "const fs = require('node:fs'); const health = JSON.parse(fs.readFileSync(process.argv[1])); JSON.parse(fs.readFileSync(process.argv[2])); if (health.status !== 'ok') throw new Error('Expected /health status ok');" "$health_body" "$chains_body"
           cat "$health_body"
