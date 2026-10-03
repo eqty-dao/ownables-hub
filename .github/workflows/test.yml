@@ -110,7 +110,6 @@ jobs:
             sleep 1
           done
           test -n "$ready"
-          ps -ax -o pid=,command= | grep '[d]ist/main\.js'
           curl -fsS http://127.0.0.1:3101/ownables/chains >"$chains_body"
           node -e "const fs = require('node:fs'); const health = JSON.parse(fs.readFileSync(process.argv[1])); JSON.parse(fs.readFileSync(process.argv[2])); if (health.status !== 'ok') throw new Error('Expected /health status ok');" "$health_body" "$chains_body"
           cat "$health_body"
