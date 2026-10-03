@@ -45,6 +45,12 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
 
+      - name: Fresh migration chain
+        run: yarn db:migrate:up
+
+      - name: No-op migration chain
+        run: yarn db:migrate:up
+
       - name: Dev-watch verifier
         run: yarn verify:dev-watch
 
@@ -57,11 +63,102 @@ jobs:
       - name: Core compatibility smoke
         run: yarn verify:core-compat
 
+      - name: Native compiled-process E2E
+        run: yarn test:e2e
+
       - name: Build
         run: yarn build
 
       - name: Replay boundary verifier
         run: yarn verify:hub-replay-boundary
+
+      - name: Regular Nest start live routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          storage_root="$(mktemp -d)"
+          hub_log="$(mktemp)"
+          health_body="$(mktemp)"
+          chains_body="$(mktemp)"
+          hub_pid=""
+          cleanup() {
+            if [[ -n "$hub_pid" ]] && kill -0 "$hub_pid" 2>/dev/null; then
+              kill -TERM -- "-$hub_pid" || true
+              wait "$hub_pid" || true
+            fi
+            echo '=== yarn start output ==='
+            cat "$hub_log"
+            rm -rf "$storage_root" "$hub_log" "$health_body" "$chains_body"
+          }
+          trap cleanup EXIT
+          test -f dist/main.js
+          ! rg -n -- '--preserve-symlinks' package.json
+          env \
+            NODE_ENV=test \
+            PORT=3101 \
+            PUBLIC_BASE_URL=http://127.0.0.1:3101 \
+            OWNABLES_STORAGE="file://$storage_root" \
+            SIGNER_MNEMONIC='test test test test test test test test test test test junk' \
+            setsid yarn start >"$hub_log" 2>&1 &
+          hub_pid=$!
+          ready=''
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3101/health >"$health_body"; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test -n "$ready"
+          ps -ax -o pid=,command= | rg '[d]ist/main\.js'
+          curl -fsS http://127.0.0.1:3101/ownables/chains >"$chains_body"
+          node -e "const fs = require('node:fs'); const health = JSON.parse(fs.readFileSync(process.argv[1])); JSON.parse(fs.readFileSync(process.argv[2])); if (health.status !== 'ok') throw new Error('Expected /health status ok');" "$health_body" "$chains_body"
+          cat "$health_body"
+          cat "$chains_body"
+
+      - name: Production entrypoint live routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          storage_root="$(mktemp -d)"
+          hub_log="$(mktemp)"
+          health_body="$(mktemp)"
+          chains_body="$(mktemp)"
+          hub_pid=""
+          cleanup() {
+            if [[ -n "$hub_pid" ]] && kill -0 "$hub_pid" 2>/dev/null; then
+              kill -TERM -- "-$hub_pid" || true
+              wait "$hub_pid" || true
+            fi
+            echo '=== yarn start:prod output ==='
+            cat "$hub_log"
+            rm -rf "$storage_root" "$hub_log" "$health_body" "$chains_body"
+          }
+          trap cleanup EXIT
+          test -f dist/main.js
+          ! rg -n -- '--preserve-symlinks' package.json
+          env \
+            NODE_ENV=test \
+            PORT=3102 \
+            PUBLIC_BASE_URL=http://127.0.0.1:3102 \
+            OWNABLES_STORAGE="file://$storage_root" \
+            SIGNER_MNEMONIC='test test test test test test test test test test test junk' \
+            setsid yarn start:prod >"$hub_log" 2>&1 &
+          hub_pid=$!
+          ready=''
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3102/health >"$health_body"; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test -n "$ready"
+          ps -ax -o pid=,command= | rg '[d]ist/main\.js'
+          curl -fsS http://127.0.0.1:3102/ownables/chains >"$chains_body"
+          node -e "const fs = require('node:fs'); const health = JSON.parse(fs.readFileSync(process.argv[1])); JSON.parse(fs.readFileSync(process.argv[2])); if (health.status !== 'ok') throw new Error('Expected /health status ok');" "$health_body" "$chains_body"
+          cat "$health_body"
+          cat "$chains_body"
 
       - name: Unit tests
         run: yarn test --runInBand
