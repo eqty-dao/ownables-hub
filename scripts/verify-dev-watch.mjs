@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import process from 'node:process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { promisify } from 'node:util';
+import { promisify, stripVTControlCharacters } from 'node:util';
 import { randomUUID } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -117,7 +117,7 @@ async function waitForCompilationAndBootstrap(hubProcess, expectedCount) {
 
   while (Date.now() < deadline) {
     assertHubRunning(hubProcess);
-    const capturedOutput = output(hubProcess);
+    const capturedOutput = stripVTControlCharacters(output(hubProcess));
     const webpackCount = countMatches(capturedOutput, WEBPACK_SUCCESS);
     const bootstrapCount = countMatches(capturedOutput, new RegExp(BOOTSTRAP_MESSAGE, 'g'));
 
