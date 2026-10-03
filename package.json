@@ -26,7 +26,7 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:e2e": "yarn build && node --test --test-concurrency=1 test/app.e2e-spec.mjs",
     "release": "semantic-release",
     "db:start": "bash ./scripts/db-start.sh",
     "db:migrate:create": "node-pg-migrate create -m migrations",
