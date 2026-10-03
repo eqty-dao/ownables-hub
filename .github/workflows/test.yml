@@ -5,7 +5,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       DATABASE_URL: postgres://ownables:ownables@127.0.0.1:5432/ownables_hub_test
     services:
@@ -35,8 +35,18 @@ jobs:
       - name: Enable Corepack
         run: corepack enable
 
+      - name: Record dev-watch environment
+        run: |
+          node --version
+          yarn --version
+          uname -a
+          ulimit -n
+
       - name: Install dependencies
         run: yarn install --immutable
+
+      - name: Dev-watch verifier
+        run: yarn verify:dev-watch
 
       - name: Typecheck
         run: yarn typecheck
