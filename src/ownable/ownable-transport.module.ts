@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
-import { PersistenceModule } from '../persistence/persistence.module.js';
-import { OwnableTransportService } from './ownable-transport.service.js';
+import { PersistenceModule } from '../persistence/persistence.module';
+import { OwnableTransportService } from './ownable-transport.service';
 
 @Module({
   imports: [PersistenceModule],

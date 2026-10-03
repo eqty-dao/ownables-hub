@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ethers } from 'ethers';
-import { EthersService } from './ethers.service.js';
-import { ConfigModule } from '../config/config.module.js';
-import { ETHERS_RPC_PROVIDER_FACTORY } from './ethers.tokens.js';
+import { EthersService } from './ethers.service';
+import { ConfigModule } from '../config/config.module';
+import { ETHERS_RPC_PROVIDER_FACTORY } from './ethers.tokens';
 
 @Module({
   imports: [ConfigModule],

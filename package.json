@@ -3,7 +3,6 @@
   "version": "0.0.0",
   "description": "Ownables Hub",
   "author": "Ownables",
-  "type": "module",
   "packageManager": "yarn@4.15.0",
   "engines": {
     "node": ">=24"
@@ -11,7 +10,7 @@
   "license": "MIT",
   "scripts": {
     "prebuild": "rimraf dist tsconfig.build.tsbuildinfo",
-    "build": "tsc -p tsconfig.build.json --incremental false",
+    "build": "nest build --all",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "node --preserve-symlinks dist/main.js",
@@ -94,9 +93,6 @@
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
-    },
-    "moduleNameMapper": {
-      "^(\\.{1,2}/.*)\\.js$": "$1"
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"

@@ -1,4 +1,4 @@
-import type { EvmNetworkName, RuntimeNetworkProfile } from './config.service.js';
+import type { EvmNetworkName, RuntimeNetworkProfile } from './config.service';
 
 export interface ResolvedEvmNetwork {
   rpcName: string;

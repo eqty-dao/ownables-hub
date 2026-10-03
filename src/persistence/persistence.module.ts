@@ -1,10 +1,10 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '../common/config/config.module.js';
-import { PostgresService } from './postgres.service.js';
-import { HubStateRepository } from './repos/hub-state.repository.js';
-import { ConfigService } from '../common/config/config.service.js';
+import { ConfigModule } from '../common/config/config.module';
+import { PostgresService } from './postgres.service';
+import { HubStateRepository } from './repos/hub-state.repository';
+import { ConfigService } from '../common/config/config.service';
 import { Pool } from 'pg';
-import { POSTGRES_POOL } from './persistence.tokens.js';
+import { POSTGRES_POOL } from './persistence.tokens';
 
 const postgresPoolProvider = {
   provide: POSTGRES_POOL,

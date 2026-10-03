@@ -2,8 +2,8 @@ import { Controller, Get, Module, Post } from '@nestjs/common';
 import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
-import { ConfigModule } from './common/config/config.module.js';
-import { configureApp } from './app.bootstrap.js';
+import { ConfigModule } from './common/config/config.module';
+import { configureApp } from './app.bootstrap';
 
 @Controller()
 class CorsTestController {

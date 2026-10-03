@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Observable, Subject } from 'rxjs';
 import type { IndexedPublicEvent } from '@ownables/core';
-import { PostgresService } from '../persistence/postgres.service.js';
+import { PostgresService } from '../persistence/postgres.service';
 
 export interface PublicEventStreamMessage {
   ownableId: string;

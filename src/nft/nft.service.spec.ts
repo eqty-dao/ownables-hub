@@ -1,5 +1,5 @@
-import { NFTService } from './nft.service.js';
-import { NFTInfo } from '../interfaces/OwnableInfo.js';
+import { NFTService } from './nft.service';
+import { NFTInfo } from '../interfaces/OwnableInfo';
 
 describe('NFTService', () => {
   let service: NFTService;
