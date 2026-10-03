@@ -4,6 +4,11 @@ import { createServer } from 'node:net';
 import process from 'node:process';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { AnchorValidationService, PublicEventReplayService } from '@ownables/core';
+import { calculateOwnablePackageCid } from '@ownables/core/utils';
+import { NodeRuntimeRpcProvider, NodeRuntimeSourceProvider } from '@ownables/platform-node';
+import { Event, EventChain } from 'eqty-core';
+import { ethers } from 'ethers';
 
 const TEST_SIGNER_MNEMONIC = 'test test test test test test test test test test test junk';
 const STARTUP_TIMEOUT_MS = 30_000;
@@ -136,6 +141,39 @@ async function stopHub(hub) {
   }
 }
 
+test('core packages provide the supported compatibility surface', async () => {
+  const cid = await calculateOwnablePackageCid([
+    { path: 'package.json', content: Buffer.from('{"name":"compat"}') },
+    { path: 'index.html', content: Buffer.from('<h1>compat</h1>') },
+  ]);
+  assert.equal(typeof cid, 'string');
+  assert.ok(cid.length > 0, 'Expected @ownables/core/utils to compute a non-empty package CID');
+
+  const services = [
+    new AnchorValidationService(),
+    new PublicEventReplayService(),
+    new NodeRuntimeSourceProvider(),
+    new NodeRuntimeRpcProvider(),
+  ];
+  assert.ok(services.every((service) => typeof service === 'object'), 'Expected supported services to construct');
+
+  const wallet = ethers.Wallet.createRandom();
+  const chain = EventChain.create(wallet.address, 84532);
+  const event = new Event({
+    '@context': 'instantiate_msg.json',
+    nft: { network: 'eip155:base', address: '0xabc', id: '1' },
+  });
+
+  await event.addTo(chain).signWith({
+    getAddress: async () => wallet.address,
+    signTypedData: (domain, types, value) => wallet.signTypedData(domain, types, value),
+  });
+
+  assert.ok(event.signature, 'Expected eqty-core EventChain event to be signed');
+  assert.ok(event.signerAddress, 'Expected eqty-core EventChain event signer');
+  assert.equal(chain.events.length, 1, 'Expected one eqty-core EventChain event');
+});
+
 test('GET /info reports application metadata from the compiled Hub', { timeout: STARTUP_TIMEOUT_MS + SHUTDOWN_TIMEOUT_MS * 2 }, async (t) => {
   assert.ok(process.env.DATABASE_URL, 'DATABASE_URL is required for the compiled Hub E2E test');
 
@@ -151,4 +189,17 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   const body = await response.json();
   assert.equal(body.name, '@ownables/hub');
   assert.notEqual(body.env, undefined);
+
+  const healthResponse = await fetch(`http://127.0.0.1:${port}/health`, {
+    signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
+  });
+  assert.equal(healthResponse.status, 200);
+  const health = await healthResponse.json();
+  assert.equal(health.status, 'ok');
+
+  const chainsResponse = await fetch(`http://127.0.0.1:${port}/ownables/chains`, {
+    signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
+  });
+  assert.equal(chainsResponse.status, 200);
+  await chainsResponse.json();
 });
