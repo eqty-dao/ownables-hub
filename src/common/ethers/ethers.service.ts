@@ -1,9 +1,9 @@
 import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ethers } from 'ethers';
-import { ConfigService, EvmNetworkName, RuntimeNetworkProfile } from '../config/config.service.js';
-import { resolveEvmNetwork } from '../config/evm-network.util.js';
-import * as abis from './abi/index.js';
-import { ETHERS_RPC_PROVIDER_FACTORY, EthersRpcProviderFactory } from './ethers.tokens.js';
+import { ConfigService, EvmNetworkName, RuntimeNetworkProfile } from '../config/config.service';
+import { resolveEvmNetwork } from '../config/evm-network.util';
+import * as abis from './abi/index';
+import { ETHERS_RPC_PROVIDER_FACTORY, EthersRpcProviderFactory } from './ethers.tokens';
 
 @Injectable()
 export class EthersService implements OnModuleInit, OnModuleDestroy {

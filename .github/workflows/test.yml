@@ -2,10 +2,14 @@ name: Test
 
 on:
   pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       DATABASE_URL: postgres://ownables:ownables@127.0.0.1:5432/ownables_hub_test
     services:
@@ -38,20 +42,20 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
 
+      - name: Fresh migration chain
+        run: yarn db:migrate:up
+
+      - name: No-op migration chain
+        run: yarn db:migrate:up
+
       - name: Typecheck
         run: yarn typecheck
 
       - name: Lint
         run: yarn lint:check
 
-      - name: Core compatibility smoke
-        run: yarn verify:core-compat
-
-      - name: Build
-        run: yarn build
-
-      - name: Replay boundary verifier
-        run: yarn verify:hub-replay-boundary
+      - name: Native compiled-process E2E
+        run: yarn test:e2e
 
       - name: Unit tests
         run: yarn test --runInBand

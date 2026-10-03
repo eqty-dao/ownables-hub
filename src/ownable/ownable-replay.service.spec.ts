@@ -1,6 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { AnchorValidationService, PublicEventReplayService } from '@ownables/core';
-import { OwnableReplayService } from './ownable-replay.service.js';
+import { OwnableReplayService } from './ownable-replay.service';
 
 const mockEventChainDependencies: unknown[][] = [];
 const mockOwnableDependencies: unknown[] = [];

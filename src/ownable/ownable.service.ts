@@ -10,31 +10,31 @@ import {
 } from '@ownables/core';
 import { calculateOwnablePackageCid, type OwnablePackageCidEntry } from '@ownables/core/utils';
 import { NodePackageAssetIO } from '@ownables/platform-node';
-import { ConfigService, RuntimeNetworkProfile } from '../common/config/config.service.js';
-import { resolveCaip2Reference } from '../common/config/evm-network.util.js';
-import { NFTInfo } from '../interfaces/OwnableInfo.js';
-import { NFTService } from '../nft/nft.service.js';
-import { AuthError, UserError } from '../interfaces/error.js';
+import { ConfigService, RuntimeNetworkProfile } from '../common/config/config.service';
+import { resolveCaip2Reference } from '../common/config/evm-network.util';
+import { NFTInfo } from '../interfaces/OwnableInfo';
+import { NFTService } from '../nft/nft.service';
+import { AuthError, UserError } from '../interfaces/error';
 import JSZip from 'jszip';
 import { EventChain } from 'eqty-core';
 import { ethers } from 'ethers';
 import { Readable } from 'stream';
-import { ArchiveStorageService } from '../storage/archive-storage.service.js';
+import { ArchiveStorageService } from '../storage/archive-storage.service';
 import {
   HubStateRepository,
   IndexedAnchorEvent,
   IndexedPublicEventRow,
-} from '../persistence/repos/hub-state.repository.js';
+} from '../persistence/repos/hub-state.repository';
 import {
   AvailableOwnableDiscoveryMessage,
   OwnableTransportService,
   type LiveIndexedPublicEvent,
   type AvailableOwnableDiscoveryEntry,
   type PublicEventStreamMessage,
-} from './ownable-transport.service.js';
+} from './ownable-transport.service';
 import { Observable } from 'rxjs';
 import { filter, map } from 'rxjs/operators';
-import { OwnableReplayService } from './ownable-replay.service.js';
+import { OwnableReplayService } from './ownable-replay.service';
 
 interface SignerIdentity {
   address?: string;

@@ -5,14 +5,14 @@ jest.mock('@ownables/core/utils', () => ({
 
 import { Test } from '@nestjs/testing';
 import { AnchorValidationService, PublicEventReplayService } from '@ownables/core';
-import { ConfigService } from '../common/config/config.service.js';
-import { POSTGRES_POOL } from '../persistence/persistence.tokens.js';
-import { PostgresService } from '../persistence/postgres.service.js';
-import { ArchiveStorageService } from '../storage/archive-storage.service.js';
-import { OWNABLES_BUCKET } from '../storage/storage.tokens.js';
-import { OwnableModule } from './ownable.module.js';
-import { OwnableReplayService } from './ownable-replay.service.js';
-import { OwnableService } from './ownable.service.js';
+import { ConfigService } from '../common/config/config.service';
+import { POSTGRES_POOL } from '../persistence/persistence.tokens';
+import { PostgresService } from '../persistence/postgres.service';
+import { ArchiveStorageService } from '../storage/archive-storage.service';
+import { OWNABLES_BUCKET } from '../storage/storage.tokens';
+import { OwnableModule } from './ownable.module';
+import { OwnableReplayService } from './ownable-replay.service';
+import { OwnableService } from './ownable.service';
 
 describe('OwnableModule', () => {
   it('owns the real Nest-managed replay dependencies', async () => {

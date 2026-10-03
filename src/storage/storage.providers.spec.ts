@@ -1,4 +1,4 @@
-import { storageProviders } from './storage.providers.js';
+import { storageProviders } from './storage.providers';
 
 describe('storageProviders', () => {
   it('builds a local bucket for file:// DSN', async () => {

@@ -3,7 +3,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import bodyParser from 'body-parser';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ConfigService } from './common/config/config.service.js';
+import { ConfigService } from './common/config/config.service';
 
 const hubPackage = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
   description: string;

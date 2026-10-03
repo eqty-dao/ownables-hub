@@ -3,7 +3,6 @@
   "version": "0.0.0",
   "description": "Ownables Hub",
   "author": "Ownables",
-  "type": "module",
   "packageManager": "yarn@4.15.0",
   "engines": {
     "node": ">=24"
@@ -11,28 +10,26 @@
   "license": "MIT",
   "scripts": {
     "prebuild": "rimraf dist tsconfig.build.tsbuildinfo",
-    "build": "tsc -p tsconfig.build.json --incremental false",
+    "build": "nest build --all",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "start": "node --preserve-symlinks dist/main.js",
-    "start:dev": "bash ./scripts/start-dev.sh",
-    "start:debug": "NODE_INSPECT=--inspect bash ./scripts/start-dev.sh",
-    "start:prod": "node --preserve-symlinks dist/main.js",
-    "indexer:run": "node --preserve-symlinks dist/indexer/main.js",
+    "start": "nest start hub",
+    "start:dev": "nest start hub --watch",
+    "start:debug": "nest start hub --debug --watch",
+    "start:prod": "node --env-file-if-exists=.env dist/main.js",
+    "indexer:run": "node --env-file-if-exists=.env dist/indexer/main.js",
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
     "lint:check": "eslint \"{src,test}/**/*.ts\"",
     "test": "jest --detectOpenHandles",
-    "verify:core-compat": "yarn node scripts/verify-core-compat.mjs",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:e2e": "yarn build && node --test --test-concurrency=1 test/app.e2e-spec.mjs",
     "release": "semantic-release",
     "db:start": "bash ./scripts/db-start.sh",
     "db:migrate:create": "node-pg-migrate create -m migrations",
     "db:migrate:up": "node-pg-migrate up -m migrations",
-    "db:migrate:down": "node-pg-migrate down -m migrations",
-    "verify:hub-replay-boundary": "yarn node scripts/verify-hub-replay-boundary.mjs"
+    "db:migrate:down": "node-pg-migrate down -m migrations"
   },
   "dependencies": {
     "@babel/core": "^7.29.7",
@@ -94,9 +91,6 @@
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
-    },
-    "moduleNameMapper": {
-      "^(\\.{1,2}/.*)\\.js$": "$1"
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"

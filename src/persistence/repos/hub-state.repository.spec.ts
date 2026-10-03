@@ -1,4 +1,4 @@
-import { HubStateRepository } from './hub-state.repository.js';
+import { HubStateRepository } from './hub-state.repository';
 
 describe('HubStateRepository', () => {
   const query = jest.fn();

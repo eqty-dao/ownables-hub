@@ -1,7 +1,7 @@
 import { Injectable, StreamableFile } from '@nestjs/common';
 import { calculateOwnablePackageCid, type OwnablePackageCidEntry } from '@ownables/core/utils';
 import JSZip from 'jszip';
-import { ArchiveStorageService } from '../storage/archive-storage.service.js';
+import { ArchiveStorageService } from '../storage/archive-storage.service';
 import { Readable } from 'stream';
 
 @Injectable()

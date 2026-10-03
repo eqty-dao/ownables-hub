@@ -1,4 +1,4 @@
-import { ConfigService } from './config.service.js';
+import { ConfigService } from './config.service';
 
 describe('ConfigService', () => {
   const originalEnv = process.env;

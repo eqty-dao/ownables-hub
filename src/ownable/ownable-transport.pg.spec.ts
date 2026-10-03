@@ -3,10 +3,10 @@ import { take, timeout } from 'rxjs/operators';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { Client } from 'pg';
-import { HubStateRepository } from '../persistence/repos/hub-state.repository.js';
-import { PostgresService } from '../persistence/postgres.service.js';
+import { HubStateRepository } from '../persistence/repos/hub-state.repository';
+import { PostgresService } from '../persistence/postgres.service';
 import { Pool } from 'pg';
-import { OwnableTransportService } from './ownable-transport.service.js';
+import { OwnableTransportService } from './ownable-transport.service';
 
 const databaseUrl = process.env.DATABASE_URL;
 const repoRoot = path.resolve(__dirname, '../..');

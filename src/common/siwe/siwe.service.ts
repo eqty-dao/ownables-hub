@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { verifyTypedData, isAddress } from 'ethers';
 import { randomBytes } from 'crypto';
-import { ConfigService } from '../config/config.service.js';
+import { ConfigService } from '../config/config.service';
 
 export interface SIWEMessage {
   domain: string;

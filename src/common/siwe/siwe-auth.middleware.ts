@@ -1,6 +1,6 @@
 import { Injectable, NestMiddleware, UnauthorizedException } from '@nestjs/common';
 import { NextFunction, Request, Response } from 'express';
-import { SIWEMessage, SIWEService } from './siwe.service.js';
+import { SIWEMessage, SIWEService } from './siwe.service';
 
 @Injectable()
 export class SIWEAuthMiddleware implements NestMiddleware {
