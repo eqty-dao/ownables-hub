@@ -192,13 +192,10 @@ Useful verification commands:
 ```bash
 yarn typecheck
 yarn lint:check
-yarn build
-yarn verify:core-compat
-yarn verify:hub-replay-boundary
-yarn verify:dev-watch
+yarn test:e2e
 ```
 
-`yarn verify:dev-watch` is a self-restoring Node 24/Postgres proof for the direct Nest watch command. It requires a clean checkout and no repository `.env`, temporarily edits and restores `src/main.ts`, and manages a real Hub child process. The authoritative watch transcript runs in the pinned Ubuntu 24.04 pull-request and release-test CI jobs. Those jobs also retain fresh and no-op migration output, native compiled-process E2E, and separate `yarn start` and `yarn start:prod` live-route evidence for `dist/main.js`.
+`yarn test:e2e` builds both Nest bundles and runs the native compiled-process tests. It covers core package compatibility, `/info`, `/health`, `/ownables/chains`, and rejected unsupported-runtime uploads without storage writes.
 
 ## Releasing
 
