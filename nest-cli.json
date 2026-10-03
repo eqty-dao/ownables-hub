@@ -11,6 +11,7 @@
       "type": "application",
       "root": ".",
       "entryFile": "main",
+      "exec": "node --env-file-if-exists=.env",
       "sourceRoot": "src",
       "compilerOptions": {
         "tsConfigPath": "tsconfig.build.json",
