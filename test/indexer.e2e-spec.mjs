@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import process from 'node:process';
 import { test } from 'node:test';
+import { Interface } from 'ethers';
 import pg from 'pg';
 
 const { Client } = pg;
@@ -11,6 +12,68 @@ const TESTNET_ANCHOR = '0x0000000000000000000000000000000000000044';
 const MAINNET_ANCHOR = '0x0000000000000000000000000000000000000055';
 const TEST_CURSOR_TRIGGER = 'story4_indexer_cursor_failure';
 const TEST_CURSOR_FUNCTION = 'story4_indexer_cursor_failure';
+const eventInterface = new Interface([
+  'event Anchored(bytes32 indexed key, bytes32 value, address indexed sender, uint64 timestamp)',
+  'event PublicEvent(bytes32 indexed subjectId, address indexed source, string eventType, bytes data, uint64 timestamp)',
+]);
+
+function rpcLog(eventName, args, blockNumber, transactionHash, transactionIndex, logIndex) {
+  const encoded = eventInterface.encodeEventLog(eventInterface.getEvent(eventName), args);
+  return {
+    address: TESTNET_ANCHOR,
+    topics: encoded.topics,
+    data: encoded.data,
+    blockNumber: `0x${blockNumber.toString(16)}`,
+    blockHash: `0x${blockNumber.toString(16).padStart(64, '0')}`,
+    transactionHash,
+    transactionIndex: `0x${transactionIndex.toString(16)}`,
+    logIndex: `0x${logIndex.toString(16)}`,
+  };
+}
+
+const firstWindowLogs = [
+  rpcLog(
+    'Anchored',
+    [`0x${'1'.repeat(64)}`, `0x${'2'.repeat(64)}`, '0x00000000000000000000000000000000000000aa', 101n],
+    101,
+    `0x${'a'.repeat(64)}`,
+    0,
+    0,
+  ),
+  rpcLog(
+    'PublicEvent',
+    [`0x${'3'.repeat(64)}`, '0x00000000000000000000000000000000000000bb', 'first-window', '0x1234', 102n],
+    102,
+    `0x${'b'.repeat(64)}`,
+    1,
+    0,
+  ),
+];
+
+const failedWindowLogs = [
+  rpcLog(
+    'Anchored',
+    [`0x${'4'.repeat(64)}`, `0x${'5'.repeat(64)}`, '0x00000000000000000000000000000000000000cc', 2101n],
+    2101,
+    `0x${'c'.repeat(64)}`,
+    0,
+    0,
+  ),
+  rpcLog(
+    'PublicEvent',
+    [`0x${'6'.repeat(64)}`, '0x00000000000000000000000000000000000000dd', 'failed-window', '0x5678', 2102n],
+    2102,
+    `0x${'d'.repeat(64)}`,
+    1,
+    0,
+  ),
+];
+
+function logsForRange(fromBlock) {
+  if (fromBlock === 101) return firstWindowLogs;
+  if (fromBlock === 2101) return failedWindowLogs;
+  return [];
+}
 
 function startRpcServer() {
   const logRanges = [];
@@ -29,10 +92,12 @@ function startRpcServer() {
     const replies = messages.map((message) => {
       if (message.method === 'eth_getLogs') {
         const filter = message.params?.[0];
+        const fromBlock = Number(BigInt(filter.fromBlock));
         logRanges.push({
-          fromBlock: Number(BigInt(filter.fromBlock)),
+          fromBlock,
           toBlock: Number(BigInt(filter.toBlock)),
         });
+        return { jsonrpc: '2.0', id: message.id, result: logsForRange(fromBlock) };
       }
       const result = message.method === 'eth_chainId' ? '0x14a34' : message.method === 'eth_blockNumber' ? '0x1068' : [];
       return { jsonrpc: '2.0', id: message.id, result };
@@ -85,6 +150,18 @@ test('compiled indexer commits one window before PostgreSQL failure and restarts
 
   const database = new Client({ connectionString: process.env.DATABASE_URL });
   await database.connect();
+  await database.query(`DROP TRIGGER IF EXISTS ${TEST_CURSOR_TRIGGER} ON indexer_cursors`);
+  await database.query(`DROP FUNCTION IF EXISTS ${TEST_CURSOR_FUNCTION}()`);
+  await database.query(
+    `DELETE FROM indexed_anchor_events
+     WHERE slot_name = 'testnet' AND chain_id = '84532' AND anchor_contract_address = LOWER($1)`,
+    [TESTNET_ANCHOR],
+  );
+  await database.query(
+    `DELETE FROM indexed_public_events
+     WHERE slot_name = 'testnet' AND chain_id = '84532' AND anchor_contract_address = LOWER($1)`,
+    [TESTNET_ANCHOR],
+  );
   await database.query(
     `INSERT INTO indexer_cursors (
        slot_name, cursor_name, chain_id, anchor_contract_address, next_from_block, last_scanned_block
@@ -101,6 +178,16 @@ test('compiled indexer commits one window before PostgreSQL failure and restarts
     try {
       await database.query(`DROP TRIGGER IF EXISTS ${TEST_CURSOR_TRIGGER} ON indexer_cursors`);
       await database.query(`DROP FUNCTION IF EXISTS ${TEST_CURSOR_FUNCTION}()`);
+      await database.query(
+        `DELETE FROM indexed_anchor_events
+         WHERE slot_name = 'testnet' AND chain_id = '84532' AND anchor_contract_address = LOWER($1)`,
+        [TESTNET_ANCHOR],
+      );
+      await database.query(
+        `DELETE FROM indexed_public_events
+         WHERE slot_name = 'testnet' AND chain_id = '84532' AND anchor_contract_address = LOWER($1)`,
+        [TESTNET_ANCHOR],
+      );
       await database.query(
         `DELETE FROM indexer_cursors
          WHERE slot_name = 'testnet' AND cursor_name = 'anchor-public-events' AND chain_id = '84532'
@@ -163,6 +250,22 @@ test('compiled indexer commits one window before PostgreSQL failure and restarts
     { fromBlock: 101, toBlock: 2100 },
     { fromBlock: 2101, toBlock: 4100 },
   ]);
+  const anchorRowsAfterFailure = await database.query(
+    `SELECT event_name, block_number
+     FROM indexed_anchor_events
+     WHERE slot_name = 'testnet' AND chain_id = '84532' AND anchor_contract_address = LOWER($1)
+     ORDER BY block_number`,
+    [TESTNET_ANCHOR],
+  );
+  const publicRowsAfterFailure = await database.query(
+    `SELECT event_name, block_number
+     FROM indexed_public_events
+     WHERE slot_name = 'testnet' AND chain_id = '84532' AND anchor_contract_address = LOWER($1)
+     ORDER BY block_number`,
+    [TESTNET_ANCHOR],
+  );
+  assert.deepEqual(anchorRowsAfterFailure.rows, [{ event_name: 'Anchored', block_number: '101' }]);
+  assert.deepEqual(publicRowsAfterFailure.rows, [{ event_name: 'PublicEvent', block_number: '102' }]);
 
   await database.query(`DROP TRIGGER ${TEST_CURSOR_TRIGGER} ON indexer_cursors`);
   await database.query(`DROP FUNCTION ${TEST_CURSOR_FUNCTION}()`);
@@ -174,5 +277,27 @@ test('compiled indexer commits one window before PostgreSQL failure and restarts
     { fromBlock: 2101, toBlock: 4100 },
     { fromBlock: 2101, toBlock: 4100 },
     { fromBlock: 4101, toBlock: 4200 },
+  ]);
+  const anchorRowsAfterRestart = await database.query(
+    `SELECT event_name, block_number
+     FROM indexed_anchor_events
+     WHERE slot_name = 'testnet' AND chain_id = '84532' AND anchor_contract_address = LOWER($1)
+     ORDER BY block_number`,
+    [TESTNET_ANCHOR],
+  );
+  const publicRowsAfterRestart = await database.query(
+    `SELECT event_name, block_number
+     FROM indexed_public_events
+     WHERE slot_name = 'testnet' AND chain_id = '84532' AND anchor_contract_address = LOWER($1)
+     ORDER BY block_number`,
+    [TESTNET_ANCHOR],
+  );
+  assert.deepEqual(anchorRowsAfterRestart.rows, [
+    { event_name: 'Anchored', block_number: '101' },
+    { event_name: 'Anchored', block_number: '2101' },
+  ]);
+  assert.deepEqual(publicRowsAfterRestart.rows, [
+    { event_name: 'PublicEvent', block_number: '102' },
+    { event_name: 'PublicEvent', block_number: '2102' },
   ]);
 });
