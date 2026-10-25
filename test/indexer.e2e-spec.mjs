@@ -9,8 +9,11 @@ const { Client } = pg;
 const INDEXER_TIMEOUT_MS = 30_000;
 const TESTNET_ANCHOR = '0x0000000000000000000000000000000000000044';
 const MAINNET_ANCHOR = '0x0000000000000000000000000000000000000055';
+const TEST_CURSOR_TRIGGER = 'story4_indexer_cursor_failure';
+const TEST_CURSOR_FUNCTION = 'story4_indexer_cursor_failure';
 
 function startRpcServer() {
+  const logRanges = [];
   const server = createServer(async (request, response) => {
     const body = await new Promise((resolve, reject) => {
       let raw = '';
@@ -21,10 +24,21 @@ function startRpcServer() {
       request.on('end', () => resolve(raw));
       request.on('error', reject);
     });
-    const message = JSON.parse(body);
-    const result = message.method === 'eth_chainId' ? '0x14a34' : message.method === 'eth_blockNumber' ? '0x64' : [];
+    const parsed = JSON.parse(body);
+    const messages = Array.isArray(parsed) ? parsed : [parsed];
+    const replies = messages.map((message) => {
+      if (message.method === 'eth_getLogs') {
+        const filter = message.params?.[0];
+        logRanges.push({
+          fromBlock: Number(BigInt(filter.fromBlock)),
+          toBlock: Number(BigInt(filter.toBlock)),
+        });
+      }
+      const result = message.method === 'eth_chainId' ? '0x14a34' : message.method === 'eth_blockNumber' ? '0x1068' : [];
+      return { jsonrpc: '2.0', id: message.id, result };
+    });
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }));
+    response.end(JSON.stringify(Array.isArray(parsed) ? replies : replies[0]));
   });
 
   return new Promise((resolve, reject) => {
@@ -35,7 +49,7 @@ function startRpcServer() {
         reject(new Error('Expected an IPv4 JSON-RPC test server address'));
         return;
       }
-      resolve({ server, url: `http://127.0.0.1:${address.port}` });
+      resolve({ server, url: `http://127.0.0.1:${address.port}`, logRanges });
     });
   });
 }
@@ -66,7 +80,7 @@ function runIndexer(env) {
   });
 }
 
-test('compiled indexer exits nonzero during PostgreSQL failure and restarts from the committed cursor', { timeout: INDEXER_TIMEOUT_MS * 2 }, async (t) => {
+test('compiled indexer commits one window before PostgreSQL failure and restarts at the failed window', { timeout: INDEXER_TIMEOUT_MS * 2 }, async (t) => {
   assert.ok(process.env.DATABASE_URL, 'DATABASE_URL is required for the compiled indexer E2E test');
 
   const database = new Client({ connectionString: process.env.DATABASE_URL });
@@ -85,6 +99,8 @@ test('compiled indexer exits nonzero during PostgreSQL failure and restarts from
   );
   t.after(async () => {
     try {
+      await database.query(`DROP TRIGGER IF EXISTS ${TEST_CURSOR_TRIGGER} ON indexer_cursors`);
+      await database.query(`DROP FUNCTION IF EXISTS ${TEST_CURSOR_FUNCTION}()`);
       await database.query(
         `DELETE FROM indexer_cursors
          WHERE slot_name = 'testnet' AND cursor_name = 'anchor-public-events' AND chain_id = '84532'
@@ -96,7 +112,7 @@ test('compiled indexer exits nonzero during PostgreSQL failure and restarts from
     }
   });
 
-  const { server, url } = await startRpcServer();
+  const { server, url, logRanges } = await startRpcServer();
   t.after(() => new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))));
 
   const baseEnv = {
@@ -110,14 +126,30 @@ test('compiled indexer exits nonzero during PostgreSQL failure and restarts from
     MAINNET_CHAIN_ID: '84532',
     MAINNET_RPC_URL: url,
     MAINNET_ANCHOR_CONTRACT_ADDR: MAINNET_ANCHOR,
-    MAINNET_ANCHOR_START_BLOCK: '101',
+    MAINNET_ANCHOR_START_BLOCK: '4201',
   };
 
-  const failed = await runIndexer({
-    ...baseEnv,
-    DATABASE_URL: 'postgres://ownables:ownables@127.0.0.1:1/ownables_hub',
-  });
-  assert.notEqual(failed.code, 0, `Expected unavailable PostgreSQL to fail\n${failed.output}`);
+  await database.query(`
+    CREATE OR REPLACE FUNCTION ${TEST_CURSOR_FUNCTION}() RETURNS trigger AS $$
+    BEGIN
+      IF NEW.slot_name = 'testnet'
+        AND NEW.cursor_name = 'anchor-public-events'
+        AND NEW.chain_id = '84532'
+        AND NEW.anchor_contract_address = LOWER('${TESTNET_ANCHOR}')
+        AND NEW.next_from_block = 4101
+      THEN
+        RAISE EXCEPTION 'simulated transient indexer cursor failure';
+      END IF;
+      RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+    CREATE TRIGGER ${TEST_CURSOR_TRIGGER}
+      BEFORE INSERT OR UPDATE ON indexer_cursors
+      FOR EACH ROW EXECUTE FUNCTION ${TEST_CURSOR_FUNCTION}();
+  `);
+
+  const failed = await runIndexer(baseEnv);
+  assert.notEqual(failed.code, 0, `Expected PostgreSQL transaction failure\n${failed.output}`);
 
   const cursorAfterFailure = await database.query(
     `SELECT next_from_block, last_scanned_block
@@ -126,8 +158,21 @@ test('compiled indexer exits nonzero during PostgreSQL failure and restarts from
        AND anchor_contract_address = LOWER($1)`,
     [TESTNET_ANCHOR],
   );
-  assert.deepEqual(cursorAfterFailure.rows, [{ next_from_block: '101', last_scanned_block: '100' }]);
+  assert.deepEqual(cursorAfterFailure.rows, [{ next_from_block: '2101', last_scanned_block: '2100' }]);
+  assert.deepEqual(logRanges, [
+    { fromBlock: 101, toBlock: 2100 },
+    { fromBlock: 2101, toBlock: 4100 },
+  ]);
+
+  await database.query(`DROP TRIGGER ${TEST_CURSOR_TRIGGER} ON indexer_cursors`);
+  await database.query(`DROP FUNCTION ${TEST_CURSOR_FUNCTION}()`);
 
   const recovered = await runIndexer(baseEnv);
   assert.equal(recovered.code, 0, `Expected indexer restart to succeed\n${recovered.output}`);
+  assert.deepEqual(logRanges, [
+    { fromBlock: 101, toBlock: 2100 },
+    { fromBlock: 2101, toBlock: 4100 },
+    { fromBlock: 2101, toBlock: 4100 },
+    { fromBlock: 4101, toBlock: 4200 },
+  ]);
 });
