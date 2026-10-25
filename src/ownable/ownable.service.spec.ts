@@ -971,7 +971,11 @@ describe('OwnableService', () => {
         },
       ],
     });
-    expect(hubState.listIndexedPublicEventsBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id));
+    expect(hubState.listIndexedPublicEventsBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id), {
+      slotName: 'testnet',
+      chainId: '84532',
+      anchorContractAddress: '0x0000000000000000000000000000000000000001',
+    });
   });
 
   it('replays public-event stream rows from the requested block and then continues live for watched ownables only', async () => {
