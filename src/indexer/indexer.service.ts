@@ -54,35 +54,46 @@ export class IndexerService {
   }
 
   async runSlot(slot: IndexerSlotConfig): Promise<void> {
-    const provider = this.providerFactory(slot);
-    const head = await provider.getBlockNumber();
     const cursor = await this.hubStateRepository.getIndexerCursor(
       slot.slotName,
       ANCHOR_CURSOR_NAME,
       slot.chainId,
       slot.anchorContractAddress,
     );
-
     const fromBlock = this.resolveFromBlock(slot, cursor);
+    const provider = this.providerFactory(slot);
+    const head = await provider.getBlockNumber();
     const toBlock = BigInt(head);
     if (fromBlock > toBlock) {
       this.logger.log(`Slot ${slot.slotName}: no new blocks (from=${fromBlock.toString()}, head=${toBlock.toString()})`);
       return;
     }
 
-    const rawLogs: Log[] = [];
     for (let windowFrom = fromBlock; windowFrom <= toBlock; windowFrom += MAX_LOG_BLOCK_RANGE) {
       const windowTo = windowFrom + MAX_LOG_BLOCK_RANGE - 1n <= toBlock ? windowFrom + MAX_LOG_BLOCK_RANGE - 1n : toBlock;
-      rawLogs.push(
-        ...(await provider.getLogs({
-          address: slot.anchorContractAddress,
-          fromBlock: Number(windowFrom),
-          toBlock: Number(windowTo),
-        })),
+      const rawLogs = await provider.getLogs({
+        address: slot.anchorContractAddress,
+        fromBlock: Number(windowFrom),
+        toBlock: Number(windowTo),
+      });
+      const normalized = this.normalizeLogs(rawLogs, slot);
+
+      await this.persistWindow(slot, windowTo, normalized);
+      this.publishPublicEvents(normalized);
+
+      const anchorEventCount = normalized.filter((event) => event.eventKind === 'anchor').length;
+      const publicEventCount = normalized.length - anchorEventCount;
+      this.logger.log(
+        `Slot ${slot.slotName}: indexed ${normalized.length} logs (${anchorEventCount} anchor, ${publicEventCount} public) from block ${windowFrom.toString()} to ${windowTo.toString()}`,
       );
     }
+  }
 
-    const normalized = this.normalizeLogs(rawLogs, slot);
+  private async persistWindow(
+    slot: IndexerSlotConfig,
+    windowTo: bigint,
+    normalized: NormalizedIndexedEvent[],
+  ): Promise<void> {
     const anchorEvents = normalized.filter((event) => event.eventKind === 'anchor');
     const publicEvents = normalized.filter((event) => event.eventKind === 'public');
     const tail = normalized.at(-1) ?? null;
@@ -92,8 +103,8 @@ export class IndexerService {
       cursorName: ANCHOR_CURSOR_NAME,
       chainId: slot.chainId,
       anchorContractAddress: slot.anchorContractAddress,
-      nextFromBlock: toBlock + 1n,
-      lastScannedBlock: tail?.blockNumber ?? toBlock,
+      nextFromBlock: windowTo + 1n,
+      lastScannedBlock: windowTo,
       lastScannedTxHash: tail?.transactionHash ?? null,
       lastScannedTxIndex: tail?.transactionIndex ?? null,
       lastScannedLogIndex: tail?.logIndex ?? null,
@@ -129,7 +140,13 @@ export class IndexerService {
         payloadJson: event.payloadJson,
       })),
     });
-    for (const event of publicEvents) {
+  }
+
+  private publishPublicEvents(normalized: NormalizedIndexedEvent[]): void {
+    for (const event of normalized) {
+      if (event.eventKind !== 'public') {
+        continue;
+      }
       if (!event.subjectId || !event.sourceAddress || !event.eventType || !event.dataHex) {
         continue;
       }
@@ -147,10 +164,6 @@ export class IndexerService {
         },
       });
     }
-
-    this.logger.log(
-      `Slot ${slot.slotName}: indexed ${normalized.length} logs (${anchorEvents.length} anchor, ${publicEvents.length} public) from block ${fromBlock.toString()} to ${toBlock.toString()}`,
-    );
   }
 
   private resolveFromBlock(slot: IndexerSlotConfig, cursor: IndexerCursorState | null): bigint {
@@ -159,13 +172,21 @@ export class IndexerService {
     }
 
     if (
+      cursor.slotName !== slot.slotName ||
       cursor.chainId !== slot.chainId ||
       cursor.anchorContractAddress.toLowerCase() !== slot.anchorContractAddress.toLowerCase()
     ) {
       return slot.anchorStartBlock;
     }
 
-    return cursor.nextFromBlock >= slot.anchorStartBlock ? cursor.nextFromBlock : slot.anchorStartBlock;
+    const lastCommittedBlock = cursor.nextFromBlock - 1n;
+    if (slot.anchorStartBlock > lastCommittedBlock) {
+      throw new Error(
+        `Invalid ${slot.slotName} anchor start block ${slot.anchorStartBlock.toString()}: it is above the last committed processed block ${lastCommittedBlock.toString()}`,
+      );
+    }
+
+    return cursor.nextFromBlock;
   }
 
   private normalizeLogs(logs: Log[], slot: IndexerSlotConfig): NormalizedIndexedEvent[] {
