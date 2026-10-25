@@ -1,11 +1,11 @@
 import { Controller, Get, Header, MessageEvent, Post, Query, Req, Res, Sse, StreamableFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiBody, ApiProperty, ApiConsumes, ApiProduces } from '@nestjs/swagger';
 import { Request, Response } from 'express';
-import { OwnableService } from './ownable.service.js';
-import { Signer } from '../common/http-signature/signer.js';
-import { AuthError, UserError } from '../interfaces/error.js';
+import { OwnableService } from './ownable.service';
+import { Signer } from '../common/http-signature/signer';
+import { AuthError, UserError } from '../interfaces/error';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { SIWEGuard } from '../common/siwe/siwe.guard.js';
+import { SIWEGuard } from '../common/siwe/siwe.guard';
 import { Observable } from 'rxjs';
 
 interface SignerIdentity {

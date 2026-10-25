@@ -2,11 +2,11 @@ import { INestApplication, StreamableFile } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import JSZip from 'jszip';
 import request from 'supertest';
-import { AppModule } from '../app.module.js';
-import { OwnableController } from './ownable.controller.js';
-import { UserError } from '../interfaces/error.js';
-import { OwnableService } from './ownable.service.js';
-import { OwnableTransportService } from './ownable-transport.service.js';
+import { AppModule } from '../app.module';
+import { OwnableController } from './ownable.controller';
+import { UserError } from '../interfaces/error';
+import { OwnableService } from './ownable.service';
+import { OwnableTransportService } from './ownable-transport.service';
 import { of } from 'rxjs';
 
 jest.mock('eqty-core', () => require('../test-mocks/eqty-core.ts'));

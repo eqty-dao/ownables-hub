@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { SIWEService } from './siwe.service.js';
-import { ConfigService } from '../config/config.service.js';
+import { SIWEService } from './siwe.service';
+import { ConfigService } from '../config/config.service';
 
 describe('SIWEService', () => {
   let service: SIWEService;

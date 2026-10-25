@@ -1,10 +1,10 @@
-import { ConfigService } from '../common/config/config.service.js';
-import { HubStateRepository } from '../persistence/repos/hub-state.repository.js';
-import { IndexerService } from './indexer.service.js';
+import { ConfigService } from '../common/config/config.service';
+import { HubStateRepository } from '../persistence/repos/hub-state.repository';
+import { IndexerService } from './indexer.service';
 import { Interface, JsonRpcProvider } from 'ethers';
-import { OwnableTransportService } from '../ownable/ownable-transport.service.js';
+import { OwnableTransportService } from '../ownable/ownable-transport.service';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { EVM_RPC_PROVIDER_FACTORY } from './indexer.tokens.js';
+import { EVM_RPC_PROVIDER_FACTORY } from './indexer.tokens';
 
 const providerState = {
   head: 0,

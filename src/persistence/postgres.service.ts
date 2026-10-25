@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Pool, type Notification, type PoolClient, type QueryResult } from 'pg';
-import { POSTGRES_POOL } from './persistence.tokens.js';
+import { POSTGRES_POOL } from './persistence.tokens';
 
 @Injectable()
 export class PostgresService implements OnModuleDestroy {

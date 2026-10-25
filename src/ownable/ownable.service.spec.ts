@@ -3,8 +3,8 @@ import { Readable } from 'stream';
 import { ethers } from 'ethers';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { Event, EventChain } from '../test-mocks/eqty-core.js';
-import { OwnableService } from './ownable.service.js';
+import { Event, EventChain } from '../test-mocks/eqty-core';
+import { OwnableService } from './ownable.service';
 import {
   AnchorValidationService,
   PublicEventReplayService,

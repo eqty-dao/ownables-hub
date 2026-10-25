@@ -1,9 +1,9 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Interface, Log } from 'ethers';
-import { ConfigService, IndexerSlotConfig } from '../common/config/config.service.js';
-import { HubStateRepository, type IndexerCursorState } from '../persistence/repos/hub-state.repository.js';
-import { OwnableTransportService } from '../ownable/ownable-transport.service.js';
-import { EVM_RPC_PROVIDER_FACTORY, type EvmRpcProviderFactory } from './indexer.tokens.js';
+import { ConfigService, IndexerSlotConfig } from '../common/config/config.service';
+import { HubStateRepository, type IndexerCursorState } from '../persistence/repos/hub-state.repository';
+import { OwnableTransportService } from '../ownable/ownable-transport.service';
+import { EVM_RPC_PROVIDER_FACTORY, type EvmRpcProviderFactory } from './indexer.tokens';
 
 const ANCHOR_CURSOR_NAME = 'anchor-public-events';
 const MAX_LOG_BLOCK_RANGE = 2_000n;

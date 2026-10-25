@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { PostgresService } from '../postgres.service.js';
+import { PostgresService } from '../postgres.service';
 import type { PoolClient } from 'pg';
 
 export interface OwnableRecordInput {

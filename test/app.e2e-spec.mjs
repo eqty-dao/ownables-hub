@@ -1,0 +1,292 @@
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import process from 'node:process';
+import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { AnchorValidationService, PublicEventReplayService } from '@ownables/core';
+import { calculateOwnablePackageCid } from '@ownables/core/utils';
+import { NodeRuntimeRpcProvider, NodeRuntimeSourceProvider } from '@ownables/platform-node';
+import { Event, EventChain } from 'eqty-core';
+import { ethers } from 'ethers';
+import JSZip from 'jszip';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const projectRoot = join(__dirname, '..');
+const EXPECTED_UNSUPPORTED_RUNTIME_ERROR =
+  "Invalid package: unsupported Ownable runtime in 'ownable_bg.wasm'. Expected raw-ABI exports with no wasm imports; found unsupported imports from module(s): wbg";
+const TEST_SIGNER_MNEMONIC = 'test test test test test test test test test test test junk';
+const STARTUP_TIMEOUT_MS = 30_000;
+const SHUTDOWN_TIMEOUT_MS = 5_000;
+const POLL_INTERVAL_MS = 250;
+const MAX_OUTPUT_LENGTH = 20_000;
+
+async function buildChain(wallet) {
+  const chain = EventChain.create(wallet.address, 84532);
+  const event = new Event({
+    '@context': 'instantiate_msg.json',
+    nft: {
+      network: 'eip155:base',
+      address: '0xabc0000000000000000000000000000000000001',
+      id: '1',
+    },
+  });
+
+  await event.addTo(chain).signWith({
+    getAddress: async () => wallet.address,
+    signTypedData: (domain, types, value) => wallet.signTypedData(domain, types, value),
+  });
+
+  return chain;
+}
+
+async function buildUnsupportedUploadArchive() {
+  const fixtureDir = join(projectRoot, 'src', 'cosmwasm', '_test');
+  const [ownableJs, ownableWasm] = await Promise.all([
+    readFile(join(fixtureDir, 'ownable.js')),
+    readFile(join(fixtureDir, 'ownable_bg.wasm')),
+  ]);
+
+  const moduleImports = WebAssembly.Module.imports(new WebAssembly.Module(Uint8Array.from(ownableWasm))).map(
+    ({ module, name }) => ({ module, name }),
+  );
+
+  const wallet = ethers.Wallet.createRandom();
+  const chain = await buildChain(wallet);
+  const zip = new JSZip();
+  zip.file('package.json', JSON.stringify({ name: 'fixture-ownable' }));
+  zip.file('ownable.js', ownableJs);
+  zip.file('ownable_bg.wasm', ownableWasm);
+  zip.file('chain.json', JSON.stringify(chain.toJSON()));
+
+  return {
+    archive: await zip.generateAsync({ type: 'uint8array' }),
+    moduleImports,
+  };
+}
+
+async function reservePort() {
+  const server = createServer();
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string', 'expected an IPv4 test port');
+
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+
+  return address.port;
+}
+
+function startHub(port, storageRoot) {
+  const hub = {
+    child: undefined,
+    stdout: '',
+    stderr: '',
+    spawnError: undefined,
+  };
+  const appendOutput = (stream) => (chunk) => {
+    hub[stream] = `${hub[stream]}${chunk}`.slice(-MAX_OUTPUT_LENGTH);
+  };
+
+  hub.child = spawn('yarn', ['start:prod'], {
+    cwd: process.cwd(),
+    detached: process.platform !== 'win32',
+    env: {
+      ...process.env,
+      NODE_ENV: 'test',
+      PORT: String(port),
+      PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
+      OWNABLES_STORAGE: pathToFileURL(storageRoot).href,
+      SIGNER_MNEMONIC: process.env.SIGNER_MNEMONIC || TEST_SIGNER_MNEMONIC,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  hub.child.stdout.on('data', appendOutput('stdout'));
+  hub.child.stderr.on('data', appendOutput('stderr'));
+  hub.child.once('error', (error) => {
+    hub.spawnError = error;
+  });
+
+  return hub;
+}
+
+function failure(message, hub) {
+  const stdout = hub.stdout || '<no Hub stdout captured>';
+  const stderr = hub.stderr || '<no Hub stderr captured>';
+  return new Error(`${message}\nHub stdout:\n${stdout}\nHub stderr:\n${stderr}`);
+}
+
+async function waitForReady(hub, port) {
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    if (hub.spawnError) {
+      throw failure(`Hub failed to start: ${hub.spawnError.message}`, hub);
+    }
+    if (hub.child.exitCode !== null || hub.child.signalCode !== null) {
+      throw failure(`Hub exited before readiness (code ${hub.child.exitCode}, signal ${hub.child.signalCode})`, hub);
+    }
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/info`, {
+        signal: AbortSignal.timeout(POLL_INTERVAL_MS),
+      });
+      if (response.ok) return response;
+    } catch {
+      // The child is still booting. The bounded deadline below reports its output on failure.
+    }
+
+    await delay(POLL_INTERVAL_MS);
+  }
+
+  throw failure(`Hub did not become ready within ${STARTUP_TIMEOUT_MS}ms`, hub);
+}
+
+function waitForExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      child.removeListener('exit', onExit);
+      resolve(false);
+    }, timeoutMs);
+    const onExit = () => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    child.once('exit', onExit);
+  });
+}
+
+function signalChild(child, signal) {
+  if (!child.pid) return;
+
+  try {
+    if (process.platform === 'win32') {
+      child.kill(signal);
+      return;
+    }
+    process.kill(-child.pid, signal);
+  } catch (error) {
+    if (error?.code !== 'ESRCH') throw error;
+  }
+}
+
+async function stopHub(hub) {
+  const { child } = hub;
+  if (child.exitCode !== null || child.signalCode !== null) return;
+
+  signalChild(child, 'SIGTERM');
+  if (await waitForExit(child, SHUTDOWN_TIMEOUT_MS)) return;
+
+  signalChild(child, 'SIGKILL');
+  if (!(await waitForExit(child, SHUTDOWN_TIMEOUT_MS))) {
+    throw failure('Hub child process did not exit after SIGKILL', hub);
+  }
+}
+
+async function listStoredFiles(storageRoot) {
+  try {
+    const entries = await readdir(storageRoot, { recursive: true, withFileTypes: true });
+    return entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+test('core packages provide the supported compatibility surface', async () => {
+  const cid = await calculateOwnablePackageCid([
+    { path: 'package.json', content: Buffer.from('{"name":"compat"}') },
+    { path: 'index.html', content: Buffer.from('<h1>compat</h1>') },
+  ]);
+  assert.equal(typeof cid, 'string');
+  assert.ok(cid.length > 0, 'Expected @ownables/core/utils to compute a non-empty package CID');
+
+  const services = [
+    new AnchorValidationService(),
+    new PublicEventReplayService(),
+    new NodeRuntimeSourceProvider(),
+    new NodeRuntimeRpcProvider(),
+  ];
+  assert.ok(services.every((service) => typeof service === 'object'), 'Expected supported services to construct');
+
+  const wallet = ethers.Wallet.createRandom();
+  const chain = EventChain.create(wallet.address, 84532);
+  const event = new Event({
+    '@context': 'instantiate_msg.json',
+    nft: { network: 'eip155:base', address: '0xabc', id: '1' },
+  });
+
+  await event.addTo(chain).signWith({
+    getAddress: async () => wallet.address,
+    signTypedData: (domain, types, value) => wallet.signTypedData(domain, types, value),
+  });
+
+  assert.ok(event.signature, 'Expected eqty-core EventChain event to be signed');
+  assert.ok(event.signerAddress, 'Expected eqty-core EventChain event signer');
+  assert.equal(chain.events.length, 1, 'Expected one eqty-core EventChain event');
+});
+
+test('GET /info reports application metadata from the compiled Hub', { timeout: STARTUP_TIMEOUT_MS + SHUTDOWN_TIMEOUT_MS * 2 }, async (t) => {
+  assert.ok(process.env.DATABASE_URL, 'DATABASE_URL is required for the compiled Hub E2E test');
+
+  const { archive, moduleImports } = await buildUnsupportedUploadArchive();
+  assert.ok(moduleImports.length > 0, 'Expected unsupported fixture to require wasm imports');
+  assert.ok(moduleImports.some(({ module }) => module === 'wbg'), 'Expected fixture imports from unsupported wbg module');
+
+  const port = await reservePort();
+  const storageRoot = await mkdtemp(join(tmpdir(), 'ownables-hub-e2e-'));
+  const hub = startHub(port, storageRoot);
+  t.after(async () => {
+    try {
+      await stopHub(hub);
+    } finally {
+      await rm(storageRoot, { recursive: true, force: true });
+    }
+  });
+
+  const response = await waitForReady(hub, port);
+  assert.equal(response.status, 200);
+
+  const body = await response.json();
+  assert.equal(body.name, '@ownables/hub');
+  assert.notEqual(body.env, undefined);
+
+  const healthResponse = await fetch(`http://127.0.0.1:${port}/health`, {
+    signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
+  });
+  assert.equal(healthResponse.status, 200);
+  const health = await healthResponse.json();
+  assert.equal(health.status, 'ok');
+
+  const chainsResponse = await fetch(`http://127.0.0.1:${port}/ownables/chains`, {
+    signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
+  });
+  assert.equal(chainsResponse.status, 200);
+  await chainsResponse.json();
+
+  const form = new FormData();
+  form.set('file', new Blob([archive], { type: 'application/zip' }), 'unsupported-runtime-ownable.zip');
+  const uploadResponse = await fetch(`http://127.0.0.1:${port}/ownables/upload`, {
+    method: 'POST',
+    body: form,
+    signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
+  });
+  const uploadResponseBody = await uploadResponse.text();
+  assert.equal(uploadResponse.status, 400, 'Expected unsupported runtime upload to return HTTP 400');
+  assert.equal(uploadResponseBody, EXPECTED_UNSUPPORTED_RUNTIME_ERROR, 'Expected the exact unsupported runtime response body');
+
+  const storedFiles = await listStoredFiles(storageRoot);
+  assert.equal(storedFiles.length, 0, 'Invalid runtime uploads must not write archive files');
+});

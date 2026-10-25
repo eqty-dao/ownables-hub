@@ -1,10 +1,10 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '../common/config/config.module.js';
-import { PersistenceModule } from '../persistence/persistence.module.js';
-import { IndexerService } from './indexer.service.js';
-import { OwnableTransportModule } from '../ownable/ownable-transport.module.js';
+import { ConfigModule } from '../common/config/config.module';
+import { PersistenceModule } from '../persistence/persistence.module';
+import { IndexerService } from './indexer.service';
+import { OwnableTransportModule } from '../ownable/ownable-transport.module';
 import { JsonRpcProvider } from 'ethers';
-import { EVM_RPC_PROVIDER_FACTORY } from './indexer.tokens.js';
+import { EVM_RPC_PROVIDER_FACTORY } from './indexer.tokens';
 
 @Module({
   imports: [ConfigModule, PersistenceModule, OwnableTransportModule],

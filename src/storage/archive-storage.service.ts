@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { Bucket } from 'any-bucket';
-import { OWNABLES_BUCKET } from './storage.tokens.js';
+import { OWNABLES_BUCKET } from './storage.tokens';
 
 @Injectable()
 export class ArchiveStorageService {

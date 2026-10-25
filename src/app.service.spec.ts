@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { AppService } from './app.service.js';
-import { PostgresService } from './persistence/postgres.service.js';
-import { ArchiveStorageService } from './storage/archive-storage.service.js';
+import { AppService } from './app.service';
+import { PostgresService } from './persistence/postgres.service';
+import { ArchiveStorageService } from './storage/archive-storage.service';
 
 describe('AppService', () => {
   let service: AppService;

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { Client } from 'pg';
-import { HubStateRepository } from './hub-state.repository.js';
+import { HubStateRepository } from './hub-state.repository';
 
 const databaseUrl = process.env.DATABASE_URL;
 const repoRoot = path.resolve(__dirname, '../../..');

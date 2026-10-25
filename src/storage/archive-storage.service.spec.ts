@@ -1,4 +1,4 @@
-import { ArchiveStorageService } from './archive-storage.service.js';
+import { ArchiveStorageService } from './archive-storage.service';
 
 describe('ArchiveStorageService', () => {
   const put = jest.fn();

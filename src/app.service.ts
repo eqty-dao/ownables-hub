@@ -2,8 +2,8 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as process from 'process';
-import { PostgresService } from './persistence/postgres.service.js';
-import { ArchiveStorageService } from './storage/archive-storage.service.js';
+import { PostgresService } from './persistence/postgres.service';
+import { ArchiveStorageService } from './storage/archive-storage.service';
 
 type HealthDependency = 'database' | 'storage';
 

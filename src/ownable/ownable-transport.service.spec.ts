@@ -1,6 +1,6 @@
-import { OwnableTransportService } from './ownable-transport.service.js';
+import { OwnableTransportService } from './ownable-transport.service';
 import { Test } from '@nestjs/testing';
-import { PostgresService } from '../persistence/postgres.service.js';
+import { PostgresService } from '../persistence/postgres.service';
 
 describe('OwnableTransportService', () => {
   const listen = jest.fn();

@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { CosmWasmService } from './cosmwasm.service.js';
+import { CosmWasmService } from './cosmwasm.service';
 import * as assert from 'assert';
-import Contract from './contract.js';
+import Contract from './contract';
 import bs58 from 'bs58';
 
 describe('CosmWasmService', () => {

@@ -1,6 +1,6 @@
 import { Body, Controller, HttpCode, HttpStatus, Post, Res } from '@nestjs/common';
 import { Response } from 'express';
-import { SIWEMessage, SIWEService } from './siwe.service.js';
+import { SIWEMessage, SIWEService } from './siwe.service';
 
 @Controller('api/v1/auth')
 export class AuthController {

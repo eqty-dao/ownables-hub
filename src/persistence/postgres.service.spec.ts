@@ -1,11 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { Logger } from '@nestjs/common';
-import { ConfigService } from '../common/config/config.service.js';
-import { PostgresService } from './postgres.service.js';
+import { ConfigService } from '../common/config/config.service';
+import { PostgresService } from './postgres.service';
 import { Pool } from 'pg';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { POSTGRES_POOL } from './persistence.tokens.js';
-import { OwnableTransportService } from '../ownable/ownable-transport.service.js';
+import { POSTGRES_POOL } from './persistence.tokens';
+import { OwnableTransportService } from '../ownable/ownable-transport.service';
 
 const queryMock = jest.fn();
 const connectMock = jest.fn();

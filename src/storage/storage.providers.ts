@@ -1,5 +1,5 @@
-import { ConfigService } from '../common/config/config.service.js';
-import { OWNABLES_BUCKET } from './storage.tokens.js';
+import { ConfigService } from '../common/config/config.service';
+import { OWNABLES_BUCKET } from './storage.tokens';
 import { Bucket } from 'any-bucket';
 
 type LocalBucketCtor = new (path: string) => Bucket;

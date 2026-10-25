@@ -1,7 +1,7 @@
 import { Controller, Get, Header, Post, Req, Res, StreamableFile, UseInterceptors } from '@nestjs/common';
 import { ApiProperty, ApiBody, ApiConsumes, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
-import { PackageService } from './package.service.js';
+import { PackageService } from './package.service';
 import { FileInterceptor } from '@nestjs/platform-express';
 
 type FileUploadRequest = Request & { file?: Express.Multer.File };

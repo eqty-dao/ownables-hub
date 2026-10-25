@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { PackageService } from './package.service.js';
+import { PackageService } from './package.service';
 import JSZip from 'jszip';
-import { ArchiveStorageService } from '../storage/archive-storage.service.js';
+import { ArchiveStorageService } from '../storage/archive-storage.service';
 
 jest.mock('@ownables/core/utils', () => ({
   calculateOwnablePackageCid: (entries: Array<{ path: string; content: Buffer }>) =>

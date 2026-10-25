@@ -1,6 +1,6 @@
 import { NestFactory } from '@nestjs/core';
-import { IndexerModule } from './indexer.module.js';
-import { IndexerService } from './indexer.service.js';
+import { IndexerModule } from './indexer.module';
+import { IndexerService } from './indexer.service';
 
 async function bootstrap() {
   const app = await NestFactory.createApplicationContext(IndexerModule);

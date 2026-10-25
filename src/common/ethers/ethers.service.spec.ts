@@ -1,9 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ethers } from 'ethers';
-import { ConfigService, EvmNetworkName, RuntimeNetworkProfile } from '../config/config.service.js';
-import { EthersModule } from './ethers.module.js';
-import { EthersService } from './ethers.service.js';
-import { ETHERS_RPC_PROVIDER_FACTORY, EthersRpcProviderFactory } from './ethers.tokens.js';
+import { ConfigService, EvmNetworkName, RuntimeNetworkProfile } from '../config/config.service';
+import { EthersModule } from './ethers.module';
+import { EthersService } from './ethers.service';
+import { ETHERS_RPC_PROVIDER_FACTORY, EthersRpcProviderFactory } from './ethers.tokens';
 
 describe('EthersService', () => {
   const mnemonic = 'test test test test test test test test test test test junk';
