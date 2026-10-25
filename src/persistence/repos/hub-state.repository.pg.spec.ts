@@ -378,6 +378,14 @@ describeWithDatabase('HubStateRepository recipient discovery postgres integratio
       await expect(repo.listIndexedPublicEventsBySubjectId(subjectId, activeIdentity)).resolves.toEqual([
         expect.objectContaining({ transactionHash: '0xactive' }),
       ]);
+      await expect(
+        repo.listIndexedPublicEventsBySubjectIdsAfter(
+          [subjectId],
+          11n,
+          { blockNumber: 10n, transactionIndex: 0, logIndex: 0 },
+          activeIdentity,
+        ),
+      ).resolves.toEqual([expect.objectContaining({ transactionHash: '0xactive', blockNumber: '11' })]);
       await expect(client.query('SELECT id FROM indexed_public_events')).resolves.toEqual(
         expect.objectContaining({ rowCount: 3 }),
       );

@@ -74,7 +74,13 @@ describe('ConfigService', () => {
     );
 
     process.env.HUB_NETWORK_PROFILE = 'mainnet';
-    expect(new ConfigService().getActiveIndexerSlot()).toEqual(expect.objectContaining({ slotName: 'mainnet' }));
+    expect(new ConfigService().getActiveIndexerSlot()).toEqual(
+      expect.objectContaining({
+        slotName: 'mainnet',
+        chainId: '8453',
+        anchorContractAddress: '0x2222222222222222222222222222222222222222',
+      }),
+    );
   });
 
   it('fails fast when required indexer envs are missing or invalid', () => {
