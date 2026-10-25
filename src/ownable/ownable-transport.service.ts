@@ -11,6 +11,9 @@ export interface PublicEventStreamMessage {
 
 export interface LiveIndexedPublicEvent {
   subjectId: string;
+  slotName: string;
+  chainId: string;
+  anchorContractAddress: string;
   publicEvent: IndexedPublicEvent;
 }
 

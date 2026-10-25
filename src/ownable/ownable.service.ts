@@ -24,6 +24,7 @@ import {
   HubStateRepository,
   IndexedAnchorEvent,
   IndexedPublicEventRow,
+  type IndexedEventIdentity,
 } from '../persistence/repos/hub-state.repository';
 import {
   AvailableOwnableDiscoveryMessage,
@@ -617,6 +618,7 @@ export class OwnableService {
     );
     const indexedPublicRows = await this.hubState.listIndexedPublicEventsBySubjectId(
       this.publicEventSubjectId(chain.id),
+      this.activePublicEventIdentity(),
     );
 
     const stateStore = new InMemoryStateStore();
@@ -904,6 +906,7 @@ export class OwnableService {
       ownableIds.map((ownableId) => [this.publicEventSubjectId(ownableId), ownableId]),
     );
     const watchedSubjectIds = Array.from(subjectToOwnableId.keys());
+    const activeIdentity = this.activePublicEventIdentity();
 
     return new Observable<MessageEvent>((subscriber) => {
       const seenEventKeys = new Set<string>();
@@ -927,7 +930,12 @@ export class OwnableService {
 
       const liveSubscription = this.ownableTransport
         .watchPublicEvents()
-        .pipe(filter((message) => subjectToOwnableId.has(message.subjectId)))
+        .pipe(
+          filter(
+            (message) =>
+              subjectToOwnableId.has(message.subjectId) && this.matchesPublicEventIdentity(message, activeIdentity),
+          ),
+        )
         .subscribe({
           next: (message) => {
             if (!replayReady) {
@@ -945,6 +953,7 @@ export class OwnableService {
             watchedSubjectIds,
             fromBlock,
             null,
+            activeIdentity,
           );
 
           for (const row of replayRows) {
@@ -1161,9 +1170,29 @@ export class OwnableService {
   }
 
   private async listIndexedPublicEventsForOwnable(ownableId: string): Promise<IndexedPublicEvent[]> {
-    return (await this.hubState.listIndexedPublicEventsBySubjectId(this.publicEventSubjectId(ownableId)))
+    return (await this.hubState.listIndexedPublicEventsBySubjectId(
+      this.publicEventSubjectId(ownableId),
+      this.activePublicEventIdentity(),
+    ))
       .map((row) => this.toIndexedPublicEvent(row))
       .filter((event): event is IndexedPublicEvent => Boolean(event));
+  }
+
+  private activePublicEventIdentity(): IndexedEventIdentity {
+    const slot = this.config.getActiveIndexerSlot();
+    return {
+      slotName: slot.slotName,
+      chainId: slot.chainId,
+      anchorContractAddress: slot.anchorContractAddress.toLowerCase(),
+    };
+  }
+
+  private matchesPublicEventIdentity(message: LiveIndexedPublicEvent, identity: IndexedEventIdentity): boolean {
+    return (
+      message.slotName === identity.slotName &&
+      message.chainId === identity.chainId &&
+      message.anchorContractAddress.toLowerCase() === identity.anchorContractAddress
+    );
   }
 
   private async publishAvailableOwnableDiscovery(ownerAccount: string | null, ownableId: string): Promise<void> {

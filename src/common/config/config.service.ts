@@ -192,6 +192,15 @@ export class ConfigService {
     return [this.parseIndexerSlot('TESTNET', 'testnet'), this.parseIndexerSlot('MAINNET', 'mainnet')];
   }
 
+  getActiveIndexerSlot(): IndexerSlotConfig {
+    const [testnet, mainnet] = this.getIndexerSlots();
+    const slot = this.runtimeConfig.networkProfile === 'testnet' ? testnet : mainnet;
+    return {
+      ...slot,
+      anchorContractAddress: slot.anchorContractAddress.toLowerCase(),
+    };
+  }
+
   isLocalDevRecipientDiscoveryEnabled(): boolean {
     return this.config.env !== 'production' && parseOptionalBoolean('LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED');
   }

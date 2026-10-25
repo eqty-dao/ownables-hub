@@ -156,7 +156,7 @@ describe('IndexerService', () => {
       expect.objectContaining({
         slotName: 'testnet',
         nextFromBlock: 103n,
-        lastScannedBlock: 101n,
+        lastScannedBlock: 102n,
         lastScannedTxHash: '0xt2',
         lastScannedTxIndex: 1,
         lastScannedLogIndex: 0,
@@ -187,6 +187,9 @@ describe('IndexerService', () => {
     });
     expect(ownableTransport.publishPublicEvent).toHaveBeenCalledWith({
       subjectId: `0x${'1'.repeat(64)}`,
+      slotName: 'testnet',
+      chainId: '84532',
+      anchorContractAddress: '0x1111111111111111111111111111111111111111',
       publicEvent: {
         source: '0x00000000000000000000000000000000000000bb',
         eventType: 'transfer',
@@ -320,7 +323,7 @@ describe('IndexerService', () => {
       expect.objectContaining({
         slotName: 'testnet',
         nextFromBlock: 121n,
-        lastScannedBlock: 116n,
+        lastScannedBlock: 120n,
         lastScannedTxHash: '0xt116',
         lastScannedTxIndex: 2,
         lastScannedLogIndex: 3,
@@ -328,7 +331,7 @@ describe('IndexerService', () => {
     );
   });
 
-  it('bounds log requests to 2000 blocks while preserving combined ordering and cursor advancement', async () => {
+  it('commits each 2000-block log window before fetching the next one', async () => {
     const iface = new Interface([
       'event PublicEvent(bytes32 indexed subjectId, address indexed source, string eventType, bytes data, uint64 timestamp)',
     ]);
@@ -369,18 +372,23 @@ describe('IndexerService', () => {
       [{ address: '0x1111111111111111111111111111111111111111', fromBlock: 1_000, toBlock: 2_999 }],
       [{ address: '0x1111111111111111111111111111111111111111', fromBlock: 3_000, toBlock: 4_205 }],
     ]);
-    expect(hubStateRepository.withIndexerPersistenceTransaction).toHaveBeenCalledWith(
+    expect(hubStateRepository.withIndexerPersistenceTransaction).toHaveBeenCalledTimes(2);
+    expect(hubStateRepository.withIndexerPersistenceTransaction).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        nextFromBlock: 3_000n,
+        lastScannedBlock: 2_999n,
+        publicEvents: [expect.objectContaining({ blockNumber: 2_999n })],
+      }),
+    );
+    expect(hubStateRepository.withIndexerPersistenceTransaction).toHaveBeenNthCalledWith(
+      2,
       expect.objectContaining({
         nextFromBlock: 4_206n,
         lastScannedBlock: 4_205n,
-        publicEvents: expect.arrayContaining([
-          expect.objectContaining({ blockNumber: 2_999n }),
-          expect.objectContaining({ blockNumber: 4_205n }),
-        ]),
+        publicEvents: [expect.objectContaining({ blockNumber: 4_205n })],
       }),
     );
-    const input = (hubStateRepository.withIndexerPersistenceTransaction as jest.Mock).mock.calls[0][0];
-    expect(input.publicEvents.map((event: { blockNumber: bigint }) => event.blockNumber)).toEqual([2_999n, 4_205n]);
   });
 
   it('advances cursor across successive runs/windows', async () => {
@@ -438,6 +446,132 @@ describe('IndexerService', () => {
     );
   });
 
+  it.each([
+    [99n, false],
+    [100n, false],
+    [101n, true],
+    [102n, true],
+  ])('uses an existing cursor when configured start is %s', async (anchorStartBlock, shouldFail) => {
+    providerState.head = 120;
+    (hubStateRepository.getIndexerCursor as jest.Mock).mockResolvedValue({
+      slotName: 'testnet',
+      cursorName: 'anchor-public-events',
+      chainId: '84532',
+      anchorContractAddress: '0x1111111111111111111111111111111111111111',
+      nextFromBlock: 101n,
+      lastScannedBlock: 100n,
+      lastScannedTxHash: null,
+      lastScannedTxIndex: null,
+      lastScannedLogIndex: null,
+    });
+
+    const run = service.runSlot({
+      slotName: 'testnet',
+      chainId: '84532',
+      rpcUrl: 'https://testnet-rpc',
+      anchorContractAddress: '0x1111111111111111111111111111111111111111',
+      anchorStartBlock,
+    });
+
+    if (shouldFail) {
+      await expect(run).rejects.toThrow('above the last committed processed block 100');
+      expect(providerFactory).not.toHaveBeenCalled();
+      expect(hubStateRepository.withIndexerPersistenceTransaction).not.toHaveBeenCalled();
+      return;
+    }
+
+    await run;
+    const provider = (jest.requireMock('ethers').JsonRpcProvider as jest.Mock).mock.results.at(-1)?.value;
+    expect(provider.getLogs).toHaveBeenCalledWith({
+      address: '0x1111111111111111111111111111111111111111',
+      fromBlock: 101,
+      toBlock: 120,
+    });
+  });
+
+  it('resumes a case-insensitive cursor identity at its committed next block', async () => {
+    providerState.head = 120;
+    (hubStateRepository.getIndexerCursor as jest.Mock).mockResolvedValue({
+      slotName: 'testnet',
+      cursorName: 'anchor-public-events',
+      chainId: '84532',
+      anchorContractAddress: '0xE518BB784B8cB17e6F16e445A9275A16d61700b5',
+      nextFromBlock: 101n,
+      lastScannedBlock: 100n,
+      lastScannedTxHash: null,
+      lastScannedTxIndex: null,
+      lastScannedLogIndex: null,
+    });
+
+    await service.runSlot({
+      slotName: 'testnet',
+      chainId: '84532',
+      rpcUrl: 'https://testnet-rpc',
+      anchorContractAddress: '0xe518bb784b8cb17e6f16e445a9275a16d61700b5',
+      anchorStartBlock: 100n,
+    });
+
+    const provider = (jest.requireMock('ethers').JsonRpcProvider as jest.Mock).mock.results.at(-1)?.value;
+    expect(provider.getLogs).toHaveBeenCalledWith({
+      address: '0xe518bb784b8cb17e6f16e445a9275a16d61700b5',
+      fromBlock: 101,
+      toBlock: 120,
+    });
+  });
+
+  it('keeps the first committed window and resumes from the failed window', async () => {
+    providerState.head = 5_200;
+    let nextFromBlock = 1_000n;
+    let transactionAttempt = 0;
+    (hubStateRepository.getIndexerCursor as jest.Mock).mockImplementation(async () => ({
+      slotName: 'testnet',
+      cursorName: 'anchor-public-events',
+      chainId: '84532',
+      anchorContractAddress: '0x1111111111111111111111111111111111111111',
+      nextFromBlock,
+      lastScannedBlock: nextFromBlock - 1n,
+      lastScannedTxHash: null,
+      lastScannedTxIndex: null,
+      lastScannedLogIndex: null,
+    }));
+    (hubStateRepository.withIndexerPersistenceTransaction as jest.Mock).mockImplementation(async (input) => {
+      transactionAttempt += 1;
+      if (transactionAttempt === 2) {
+        throw new Error('database unavailable');
+      }
+      nextFromBlock = input.nextFromBlock;
+    });
+
+    const slot = {
+      slotName: 'testnet' as const,
+      chainId: '84532',
+      rpcUrl: 'https://testnet-rpc',
+      anchorContractAddress: '0x1111111111111111111111111111111111111111',
+      anchorStartBlock: 999n,
+    };
+    await expect(service.runSlot(slot)).rejects.toThrow('database unavailable');
+
+    const firstProvider = (jest.requireMock('ethers').JsonRpcProvider as jest.Mock).mock.results.at(-1)?.value;
+    expect(firstProvider.getLogs.mock.calls).toEqual([
+      [{ address: slot.anchorContractAddress, fromBlock: 1_000, toBlock: 2_999 }],
+      [{ address: slot.anchorContractAddress, fromBlock: 3_000, toBlock: 4_999 }],
+    ]);
+    expect(nextFromBlock).toBe(3_000n);
+
+    transactionAttempt = 0;
+    (hubStateRepository.withIndexerPersistenceTransaction as jest.Mock).mockImplementation(async (input) => {
+      nextFromBlock = input.nextFromBlock;
+    });
+    await service.runSlot(slot);
+
+    const restartedProvider = (jest.requireMock('ethers').JsonRpcProvider as jest.Mock).mock.results.at(-1)?.value;
+    expect(restartedProvider.getLogs.mock.calls).toEqual([
+      [{ address: slot.anchorContractAddress, fromBlock: 3_000, toBlock: 4_999 }],
+      [{ address: slot.anchorContractAddress, fromBlock: 5_000, toBlock: 5_200 }],
+    ]);
+    expect(nextFromBlock).toBe(5_201n);
+  });
+
   it('does not persist cursor when transactional write fails', async () => {
     providerState.head = 100;
     providerState.logs = [];
@@ -455,5 +589,45 @@ describe('IndexerService', () => {
     ).rejects.toThrow('write failed');
 
     expect(hubStateRepository.withIndexerPersistenceTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not publish public events from a window whose transaction fails', async () => {
+    const iface = new Interface([
+      'event PublicEvent(bytes32 indexed subjectId, address indexed source, string eventType, bytes data, uint64 timestamp)',
+    ]);
+    const encoded = iface.encodeEventLog(iface.getEvent('PublicEvent'), [
+      `0x${'1'.repeat(64)}`,
+      '0x00000000000000000000000000000000000000bb',
+      'transfer',
+      '0x1234',
+      42n,
+    ]);
+    providerState.head = 100;
+    providerState.logs = [
+      {
+        blockNumber: 100,
+        blockHash: '0xb100',
+        transactionHash: '0xt100',
+        transactionIndex: 0,
+        index: 0,
+        address: '0x1111111111111111111111111111111111111111',
+        topics: encoded.topics,
+        data: encoded.data,
+      },
+    ];
+    (hubStateRepository.getIndexerCursor as jest.Mock).mockResolvedValue(null);
+    (hubStateRepository.withIndexerPersistenceTransaction as jest.Mock).mockRejectedValue(new Error('write failed'));
+
+    await expect(
+      service.runSlot({
+        slotName: 'testnet',
+        chainId: '84532',
+        rpcUrl: 'https://testnet-rpc',
+        anchorContractAddress: '0x1111111111111111111111111111111111111111',
+        anchorStartBlock: 100n,
+      }),
+    ).rejects.toThrow('write failed');
+
+    expect(ownableTransport.publishPublicEvent).not.toHaveBeenCalled();
   });
 });

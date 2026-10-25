@@ -5,6 +5,11 @@ describe('HubStateRepository', () => {
   const withClient = jest.fn();
   const db = { query, withClient };
   let repo: HubStateRepository;
+  const activeIdentity = {
+    slotName: 'testnet',
+    chainId: '84532',
+    anchorContractAddress: '0xE518BB784B8cB17e6F16e445A9275A16d61700b5',
+  };
 
   beforeEach(() => {
     query.mockReset();
@@ -298,7 +303,7 @@ describe('HubStateRepository', () => {
       ],
     });
 
-    const rows = await repo.listIndexedPublicEventsBySubjectId(`0x${'6'.repeat(64)}`);
+    const rows = await repo.listIndexedPublicEventsBySubjectId(`0x${'6'.repeat(64)}`, activeIdentity);
 
     expect(rows).toEqual([
       expect.objectContaining({
@@ -316,7 +321,11 @@ describe('HubStateRepository', () => {
     ]);
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('WHERE subject_id = LOWER($1)'),
-      [`0x${'6'.repeat(64)}`],
+      [`0x${'6'.repeat(64)}`, 'testnet', '84532', activeIdentity.anchorContractAddress],
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('LOWER(anchor_contract_address) = LOWER($4)'),
+      expect.any(Array),
     );
   });
 
@@ -343,6 +352,7 @@ describe('HubStateRepository', () => {
       [watchedSubjectId.toUpperCase(), `0x${'8'.repeat(64)}`],
       11n,
       { blockNumber: 11n, transactionIndex: 0, logIndex: 5 },
+      activeIdentity,
     );
 
     expect(rows).toEqual([
@@ -357,7 +367,7 @@ describe('HubStateRepository', () => {
     ]);
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('WHERE subject_id = ANY($1::text[])'),
-      [[watchedSubjectId, `0x${'8'.repeat(64)}`], '11', '11', 0, 5],
+      [[watchedSubjectId, `0x${'8'.repeat(64)}`], '11', '11', 0, 5, 'testnet', '84532', activeIdentity.anchorContractAddress],
     );
     expect(query).toHaveBeenCalledWith(expect.stringContaining('block_number = $3::numeric AND transaction_index = $4 AND log_index > $5'), [
       [watchedSubjectId, `0x${'8'.repeat(64)}`],
@@ -365,11 +375,14 @@ describe('HubStateRepository', () => {
       '11',
       0,
       5,
+      'testnet',
+      '84532',
+      activeIdentity.anchorContractAddress,
     ]);
   });
 
   it('skips the incremental replay query when no watched subject ids are provided', async () => {
-    const rows = await repo.listIndexedPublicEventsBySubjectIdsAfter([], 11n, null);
+    const rows = await repo.listIndexedPublicEventsBySubjectIdsAfter([], 11n, null, activeIdentity);
 
     expect(rows).toEqual([]);
     expect(query).not.toHaveBeenCalled();

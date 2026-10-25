@@ -61,6 +61,28 @@ describe('ConfigService', () => {
     expect(mainnet.anchorStartBlock).toBe(200n);
   });
 
+  it('selects the active indexer slot with a normalized Anchor address', () => {
+    process.env.TESTNET_ANCHOR_CONTRACT_ADDR = '0xE518BB784B8cB17e6F16e445A9275A16d61700b5';
+    process.env.HUB_NETWORK_PROFILE = 'testnet';
+
+    expect(new ConfigService().getActiveIndexerSlot()).toEqual(
+      expect.objectContaining({
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0xe518bb784b8cb17e6f16e445a9275a16d61700b5',
+      }),
+    );
+
+    process.env.HUB_NETWORK_PROFILE = 'mainnet';
+    expect(new ConfigService().getActiveIndexerSlot()).toEqual(
+      expect.objectContaining({
+        slotName: 'mainnet',
+        chainId: '8453',
+        anchorContractAddress: '0x2222222222222222222222222222222222222222',
+      }),
+    );
+  });
+
   it('fails fast when required indexer envs are missing or invalid', () => {
     delete process.env.MAINNET_RPC_URL;
     const service = new ConfigService();

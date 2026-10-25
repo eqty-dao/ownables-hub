@@ -33,6 +33,9 @@ describe('OwnableTransportService', () => {
     const subscription = service.watchPublicEvents().subscribe((message) => received.push(message));
     const outbound = {
       subjectId: `0x${'1'.repeat(64)}`,
+      slotName: 'testnet',
+      chainId: '84532',
+      anchorContractAddress: '0x00000000000000000000000000000000000000aa',
       publicEvent: {
         source: '0x00000000000000000000000000000000000000bb',
         eventType: 'transfer',

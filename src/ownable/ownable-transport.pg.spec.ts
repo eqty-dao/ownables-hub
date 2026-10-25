@@ -129,11 +129,17 @@ describeWithDatabase('OwnableTransportService split-process public-event deliver
 
       publisher.publishPublicEvent({
         subjectId,
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x00000000000000000000000000000000000000aa',
         publicEvent: indexedEvent,
       });
 
       await expect(receivedPromise).resolves.toEqual({
         subjectId,
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x00000000000000000000000000000000000000aa',
         publicEvent: indexedEvent,
       });
     } finally {
