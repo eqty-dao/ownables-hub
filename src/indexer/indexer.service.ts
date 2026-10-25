@@ -152,6 +152,9 @@ export class IndexerService {
       }
       this.ownableTransport.publishPublicEvent({
         subjectId: event.subjectId,
+        slotName: event.slotName,
+        chainId: event.chainId,
+        anchorContractAddress: event.anchorContractAddress.toLowerCase(),
         publicEvent: {
           source: event.sourceAddress,
           eventType: event.eventType,

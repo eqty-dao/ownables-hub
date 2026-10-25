@@ -17,6 +17,11 @@ const PRIVATE_STATE_OWNER_WALLET = ethers.Wallet.createRandom();
 const REPLAY_OWNER_WALLET = ethers.Wallet.createRandom();
 const REPLAY_NFT_INFO = { network: 'eip155:base', address: '0xabc', id: '1' };
 const DEFAULT_ANCHORS = [{ key: { hex: '0xanchor' }, value: { hex: '0xbbb' } }];
+const ACTIVE_LIVE_IDENTITY = {
+  slotName: 'testnet',
+  chainId: '84532',
+  anchorContractAddress: '0x0000000000000000000000000000000000000001',
+};
 let mockReplayInfo: Record<string, unknown>;
 let mockReplayFailure: Error | null;
 const mockClearRpc = jest.fn();
@@ -261,6 +266,9 @@ describe('OwnableService', () => {
 
   const buildConfig = () => ({
     getRuntimeNetworkProfile: () => 'testnet',
+    getActiveIndexerSlot: () => ({
+      ...ACTIVE_LIVE_IDENTITY,
+    }),
     getAuthoritySignerPrivateKey: () => '',
     getAuthoritySignerMnemonic: () => PRIVATE_STATE_OWNER_WALLET.mnemonic?.phrase || '',
     getAppConfig: () => ({ publicBaseUrl: 'http://127.0.0.1:8000' }),
@@ -835,7 +843,11 @@ describe('OwnableService', () => {
     expect(hubState.listIndexedAnchorEventsByAnchorKeys).toHaveBeenCalledWith(
       chain.anchorMap.map(({ key }) => key.hex),
     );
-    expect(hubState.listIndexedPublicEventsBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id));
+    expect(hubState.listIndexedPublicEventsBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id), {
+      slotName: 'testnet',
+      chainId: '84532',
+      anchorContractAddress: '0x0000000000000000000000000000000000000001',
+    });
     expect(hubState.setOwnerState).not.toHaveBeenCalled();
   });
 
@@ -1020,6 +1032,7 @@ describe('OwnableService', () => {
     const collectedPromise = firstValueFrom(stream.pipe(take(3), toArray()));
     liveSubject.next({
       subjectId: expectedSubjectId(ownableIgnored.id),
+      ...ACTIVE_LIVE_IDENTITY,
       publicEvent: {
         source: '0x3333333333333333333333333333333333333333',
         eventType: 'ignore',
@@ -1033,6 +1046,23 @@ describe('OwnableService', () => {
     });
     liveSubject.next({
       subjectId: expectedSubjectId(ownableA.id),
+      slotName: 'mainnet',
+      chainId: '8453',
+      anchorContractAddress: '0x0000000000000000000000000000000000000002',
+      publicEvent: {
+        source: '0x1111111111111111111111111111111111111111',
+        eventType: 'ignore-inactive-identity',
+        data: '0x04',
+        blockNumber: 13,
+        transactionHash: '0xinactive',
+        transactionIndex: 0,
+        logIndex: 1,
+        timestamp: 44,
+      },
+    });
+    liveSubject.next({
+      subjectId: expectedSubjectId(ownableA.id),
+      ...ACTIVE_LIVE_IDENTITY,
       publicEvent: {
         source: '0x1111111111111111111111111111111111111111',
         eventType: 'transfer',
@@ -1099,6 +1129,11 @@ describe('OwnableService', () => {
       [expectedSubjectId(ownableA.id), expectedSubjectId(ownableB.id)],
       11n,
       null,
+      {
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x0000000000000000000000000000000000000001',
+      },
     );
   });
 
@@ -1121,6 +1156,7 @@ describe('OwnableService', () => {
 
     liveSubject.next({
       subjectId: expectedSubjectId(ownable.id),
+      ...ACTIVE_LIVE_IDENTITY,
       publicEvent: {
         source: '0x1111111111111111111111111111111111111111',
         eventType: 'transfer',
@@ -1160,6 +1196,7 @@ describe('OwnableService', () => {
 
     liveSubject.next({
       subjectId: expectedSubjectId(ownable.id),
+      ...ACTIVE_LIVE_IDENTITY,
       publicEvent: {
         source: '0x1111111111111111111111111111111111111111',
         eventType: 'transfer',

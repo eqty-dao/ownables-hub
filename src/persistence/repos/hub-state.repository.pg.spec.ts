@@ -299,7 +299,11 @@ describeWithDatabase('HubStateRepository recipient discovery postgres integratio
       });
 
       const anchorRows = await repo.listIndexedAnchorEventsByAnchorKeys([`0x${'7'.repeat(64)}`]);
-      const publicRows = await repo.listIndexedPublicEventsBySubjectId(subjectId);
+      const publicRows = await repo.listIndexedPublicEventsBySubjectId(subjectId, {
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x00000000000000000000000000000000000000aa',
+      });
 
       expect(anchorRows).toEqual([
         expect.objectContaining({
@@ -323,6 +327,60 @@ describeWithDatabase('HubStateRepository recipient discovery postgres integratio
           eventTimestamp: '42',
         }),
       ]);
+    });
+  });
+
+  it('returns only the active identity public rows while retaining other indexed identities', async () => {
+    await withSchema(null, async (repo, client) => {
+      const subjectId = `0x${'6'.repeat(64)}`;
+      const activeIdentity = {
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0xE518BB784B8cB17e6F16e445A9275A16d61700b5',
+      };
+      const baseEvent = {
+        blockHash: '0xabc',
+        transactionIndex: 0,
+        logIndex: 0,
+        eventName: 'PublicEvent',
+        subjectId,
+        sourceAddress: '0x00000000000000000000000000000000000000bb',
+        eventType: 'transfer',
+        dataHex: '0x1234',
+        eventTimestamp: 42n,
+        payloadJson: { public: true },
+      };
+
+      await repo.upsertIndexedPublicEvent({
+        ...baseEvent,
+        ...activeIdentity,
+        anchorContractAddress: activeIdentity.anchorContractAddress.toLowerCase(),
+        blockNumber: 11n,
+        transactionHash: '0xactive',
+      });
+      await repo.upsertIndexedPublicEvent({
+        ...baseEvent,
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x00000000000000000000000000000000000000cc',
+        blockNumber: 12n,
+        transactionHash: '0xother-anchor',
+      });
+      await repo.upsertIndexedPublicEvent({
+        ...baseEvent,
+        slotName: 'mainnet',
+        chainId: '8453',
+        anchorContractAddress: activeIdentity.anchorContractAddress,
+        blockNumber: 13n,
+        transactionHash: '0xother-chain',
+      });
+
+      await expect(repo.listIndexedPublicEventsBySubjectId(subjectId, activeIdentity)).resolves.toEqual([
+        expect.objectContaining({ transactionHash: '0xactive' }),
+      ]);
+      await expect(client.query('SELECT id FROM indexed_public_events')).resolves.toEqual(
+        expect.objectContaining({ rowCount: 3 }),
+      );
     });
   });
 

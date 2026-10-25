@@ -187,6 +187,9 @@ describe('IndexerService', () => {
     });
     expect(ownableTransport.publishPublicEvent).toHaveBeenCalledWith({
       subjectId: `0x${'1'.repeat(64)}`,
+      slotName: 'testnet',
+      chainId: '84532',
+      anchorContractAddress: '0x1111111111111111111111111111111111111111',
       publicEvent: {
         source: '0x00000000000000000000000000000000000000bb',
         eventType: 'transfer',

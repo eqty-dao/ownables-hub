@@ -92,6 +92,12 @@ export interface IndexedPublicEventCursor {
   logIndex: number;
 }
 
+export interface IndexedEventIdentity {
+  slotName: string;
+  chainId: string;
+  anchorContractAddress: string;
+}
+
 export interface IndexerCursorState {
   slotName: 'testnet' | 'mainnet';
   cursorName: string;
@@ -739,7 +745,10 @@ export class HubStateRepository {
     return result.rows;
   }
 
-  async listIndexedPublicEventsBySubjectId(subjectId: string): Promise<IndexedPublicEventRow[]> {
+  async listIndexedPublicEventsBySubjectId(
+    subjectId: string,
+    identity: IndexedEventIdentity,
+  ): Promise<IndexedPublicEventRow[]> {
     const result = await this.db.query<IndexedPublicEventRow>(
       `SELECT
          id,
@@ -763,8 +772,11 @@ export class HubStateRepository {
          indexed_at::text AS "indexedAt"
        FROM indexed_public_events
        WHERE subject_id = LOWER($1)
+         AND slot_name = $2
+         AND chain_id = $3
+         AND LOWER(anchor_contract_address) = LOWER($4)
        ORDER BY block_number ASC, transaction_index ASC, log_index ASC`,
-      [subjectId],
+      [subjectId, identity.slotName, identity.chainId, identity.anchorContractAddress],
     );
 
     return result.rows;
@@ -773,7 +785,8 @@ export class HubStateRepository {
   async listIndexedPublicEventsBySubjectIdsAfter(
     subjectIds: string[],
     fromBlock: bigint,
-    cursor?: IndexedPublicEventCursor | null,
+    cursor: IndexedPublicEventCursor | null,
+    identity: IndexedEventIdentity,
   ): Promise<IndexedPublicEventRow[]> {
     if (!subjectIds.length) {
       return [];
@@ -810,6 +823,9 @@ export class HubStateRepository {
            OR (block_number = $3::numeric AND transaction_index > $4)
            OR (block_number = $3::numeric AND transaction_index = $4 AND log_index > $5)
          )
+         AND slot_name = $6
+         AND chain_id = $7
+         AND LOWER(anchor_contract_address) = LOWER($8)
        ORDER BY block_number ASC, transaction_index ASC, log_index ASC`,
       [
         normalizedSubjectIds,
@@ -817,6 +833,9 @@ export class HubStateRepository {
         cursor ? cursor.blockNumber.toString() : null,
         cursor?.transactionIndex ?? null,
         cursor?.logIndex ?? null,
+        identity.slotName,
+        identity.chainId,
+        identity.anchorContractAddress,
       ],
     );
 
