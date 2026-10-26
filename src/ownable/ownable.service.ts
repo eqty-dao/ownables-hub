@@ -259,10 +259,6 @@ export class OwnableService {
     }
   }
 
-  public async GetServerETHBalance(networkName: string): Promise<string> {
-    return await this.ethers.GetServerETHBalance(networkName);
-  }
-
   private validateEventChain(chain: EventChain): void {
     if (!chain.events.length) throw new UserError('Empty event chain');
     if (chain.events.some((event) => !event.signature || !event.signerAddress)) {

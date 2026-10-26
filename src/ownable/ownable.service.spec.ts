@@ -276,9 +276,6 @@ describe('OwnableService', () => {
   });
 
   const buildService = async () => {
-    const ethers = {
-      GetServerETHBalance: jest.fn().mockResolvedValue('1.00'),
-    };
     const storage = {
       storePackageArtifacts: jest.fn().mockResolvedValue(undefined),
       storeEventChain: jest.fn().mockResolvedValue(undefined),
@@ -322,7 +319,7 @@ describe('OwnableService', () => {
     };
     const service = new OwnableService(
       buildConfig() as any,
-      ethers as any,
+      {} as any,
       storage as any,
       hubState as any,
       ownableTransport as any,
@@ -348,7 +345,7 @@ describe('OwnableService', () => {
       .spyOn(service as any, 'assertSupportedOwnableRuntime')
       .mockImplementation(() => undefined);
 
-    return { service, ethers, storage, hubState, ownableTransport, runtimeValidatorSpy };
+    return { service, storage, hubState, ownableTransport, runtimeValidatorSpy };
   };
 
   const createChain = async (
@@ -515,13 +512,6 @@ describe('OwnableService', () => {
       ...codeSection,
     ]);
   };
-
-  it('forwards the legacy server balance through the shared Ethers service', async () => {
-    const { service, ethers } = await buildService();
-
-    await expect(service.GetServerETHBalance('eip155:base')).resolves.toBe('1.00');
-    expect(ethers.GetServerETHBalance).toHaveBeenCalledWith('eip155:base');
-  });
 
   it('accepts upload by passing indexed anchor evidence through EventChainService verification', async () => {
     const { service, storage, hubState } = await buildService();
