@@ -333,13 +333,25 @@ function startWalletRpcServer() {
   });
 }
 
-async function readSseChunk(response) {
+async function readSseEvent(response, expectedType) {
   assert.ok(response.body, 'Expected an SSE response body');
   const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let received = '';
   try {
-    const { value, done } = await reader.read();
-    assert.equal(done, false, 'Expected an SSE event');
-    return new TextDecoder().decode(value);
+    while (true) {
+      const { value, done } = await reader.read();
+      assert.equal(done, false, `Expected SSE event '${expectedType}', received: ${JSON.stringify(received)}`);
+      received += decoder.decode(value, { stream: true });
+
+      const eventStart = received.indexOf(`event: ${expectedType}\n`);
+      if (eventStart >= 0) {
+        const eventEnd = received.indexOf('\n\n', eventStart);
+        if (eventEnd >= 0) {
+          return received.slice(eventStart, eventEnd + 2);
+        }
+      }
+    }
   } finally {
     await reader.cancel();
   }
@@ -612,7 +624,7 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   assert.ok(storedFilesBeforeInvalidUpload.length > 0, 'Expected the successful upload to persist bundle files');
 
   const accountEvent = await accountEventResponse;
-  const accountEventChunk = await readSseChunk(accountEvent);
+  const accountEventChunk = await readSseEvent(accountEvent, 'available-ownable');
   accountEventController.abort();
   assert.match(accountEventChunk, /^event: available-ownable/m);
   assert.match(accountEventChunk, new RegExp(`"owner":"${ownerAccount}"`));
@@ -662,7 +674,7 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
     { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
   );
   assert.equal(defaultPublicEvents.status, 200);
-  const defaultPublicEventChunk = await readSseChunk(defaultPublicEvents);
+  const defaultPublicEventChunk = await readSseEvent(defaultPublicEvents, 'public-event');
   assert.match(defaultPublicEventChunk, /^event: public-event/m);
   assert.match(defaultPublicEventChunk, /"eventType":"compiled-route-event"/);
   assert.match(defaultPublicEventChunk, new RegExp(`"ownableId":"${chain.id}"`));
@@ -672,7 +684,7 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
     { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
   );
   assert.equal(explicitPublicEvents.status, 200);
-  const explicitPublicEventChunk = await readSseChunk(explicitPublicEvents);
+  const explicitPublicEventChunk = await readSseEvent(explicitPublicEvents, 'public-event');
   assert.match(explicitPublicEventChunk, /"eventType":"compiled-route-event"/);
 
   for (const path of ['/public-events', `/public-events?ownableId=${encodeURIComponent(chain.id)}&fromBlock=-1`]) {
