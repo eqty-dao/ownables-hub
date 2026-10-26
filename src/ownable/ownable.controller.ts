@@ -1,12 +1,11 @@
-import { Controller, Get, Header, MessageEvent, Post, Query, Req, Res, Sse, StreamableFile, UseGuards, UseInterceptors } from '@nestjs/common';
-import { ApiBody, ApiProperty, ApiConsumes, ApiProduces } from '@nestjs/swagger';
+import { Controller, Get, Header, Post, Query, Req, Res, StreamableFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { ApiBody, ApiConsumes, ApiCreatedResponse, ApiParam, ApiProduces, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { OwnableService } from './ownable.service';
 import { Signer } from '../common/http-signature/signer';
-import { AuthError, UserError } from '../interfaces/error';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { SIWEGuard } from '../common/siwe/siwe.guard';
-import { Observable } from 'rxjs';
+import { writeHttpError } from '../common/http/http-error-response';
 
 interface SignerIdentity {
   address?: string;
@@ -15,12 +14,13 @@ interface SignerIdentity {
 type FileUploadRequest = Request & { file?: Express.Multer.File };
 
 @Controller('ownables')
+@ApiTags('ownables')
 export class OwnableController {
   constructor(private ownableService: OwnableService) {}
 
-  @Post('/upload')
+  @Post()
   @ApiConsumes('multipart/form-data')
-  @ApiProperty({ type: 'string', format: 'binary' })
+  @ApiProduces('application/json')
   @ApiBody({
     description: 'Zipped Ownable package',
     required: true,
@@ -34,6 +34,7 @@ export class OwnableController {
       },
     },
   })
+  @ApiCreatedResponse({ description: 'Ownable created', headers: { Location: { schema: { type: 'string' } } } })
   @UseInterceptors(FileInterceptor('file'))
   async uploadOwnable(@Req() req: FileUploadRequest, @Res() res: Response, @Signer() signer?: SignerIdentity): Promise<Response> {
     const buffer = req.file?.buffer;
@@ -42,16 +43,16 @@ export class OwnableController {
     }
 
     try {
-      const bridgedOwnableInfo = await this.ownableService.uploadOwnable(buffer, signer, true);
-      return res.status(201).json(bridgedOwnableInfo);
+      const ownableInfo = await this.ownableService.uploadOwnable(buffer, signer, true);
+      const ownableId = String(ownableInfo.ownableId ?? '');
+      return res.location(`/ownables/${encodeURIComponent(ownableId)}`).status(201).json(ownableInfo);
     } catch (err) {
-      return this.errorResponse(res, err);
+      return writeHttpError(res, err);
     }
   }
 
   @Post('/bridge')
   @ApiConsumes('multipart/form-data')
-  @ApiProperty({ type: 'string', format: 'binary' })
   @ApiBody({
     description: 'Zipped Ownable package',
     required: true,
@@ -63,6 +64,7 @@ export class OwnableController {
   }
 
   @Get(':id/bundle')
+  @ApiParam({ name: 'id' })
   @Header('Content-type', 'application/zip')
   @ApiProduces('application/zip')
   async download(@Req() req: Request, @Res({ passthrough: true }) res: Response): Promise<StreamableFile | Response> {
@@ -70,77 +72,34 @@ export class OwnableController {
       const id = String(req.params.id ?? '');
       return await this.ownableService.downloadOwnable(id);
     } catch (err) {
-      return this.errorResponse(res, err);
-    }
-  }
-
-  @Get(':id/chain')
-  @Header('Content-type', 'application/json')
-  async chain(@Req() req: Request, @Res() res: Response): Promise<Response> {
-    try {
-      const id = String(req.params.id ?? '');
-      const chain = await this.ownableService.downloadOwnableChain(id);
-      return res.status(200).send(chain.toString('utf8'));
-    } catch (err) {
-      return this.errorResponse(res, err);
+      return writeHttpError(res, err);
     }
   }
 
   @Get(':id/verification')
+  @ApiParam({ name: 'id' })
+  @ApiProduces('application/json')
   async verification(@Req() req: Request, @Res() res: Response): Promise<Response> {
     try {
       const id = String(req.params.id ?? '');
       const verification = await this.ownableService.getOwnableVerification(id);
       return res.status(200).json(verification);
     } catch (err) {
-      return this.errorResponse(res, err);
+      return writeHttpError(res, err);
     }
   }
 
   @Get(':id/public-events')
+  @ApiParam({ name: 'id' })
+  @ApiProduces('application/json')
   async publicEvents(@Req() req: Request, @Res() res: Response): Promise<Response> {
     try {
       const id = String(req.params.id ?? '');
       const publicEvents = await this.ownableService.getOwnablePublicEvents(id);
       return res.status(200).json(publicEvents);
     } catch (err) {
-      return this.errorResponse(res, err);
+      return writeHttpError(res, err);
     }
-  }
-
-  @Get('available')
-  async available(@Query('owner') owner: string, @Res() res: Response): Promise<Response> {
-    try {
-      const availableOwnables = await this.ownableService.getAvailableOwnables(owner);
-      return res.status(200).json(availableOwnables);
-    } catch (err) {
-      return this.errorResponse(res, err);
-    }
-  }
-
-  @Sse('public-events/stream')
-  async publicEventsStream(
-    @Query('id') ownableIds: string[] | string | undefined,
-    @Query('from') from: string | undefined,
-  ): Promise<Observable<MessageEvent>> {
-    return await this.ownableService.streamOwnablePublicEvents(ownableIds, from);
-  }
-
-  @Sse('available/stream')
-  availableStream(@Query('owner') owner: string): Observable<MessageEvent> {
-    return this.ownableService.streamAvailableOwnables(owner);
-  }
-
-  private errorResponse(res: Response, err: any) {
-    if (err instanceof AuthError) return res.status(403).json({ code: 'AUTH_ERROR', message: err.message });
-    if (err instanceof UserError && err.message === 'RECIPIENT_DISCOVERY_DISABLED') return res.status(404).send('Not Found');
-    if (err instanceof UserError && err.message.startsWith('STALE_OWNABLE')) {
-      return res.status(409).json({ code: 'STALE_OWNABLE', message: err.message });
-    }
-    if (err instanceof UserError) return res.status(400).send(err.message);
-
-    console.error(err);
-    return res.status(500).send('Unexpected error');
   }
 
   @Get(':id/unlock-proof')
@@ -152,7 +111,7 @@ export class OwnableController {
       if (res) return res.status(200).json({ unlockProof });
       return { unlockProof };
     } catch (e) {
-      return this.errorResponse(res as Response, e);
+      return writeHttpError(res as Response, e);
     }
   }
 
@@ -189,15 +148,4 @@ export class OwnableController {
     }
   }
 
-  @Get('serverinfo')
-  async GetServerInfo() {
-    try {
-      const baseBalance = await this.ownableService.GetServerETHBalance('eip155:base');
-      return {
-        ServerBaseBalance: baseBalance,
-      };
-    } catch (e) {
-      return { error: `${e}` };
-    }
-  }
 }

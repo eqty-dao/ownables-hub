@@ -32,5 +32,6 @@ import { OwnableReplayService } from './ownable-replay.service';
     OwnableService,
   ],
   controllers: [OwnableController],
+  exports: [OwnableService],
 })
 export class OwnableModule {}

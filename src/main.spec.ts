@@ -12,7 +12,7 @@ class CorsTestController {
     return { ok: true };
   }
 
-  @Post('/ownables/upload')
+  @Post('/ownables')
   upload() {
     return { ok: true };
   }
@@ -65,7 +65,7 @@ describe('configureApp', () => {
 
   it('answers upload preflight for the SDK dev origin', () => {
     return request(app.getHttpAdapter().getInstance())
-      .options('/ownables/upload')
+      .options('/ownables')
       .set('Origin', 'http://127.0.0.1:5173')
       .set('Access-Control-Request-Method', 'POST')
       .set('Access-Control-Request-Headers', 'content-type')

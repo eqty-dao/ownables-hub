@@ -1,14 +1,14 @@
 import { Controller, Get, Res } from '@nestjs/common';
 import { Response } from 'express';
 import { AppHealth, AppService } from './app.service';
-import { ApiExcludeEndpoint } from '@nestjs/swagger';
+import { ApiFoundResponse } from '@nestjs/swagger';
 
 @Controller()
 export class AppController {
   constructor(private readonly appService: AppService) {}
 
   @Get('/')
-  @ApiExcludeEndpoint()
+  @ApiFoundResponse({ description: 'Redirect to API documentation' })
   root(@Res() res: Response): void {
     res.redirect('/api-docs');
   }

@@ -898,7 +898,7 @@ export class OwnableService {
 
   async streamOwnablePublicEvents(
     ownableIdsInput: string[] | string | undefined,
-    fromBlockInput: string | undefined,
+    fromBlockInput: string | string[] | undefined,
   ): Promise<Observable<MessageEvent>> {
     const ownableIds = this.normalizeOwnableIds(ownableIdsInput);
     const fromBlock = this.normalizeFromBlock(fromBlockInput);
@@ -1143,18 +1143,19 @@ export class OwnableService {
       .map((ownableId) => ownableId.trim())
       .filter(Boolean);
     if (!ownableIds.length) {
-      throw new UserError('id is required');
+      throw new UserError('ownableId is required');
     }
     return Array.from(new Set(ownableIds));
   }
 
-  private normalizeFromBlock(fromBlockInput: string | undefined): bigint {
-    const candidate = fromBlockInput?.trim() ?? '';
-    if (!candidate) {
-      throw new UserError('from is required');
+  private normalizeFromBlock(fromBlockInput: string | string[] | undefined): bigint {
+    if (fromBlockInput === undefined) return 0n;
+    if (Array.isArray(fromBlockInput)) {
+      throw new UserError('fromBlock must be a non-negative integer');
     }
+    const candidate = fromBlockInput.trim();
     if (!/^\d+$/.test(candidate)) {
-      throw new UserError('from must be a non-negative integer');
+      throw new UserError('fromBlock must be a non-negative integer');
     }
     return BigInt(candidate);
   }

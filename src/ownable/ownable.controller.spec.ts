@@ -8,6 +8,7 @@ import { UserError } from '../interfaces/error';
 import { OwnableService } from './ownable.service';
 import { OwnableTransportService } from './ownable-transport.service';
 import { of } from 'rxjs';
+import { configureApp } from '../app.bootstrap';
 
 jest.mock('eqty-core', () => require('../test-mocks/eqty-core.ts'));
 jest.mock('@ownables/core', () => ({
@@ -36,6 +37,7 @@ describe('OwnableController', () => {
   const buildRes = () => {
     const res: any = {};
     res.status = jest.fn(() => res);
+    res.location = jest.fn(() => res);
     res.send = jest.fn(() => res);
     res.json = jest.fn(() => res);
     return res;
@@ -43,7 +45,7 @@ describe('OwnableController', () => {
 
   it('keeps upload endpoint public and accepts valid uploads without signer', async () => {
     const ownableService = {
-      uploadOwnable: jest.fn().mockResolvedValue({ cid: 'cid-1' }),
+      uploadOwnable: jest.fn().mockResolvedValue({ ownableId: 'ownable/id', cid: 'cid-1' }),
     } as any;
     const controller = new OwnableController(ownableService);
 
@@ -53,6 +55,7 @@ describe('OwnableController', () => {
     await controller.uploadOwnable(req, res, undefined);
 
     expect(ownableService.uploadOwnable).toHaveBeenCalledWith(req.file.buffer, undefined, true);
+    expect(res.location).toHaveBeenCalledWith('/ownables/ownable%2Fid');
     expect(res.status).toHaveBeenCalledWith(201);
   });
 
@@ -71,6 +74,16 @@ describe('OwnableController', () => {
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.send).toHaveBeenCalledWith("Invalid package: 'chain.json' and 'eventChain.json' differ");
+  });
+
+  it('rejects a missing multipart file with the existing 400 response', async () => {
+    const controller = new OwnableController({ uploadOwnable: jest.fn() } as any);
+    const res = buildRes();
+
+    await controller.uploadOwnable({} as any, res, undefined);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.send).toHaveBeenCalledWith('Failed to read data from HTTP request');
   });
 
   it('maps unsupported runtime uploads to 400 client rejection', async () => {
@@ -149,18 +162,6 @@ describe('OwnableController', () => {
     expect(res.json).toHaveBeenCalledWith(publicEvents);
   });
 
-  it('maps disabled recipient discovery to 404', async () => {
-    const ownableService = {
-      getAvailableOwnables: jest.fn().mockRejectedValue(new UserError('RECIPIENT_DISCOVERY_DISABLED')),
-    } as any;
-    const controller = new OwnableController(ownableService);
-    const res = buildRes();
-
-    await controller.available('eip155:84532:0xabc', res);
-
-    expect(res.status).toHaveBeenCalledWith(404);
-  });
-
   it('maps stale download to explicit stale client contract', async () => {
     const ownableService = {
       downloadOwnable: jest.fn().mockRejectedValue(new UserError('STALE_OWNABLE missingReplayKeys=0xaaa:1')),
@@ -237,7 +238,7 @@ describe('OwnableController', () => {
   });
 });
 
-describe('OwnableController recipient discovery route behavior', () => {
+describe('Story #9 resource route behavior', () => {
   const ownableService = {
     getAvailableOwnables: jest.fn(),
     streamOwnablePublicEvents: jest.fn(),
@@ -268,6 +269,7 @@ describe('OwnableController recipient discovery route behavior', () => {
       .compile();
 
     app = moduleRef.createNestApplication();
+    await configureApp(app);
     await app.init();
   });
 
@@ -306,8 +308,7 @@ describe('OwnableController recipient discovery route behavior', () => {
     });
 
     await request(app.getHttpServer())
-      .get('/ownables/available')
-      .query({ owner: 'eip155:84532:0xabc' })
+      .get(`/accounts/${encodeURIComponent('eip155:84532:0xabc')}/available-ownables`)
       .expect(200)
       .expect(({ body }) => {
         expect(body).toEqual({
@@ -339,18 +340,17 @@ describe('OwnableController recipient discovery route behavior', () => {
   it('returns 404 when recipient discovery is disabled', async () => {
     ownableService.getAvailableOwnables.mockRejectedValue(new UserError('RECIPIENT_DISCOVERY_DISABLED'));
 
-    await request(app.getHttpServer()).get('/ownables/available').query({ owner: 'eip155:84532:0xabc' }).expect(404);
+    await request(app.getHttpServer())
+      .get(`/accounts/${encodeURIComponent('eip155:84532:0xabc')}/available-ownables`)
+      .expect(404);
   });
 
   it('returns 400 when owner is missing or malformed', async () => {
-    ownableService.getAvailableOwnables.mockRejectedValueOnce(new UserError('owner is required'));
-    await request(app.getHttpServer()).get('/ownables/available').expect(400);
-
     ownableService.getAvailableOwnables.mockRejectedValueOnce(new UserError('owner must be a valid CAIP-10 account'));
-    await request(app.getHttpServer()).get('/ownables/available').query({ owner: 'not-caip10' }).expect(400);
+    await request(app.getHttpServer()).get('/accounts/not-caip10/available-ownables').expect(400);
   });
 
-  it('streams public events over SSE with repeated id params and one named event', async () => {
+  it('streams public events over SSE with repeated ownableId params and one named event', async () => {
     ownableService.streamOwnablePublicEvents.mockResolvedValue(
       of(
         {
@@ -389,8 +389,8 @@ describe('OwnableController recipient discovery route behavior', () => {
     );
 
     const response = await request(app.getHttpServer())
-      .get('/ownables/public-events/stream')
-      .query({ id: ['ownable-1', 'ownable-2'], from: '11' })
+      .get('/public-events')
+      .query({ ownableId: ['ownable-1', 'ownable-2'], fromBlock: '11' })
       .buffer(true)
       .parse((res, callback) => {
         let body = '';
@@ -406,6 +406,42 @@ describe('OwnableController recipient discovery route behavior', () => {
     expect(response.body).toContain('event: public-event');
     expect(response.body).toContain('"ownableId":"ownable-1"');
     expect(response.body).toContain('"ownableId":"ownable-2"');
+  });
+
+  it('rejects an unfiltered or malformed public-event request before opening a stream', async () => {
+    ownableService.streamOwnablePublicEvents.mockRejectedValueOnce(new UserError('ownableId is required'));
+    await request(app.getHttpServer()).get('/public-events').expect(400);
+
+    ownableService.streamOwnablePublicEvents.mockRejectedValueOnce(new UserError('fromBlock must be a non-negative integer'));
+    await request(app.getHttpServer()).get('/public-events').query({ ownableId: 'ownable-1', fromBlock: '-1' }).expect(400);
+  });
+
+  it('passes an omitted fromBlock through to the service default', async () => {
+    ownableService.streamOwnablePublicEvents.mockResolvedValue(
+      of({
+        type: 'public-event',
+        data: {
+          ownableId: 'ownable-1',
+          publicEvent: {
+            source: '0x00000000000000000000000000000000000000bb',
+            eventType: 'transfer',
+            data: '0x01',
+            blockNumber: 0,
+            transactionHash: '0xaaa',
+            transactionIndex: 0,
+            logIndex: 0,
+          },
+        },
+      }),
+    );
+
+    await request(app.getHttpServer())
+      .get('/public-events')
+      .query({ ownableId: 'ownable-1' })
+      .expect(200)
+      .expect('Content-Type', /text\/event-stream/);
+
+    expect(ownableService.streamOwnablePublicEvents).toHaveBeenCalledWith('ownable-1', undefined);
   });
 
   it('streams discovery updates over a separate live-only SSE route', async () => {
@@ -428,8 +464,7 @@ describe('OwnableController recipient discovery route behavior', () => {
     );
 
     const response = await request(app.getHttpServer())
-      .get('/ownables/available/stream')
-      .query({ owner: 'eip155:84532:0xabc' })
+      .get(`/accounts/${encodeURIComponent('eip155:84532:0xabc')}/available-ownables/events`)
       .buffer(true)
       .parse((res, callback) => {
         let body = '';
@@ -448,6 +483,14 @@ describe('OwnableController recipient discovery route behavior', () => {
   });
 
   it('keeps removed legacy ownables routes absent', async () => {
+    await request(app.getHttpServer()).post('/ownables/upload').expect(404);
+    await request(app.getHttpServer()).get('/ownables/available').expect(404);
+    await request(app.getHttpServer()).get('/ownables/available/stream').expect(404);
+    await request(app.getHttpServer()).get('/ownables/public-events/stream').expect(404);
+    await request(app.getHttpServer()).get('/ownables/serverinfo').expect(404);
+    await request(app.getHttpServer()).get('/ownables/ownable-1/chain').expect(404);
+    await request(app.getHttpServer()).post('/packages').expect(404);
+    await request(app.getHttpServer()).get('/packages/cid-1/download').expect(404);
     await request(app.getHttpServer())
       .get('/ownables/cid')
       .query({ network: 'eip155:84532', address: '0xabc', id: '1' })
@@ -461,5 +504,59 @@ describe('OwnableController recipient discovery route behavior', () => {
       .expect(404);
 
     await request(app.getHttpServer()).get('/ownables/cid-1/events').expect(404);
+  });
+
+  it('keeps optional bearer parsing on migrated public routes', async () => {
+    await request(app.getHttpServer())
+      .get(`/accounts/${encodeURIComponent('eip155:84532:0xabc')}/available-ownables`)
+      .set('Authorization', 'invalid')
+      .expect(401);
+  });
+
+  it('publishes the canonical non-NFT inventory and excludes removed non-NFT paths', async () => {
+    const response = await request(app.getHttpServer()).get('/api-docs-json').expect(200);
+    const paths = response.body.paths as Record<string, unknown>;
+
+    for (const path of [
+      '/',
+      '/info',
+      '/health',
+      '/api/v1/auth/nonce',
+      '/api/v1/auth/verify',
+      '/ownables',
+      '/ownables/{id}/bundle',
+      '/ownables/{id}/verification',
+      '/ownables/{id}/public-events',
+      '/accounts/{account}/available-ownables',
+      '/accounts/{account}/available-ownables/events',
+      '/public-events',
+      '/hub/wallet/{network}',
+    ]) {
+      expect(paths[path]).toBeDefined();
+    }
+
+    for (const path of [
+      '/packages',
+      '/packages/{cid}/download',
+      '/ownables/upload',
+      '/ownables/{id}/chain',
+      '/ownables/available',
+      '/ownables/available/stream',
+      '/ownables/public-events/stream',
+      '/ownables/serverinfo',
+    ]) {
+      expect(paths[path]).toBeUndefined();
+    }
+
+    expect(Object.keys(paths).filter((path) => path.startsWith('/ownables/')).sort()).toEqual([
+      '/ownables/bridge',
+      '/ownables/bridged',
+      '/ownables/chains',
+      '/ownables/isUnlockProofValid',
+      '/ownables/{id}/bundle',
+      '/ownables/{id}/public-events',
+      '/ownables/{id}/unlock-proof',
+      '/ownables/{id}/verification',
+    ]);
   });
 });
