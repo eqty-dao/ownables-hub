@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createServer as createHttpServer } from 'node:http';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -14,7 +15,10 @@ import { NodeRuntimeRpcProvider, NodeRuntimeSourceProvider } from '@ownables/pla
 import { Event, EventChain } from 'eqty-core';
 import { ethers } from 'ethers';
 import JSZip from 'jszip';
+import { encode } from 'cbor-x';
+import pg from 'pg';
 
+const { Client } = pg;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
 const EXPECTED_UNSUPPORTED_RUNTIME_ERROR =
@@ -24,6 +28,9 @@ const STARTUP_TIMEOUT_MS = 30_000;
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 250;
 const MAX_OUTPUT_LENGTH = 20_000;
+const E2E_ANCHOR_CONTRACT = '0x0000000000000000000000000000000000000099';
+const E2E_ANCHOR_TRANSACTION = `0x${'9'.repeat(64)}`;
+const E2E_PUBLIC_EVENT_TRANSACTION = `0x${'8'.repeat(64)}`;
 
 async function buildChain(wallet) {
   const chain = EventChain.create(wallet.address, 84532);
@@ -69,6 +76,177 @@ async function buildUnsupportedUploadArchive() {
   };
 }
 
+function encodeUnsigned(value) {
+  const bytes = [];
+  let remaining = value >>> 0;
+  do {
+    let byte = remaining & 0x7f;
+    remaining >>>= 7;
+    if (remaining > 0) byte |= 0x80;
+    bytes.push(byte);
+  } while (remaining > 0);
+  return bytes;
+}
+
+function encodeSignedI64(value) {
+  const bytes = [];
+  let remaining = BigInt(value);
+  while (true) {
+    let byte = Number(remaining & 0x7fn);
+    remaining >>= 7n;
+    const isNegative = (byte & 0x40) !== 0;
+    const done = (remaining === 0n && !isNegative) || (remaining === -1n && isNegative);
+    if (!done) byte |= 0x80;
+    bytes.push(byte);
+    if (done) return bytes;
+  }
+}
+
+function encodeString(value) {
+  const bytes = Array.from(Buffer.from(value, 'utf8'));
+  return [...encodeUnsigned(bytes.length), ...bytes];
+}
+
+function wasmSection(id, contents) {
+  return [id, ...encodeUnsigned(contents.length), ...contents];
+}
+
+function packedPointerLength(pointer, length) {
+  return (BigInt(length) << 32n) | BigInt(pointer);
+}
+
+function buildE2ERuntimeWasm(owner) {
+  const actionEnvelope = encode({
+    success: true,
+    payload: encode({ result: encode({ attributes: [] }), mem: { state_dump: [] } }),
+  });
+  const queryEnvelope = encode({
+    success: true,
+    payload: encode({ result: Buffer.from(JSON.stringify({ owner }), 'utf8'), mem: { state_dump: [] } }),
+  });
+  const actionPointer = 1024;
+  const queryPointer = 2048;
+  const i64ResultBody = (pointer, length) => [
+    0x00,
+    0x42,
+    ...encodeSignedI64(packedPointerLength(pointer, length)),
+    0x0b,
+  ];
+
+  const typeSection = wasmSection(1, [
+    ...encodeUnsigned(3),
+    0x60,
+    ...encodeUnsigned(1),
+    0x7f,
+    ...encodeUnsigned(1),
+    0x7f,
+    0x60,
+    ...encodeUnsigned(2),
+    0x7f,
+    0x7f,
+    ...encodeUnsigned(0),
+    0x60,
+    ...encodeUnsigned(2),
+    0x7f,
+    0x7f,
+    ...encodeUnsigned(1),
+    0x7e,
+  ]);
+  const functionSection = wasmSection(3, [
+    ...encodeUnsigned(8),
+    ...encodeUnsigned(0),
+    ...encodeUnsigned(1),
+    ...Array.from({ length: 6 }, () => encodeUnsigned(2)).flat(),
+  ]);
+  const memorySection = wasmSection(5, [...encodeUnsigned(1), 0x00, ...encodeUnsigned(1)]);
+  const exportEntries = [
+    ['memory', 0x02, 0],
+    ['ownable_alloc', 0x00, 0],
+    ['ownable_free', 0x00, 1],
+    ['ownable_instantiate', 0x00, 2],
+    ['ownable_execute', 0x00, 3],
+    ['ownable_query', 0x00, 4],
+    ['ownable_register', 0x00, 5],
+    ['ownable_ingest', 0x00, 6],
+    ['ownable_encode_public_event', 0x00, 7],
+  ];
+  const exportSection = wasmSection(7, [
+    ...encodeUnsigned(exportEntries.length),
+    ...exportEntries.flatMap(([name, kind, index]) => [...encodeString(name), kind, ...encodeUnsigned(index)]),
+  ]);
+  const functionBodies = [
+    [0x00, 0x41, 0x00, 0x0b],
+    [0x00, 0x0b],
+    i64ResultBody(actionPointer, actionEnvelope.length),
+    i64ResultBody(actionPointer, actionEnvelope.length),
+    i64ResultBody(queryPointer, queryEnvelope.length),
+    i64ResultBody(actionPointer, actionEnvelope.length),
+    i64ResultBody(actionPointer, actionEnvelope.length),
+    i64ResultBody(actionPointer, actionEnvelope.length),
+  ];
+  const codeSection = wasmSection(10, [
+    ...encodeUnsigned(functionBodies.length),
+    ...functionBodies.flatMap((body) => [...encodeUnsigned(body.length), ...body]),
+  ]);
+  const dataSegment = (pointer, data) => [
+    0x00,
+    0x41,
+    ...encodeUnsigned(pointer),
+    0x0b,
+    ...encodeUnsigned(data.length),
+    ...data,
+  ];
+  const dataSection = wasmSection(11, [
+    ...encodeUnsigned(2),
+    ...dataSegment(actionPointer, actionEnvelope),
+    ...dataSegment(queryPointer, queryEnvelope),
+  ]);
+
+  return Uint8Array.from([
+    0x00,
+    0x61,
+    0x73,
+    0x6d,
+    0x01,
+    0x00,
+    0x00,
+    0x00,
+    ...typeSection,
+    ...functionSection,
+    ...memorySection,
+    ...exportSection,
+    ...codeSection,
+    ...dataSection,
+  ]);
+}
+
+async function buildSupportedUploadArchive() {
+  const owner = ethers.Wallet.createRandom();
+  const chain = EventChain.create(owner.address, 84532);
+  const event = new Event({
+    '@context': 'instantiate_msg.json',
+    ownable_id: chain.id,
+    package: 'compiled-route-fixture',
+    network_id: 84532,
+    keywords: [],
+  });
+  await event.addTo(chain).signWith({
+    getAddress: async () => owner.address,
+    signTypedData: (domain, types, value) => owner.signTypedData(domain, types, value),
+  });
+
+  const archive = new JSZip();
+  archive.file('package.json', JSON.stringify({ name: 'compiled-route-fixture', title: 'Compiled route fixture' }));
+  archive.file('chain.json', JSON.stringify(chain.toJSON()));
+  archive.file('ownable_bg.wasm', buildE2ERuntimeWasm(owner.address));
+
+  return {
+    archive: await archive.generateAsync({ type: 'uint8array' }),
+    chain,
+    owner,
+  };
+}
+
 async function reservePort() {
   const server = createServer();
 
@@ -87,7 +265,7 @@ async function reservePort() {
   return address.port;
 }
 
-function startHub(port, storageRoot) {
+function startHub(port, storageRoot, extraEnv = {}) {
   const hub = {
     child: undefined,
     stdout: '',
@@ -108,6 +286,7 @@ function startHub(port, storageRoot) {
       PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
       OWNABLES_STORAGE: pathToFileURL(storageRoot).href,
       SIGNER_MNEMONIC: process.env.SIGNER_MNEMONIC || TEST_SIGNER_MNEMONIC,
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -118,6 +297,52 @@ function startHub(port, storageRoot) {
   });
 
   return hub;
+}
+
+function startWalletRpcServer() {
+  const server = createHttpServer(async (request, response) => {
+    let raw = '';
+    for await (const chunk of request) raw += chunk;
+    const incoming = JSON.parse(raw);
+    const requests = Array.isArray(incoming) ? incoming : [incoming];
+    const replies = requests.map((message) => {
+      const result =
+        message.method === 'eth_chainId'
+          ? '0x14a34'
+          : message.method === 'eth_getBalance'
+            ? '0x1158e460913d0000'
+            : message.method === 'eth_call'
+              ? `0x${'0'.repeat(64)}`
+              : '0x';
+      return { jsonrpc: '2.0', id: message.id, result };
+    });
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(Array.isArray(incoming) ? replies : replies[0]));
+  });
+
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('Expected an IPv4 RPC test server address'));
+        return;
+      }
+      resolve({ server, url: `http://127.0.0.1:${address.port}` });
+    });
+  });
+}
+
+async function readSseChunk(response) {
+  assert.ok(response.body, 'Expected an SSE response body');
+  const reader = response.body.getReader();
+  try {
+    const { value, done } = await reader.read();
+    assert.equal(done, false, 'Expected an SSE event');
+    return new TextDecoder().decode(value);
+  } finally {
+    await reader.cancel();
+  }
 }
 
 function failure(message, hub) {
@@ -242,12 +467,66 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   assert.ok(process.env.DATABASE_URL, 'DATABASE_URL is required for the compiled Hub E2E test');
 
   const { archive, moduleImports } = await buildUnsupportedUploadArchive();
+  const { archive: supportedArchive, chain, owner } = await buildSupportedUploadArchive();
   assert.ok(moduleImports.length > 0, 'Expected unsupported fixture to require wasm imports');
   assert.ok(moduleImports.some(({ module }) => module === 'wbg'), 'Expected fixture imports from unsupported wbg module');
 
+  const database = new Client({ connectionString: process.env.DATABASE_URL });
+  await database.connect();
+  const chainId = '84532';
+  const subjectId = ethers.keccak256(ethers.getBytes(chain.id)).toLowerCase();
+  const ownerAccount = `eip155:${chainId}:${owner.address.toLowerCase()}`;
+  t.after(async () => {
+    try {
+      await database.query(`DELETE FROM indexed_public_events WHERE transaction_hash = LOWER($1)`, [E2E_PUBLIC_EVENT_TRANSACTION]);
+      await database.query(`DELETE FROM indexed_anchor_events WHERE transaction_hash = LOWER($1)`, [E2E_ANCHOR_TRANSACTION]);
+      await database.query(`DELETE FROM ownable_records WHERE subject_id = LOWER($1)`, [subjectId]);
+    } finally {
+      await database.end();
+    }
+  });
+
+  for (const [index, anchor] of chain.anchorMap.entries()) {
+    await database.query(
+      `INSERT INTO indexed_anchor_events (
+         slot_name, chain_id, anchor_contract_address, block_number, block_hash,
+         transaction_hash, transaction_index, log_index, event_name, package_cid,
+         owner_address, payload_json
+       ) VALUES ($1, $2, LOWER($3), $4, LOWER($5), LOWER($6), $7, $8, $9, NULL, LOWER($10), $11::jsonb)`,
+      [
+        'testnet',
+        chainId,
+        E2E_ANCHOR_CONTRACT,
+        '7',
+        `0x${'7'.repeat(64)}`,
+        E2E_ANCHOR_TRANSACTION,
+        0,
+        index,
+        'Anchored',
+        owner.address,
+        JSON.stringify({ key: anchor.key.hex, value: anchor.value.hex }),
+      ],
+    );
+  }
+
+  const rpc = await startWalletRpcServer();
+  t.after(() => new Promise((resolve, reject) => rpc.server.close((error) => (error ? reject(error) : resolve()))));
+
   const port = await reservePort();
   const storageRoot = await mkdtemp(join(tmpdir(), 'ownables-hub-e2e-'));
-  const hub = startHub(port, storageRoot);
+  const hub = startHub(port, storageRoot, {
+    LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED: 'true',
+    HUB_NETWORK_PROFILE: 'testnet',
+    TESTNET_CHAIN_ID: chainId,
+    TESTNET_RPC_URL: rpc.url,
+    TESTNET_BASE_RPC_URL: rpc.url,
+    TESTNET_ANCHOR_CONTRACT_ADDR: E2E_ANCHOR_CONTRACT,
+    TESTNET_ANCHOR_START_BLOCK: '0',
+    MAINNET_CHAIN_ID: '8453',
+    MAINNET_RPC_URL: rpc.url,
+    MAINNET_ANCHOR_CONTRACT_ADDR: '0x0000000000000000000000000000000000000098',
+    MAINNET_ANCHOR_START_BLOCK: '0',
+  });
   t.after(async () => {
     try {
       await stopHub(hub);
@@ -311,6 +590,115 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   assert.equal(chainsResponse.status, 200);
   await chainsResponse.json();
 
+  const accountEventController = new AbortController();
+  const accountEventResponse = fetch(
+    `http://127.0.0.1:${port}/accounts/${encodeURIComponent(ownerAccount)}/available-ownables/events`,
+    { signal: accountEventController.signal },
+  );
+  await delay(POLL_INTERVAL_MS);
+
+  const supportedForm = new FormData();
+  supportedForm.set('file', new Blob([supportedArchive], { type: 'application/zip' }), 'supported-ownable.zip');
+  const supportedUploadResponse = await fetch(`http://127.0.0.1:${port}/ownables`, {
+    method: 'POST',
+    body: supportedForm,
+    signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
+  });
+  assert.equal(supportedUploadResponse.status, 201, 'Expected the canonical upload to create an Ownable');
+  const supportedUpload = await supportedUploadResponse.json();
+  assert.equal(supportedUpload.ownableId, chain.id);
+  assert.equal(supportedUploadResponse.headers.get('location'), `/ownables/${encodeURIComponent(chain.id)}`);
+  const storedFilesBeforeInvalidUpload = (await listStoredFiles(storageRoot)).sort();
+  assert.ok(storedFilesBeforeInvalidUpload.length > 0, 'Expected the successful upload to persist bundle files');
+
+  const accountEvent = await accountEventResponse;
+  const accountEventChunk = await readSseChunk(accountEvent);
+  accountEventController.abort();
+  assert.match(accountEventChunk, /^event: available-ownable/m);
+  assert.match(accountEventChunk, new RegExp(`"owner":"${ownerAccount}"`));
+  assert.match(accountEventChunk, new RegExp(`"id":"${chain.id}"`));
+
+  const accountResponse = await fetch(
+    `http://127.0.0.1:${port}/accounts/${encodeURIComponent(ownerAccount)}/available-ownables`,
+    { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
+  );
+  assert.equal(accountResponse.status, 200);
+  const account = await accountResponse.json();
+  assert.equal(account.owner, ownerAccount);
+  assert.deepEqual(account.entries.map((entry) => entry.id), [chain.id]);
+
+  await database.query(
+    `INSERT INTO indexed_public_events (
+       slot_name, chain_id, anchor_contract_address, block_number, block_hash,
+       transaction_hash, transaction_index, log_index, event_name, ownable_id,
+       package_cid, subject_id, source_address, event_type, data_hex, event_timestamp, payload_json
+     ) VALUES (
+       $1, $2, LOWER($3), $4, LOWER($5), LOWER($6), $7, $8, $9,
+       (SELECT id FROM ownable_records WHERE subject_id = LOWER($10) LIMIT 1),
+       (SELECT package_cid FROM ownable_records WHERE subject_id = LOWER($10) LIMIT 1),
+       LOWER($10), LOWER($11), $12, LOWER($13), $14, $15::jsonb
+     )`,
+    [
+      'testnet',
+      chainId,
+      E2E_ANCHOR_CONTRACT,
+      '7',
+      `0x${'6'.repeat(64)}`,
+      E2E_PUBLIC_EVENT_TRANSACTION,
+      0,
+      0,
+      'PublicEvent',
+      subjectId,
+      '0x00000000000000000000000000000000000000bb',
+      'compiled-route-event',
+      '0x1234',
+      '7',
+      JSON.stringify({ source: 'compiled-e2e' }),
+    ],
+  );
+
+  const defaultPublicEvents = await fetch(
+    `http://127.0.0.1:${port}/public-events?ownableId=${encodeURIComponent(chain.id)}&ownableId=${encodeURIComponent(chain.id)}`,
+    { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
+  );
+  assert.equal(defaultPublicEvents.status, 200);
+  const defaultPublicEventChunk = await readSseChunk(defaultPublicEvents);
+  assert.match(defaultPublicEventChunk, /^event: public-event/m);
+  assert.match(defaultPublicEventChunk, /"eventType":"compiled-route-event"/);
+  assert.match(defaultPublicEventChunk, new RegExp(`"ownableId":"${chain.id}"`));
+
+  const explicitPublicEvents = await fetch(
+    `http://127.0.0.1:${port}/public-events?ownableId=${encodeURIComponent(chain.id)}&fromBlock=7`,
+    { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
+  );
+  assert.equal(explicitPublicEvents.status, 200);
+  const explicitPublicEventChunk = await readSseChunk(explicitPublicEvents);
+  assert.match(explicitPublicEventChunk, /"eventType":"compiled-route-event"/);
+
+  for (const path of ['/public-events', `/public-events?ownableId=${encodeURIComponent(chain.id)}&fromBlock=-1`]) {
+    const invalidPublicEvents = await fetch(`http://127.0.0.1:${port}${path}`, {
+      signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
+    });
+    assert.equal(invalidPublicEvents.status, 400, `Expected ${path} to reject before subscribing`);
+  }
+
+  const walletResponse = await fetch(`http://127.0.0.1:${port}/hub/wallet/eip155:base`, {
+    signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
+  });
+  assert.equal(walletResponse.status, 200);
+  const wallet = await walletResponse.json();
+  assert.deepEqual(wallet, {
+    address: ethers.Wallet.fromPhrase(TEST_SIGNER_MNEMONIC).address,
+    networkId: 'eip155:84532',
+    balance: '1.25',
+    unit: 'ETH',
+  });
+  assert.equal(Object.hasOwn(wallet, 'privateKey'), false);
+  const unsupportedWalletResponse = await fetch(`http://127.0.0.1:${port}/hub/wallet/eip155:unknown`, {
+    signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
+  });
+  assert.equal(unsupportedWalletResponse.status, 400);
+
   const form = new FormData();
   form.set('file', new Blob([archive], { type: 'application/zip' }), 'unsupported-runtime-ownable.zip');
   const uploadResponse = await fetch(`http://127.0.0.1:${port}/ownables`, {
@@ -322,8 +710,8 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   assert.equal(uploadResponse.status, 400, 'Expected unsupported runtime upload to return HTTP 400');
   assert.equal(uploadResponseBody, EXPECTED_UNSUPPORTED_RUNTIME_ERROR, 'Expected the exact unsupported runtime response body');
 
-  const storedFiles = await listStoredFiles(storageRoot);
-  assert.equal(storedFiles.length, 0, 'Invalid runtime uploads must not write archive files');
+  const storedFiles = (await listStoredFiles(storageRoot)).sort();
+  assert.deepEqual(storedFiles, storedFilesBeforeInvalidUpload, 'Invalid runtime uploads must not write archive files');
 
   for (const path of [
     '/ownables/upload',

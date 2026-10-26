@@ -138,7 +138,7 @@ describe('EthersService', () => {
     await createModule('testnet');
     const factoryCalls = providerFactory.mock.calls.length;
 
-    expect(() => service.getHubWallet('eip155:unknown')).toThrow(/Incorrect network name/);
+    await expect(service.getHubWallet('eip155:unknown')).rejects.toThrow(/Incorrect network name/);
     expect(providerFactory).toHaveBeenCalledTimes(factoryCalls);
   });
 

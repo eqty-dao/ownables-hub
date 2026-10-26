@@ -417,7 +417,23 @@ describe('Story #9 resource route behavior', () => {
   });
 
   it('passes an omitted fromBlock through to the service default', async () => {
-    ownableService.streamOwnablePublicEvents.mockResolvedValue(of());
+    ownableService.streamOwnablePublicEvents.mockResolvedValue(
+      of({
+        type: 'public-event',
+        data: {
+          ownableId: 'ownable-1',
+          publicEvent: {
+            source: '0x00000000000000000000000000000000000000bb',
+            eventType: 'transfer',
+            data: '0x01',
+            blockNumber: 0,
+            transactionHash: '0xaaa',
+            transactionIndex: 0,
+            logIndex: 0,
+          },
+        },
+      }),
+    );
 
     await request(app.getHttpServer())
       .get('/public-events')

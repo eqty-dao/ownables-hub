@@ -16,7 +16,7 @@ For lockable NFT-backed Ownables, the Hub also acts as unlock-signing authority,
 - Tracks and exposes public events needed to replay and verify Ownable state
 - Derives which owner account an Ownable is currently available to
 - Exposes Hub-backed recipient discovery for wallet import flows
-- Serves package downloads, chain downloads, and indexed event history
+- Serves Ownable bundle downloads, including `chain.json`, and indexed event history
 - Maps NFT-backed Ownables for unlock-proof flows where applicable
 - Signs unlock challenges for lockable NFT-backed Ownables when the Hub holds a validated copy
 
