@@ -270,6 +270,41 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   const health = await healthResponse.json();
   assert.equal(health.status, 'ok');
 
+  const openApiResponse = await fetch(`http://127.0.0.1:${port}/api-docs-json`, {
+    signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
+  });
+  assert.equal(openApiResponse.status, 200);
+  const openApi = await openApiResponse.json();
+  for (const path of [
+    '/',
+    '/info',
+    '/health',
+    '/api/v1/auth/nonce',
+    '/api/v1/auth/verify',
+    '/ownables',
+    '/ownables/{id}/bundle',
+    '/ownables/{id}/verification',
+    '/ownables/{id}/public-events',
+    '/accounts/{account}/available-ownables',
+    '/accounts/{account}/available-ownables/events',
+    '/public-events',
+    '/hub/wallet/{network}',
+  ]) {
+    assert.ok(openApi.paths[path], `Expected canonical OpenAPI path ${path}`);
+  }
+  for (const path of [
+    '/packages',
+    '/packages/{cid}/download',
+    '/ownables/upload',
+    '/ownables/{id}/chain',
+    '/ownables/available',
+    '/ownables/available/stream',
+    '/ownables/public-events/stream',
+    '/ownables/serverinfo',
+  ]) {
+    assert.equal(openApi.paths[path], undefined, `Expected removed OpenAPI path ${path} to be absent`);
+  }
+
   const chainsResponse = await fetch(`http://127.0.0.1:${port}/ownables/chains`, {
     signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
   });
@@ -278,7 +313,7 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
 
   const form = new FormData();
   form.set('file', new Blob([archive], { type: 'application/zip' }), 'unsupported-runtime-ownable.zip');
-  const uploadResponse = await fetch(`http://127.0.0.1:${port}/ownables/upload`, {
+  const uploadResponse = await fetch(`http://127.0.0.1:${port}/ownables`, {
     method: 'POST',
     body: form,
     signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
@@ -289,4 +324,20 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
 
   const storedFiles = await listStoredFiles(storageRoot);
   assert.equal(storedFiles.length, 0, 'Invalid runtime uploads must not write archive files');
+
+  for (const path of [
+    '/ownables/upload',
+    '/ownables/available',
+    '/ownables/available/stream',
+    '/ownables/public-events/stream',
+    '/ownables/serverinfo',
+    '/ownables/fixture/chain',
+    '/packages',
+    '/packages/fixture/download',
+  ]) {
+    const removedResponse = await fetch(`http://127.0.0.1:${port}${path}`, {
+      signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
+    });
+    assert.equal(removedResponse.status, 404, `Expected removed route ${path} to return 404`);
+  }
 });

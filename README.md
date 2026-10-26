@@ -86,6 +86,7 @@ Config:
 
 Operational routes:
 
+- `GET /` redirect to API documentation
 - `GET /info` basic service metadata
 - `GET /health` readiness and dependency health
 
@@ -94,21 +95,27 @@ Auth routes:
 - `POST /api/v1/auth/nonce` generate SIWE nonce
 - `POST /api/v1/auth/verify` verify SIWE payload and return bearer token
 
-Ownables routes (base path `/ownables`):
+Ownable routes:
 
-- `POST /ownables/upload` upload Ownable package
-- `POST /ownables/bridge` compatibility alias for upload
-- `GET /ownables/:cid/download` download stored Ownable package
-- `GET /ownables/:id/chain` download canonical Ownable chain JSON
-- `GET /ownables/:cid/events` fetch indexed event history exposed for verification
-- `GET /ownables/available?owner=<caip10-account>` list local/dev-only Hub-available ownables for one owner/account when explicitly enabled
-- `GET /ownables/proof?cid=...` get unlock proof for mapped NFT
-- `GET /ownables/isUnlockProofValid?...` verify unlock proof
-- `GET /ownables/claim?...` compatibility alias for package download
-- `GET /ownables/bridged` inspect uploaded Ownables visible to the authenticated signer
-- `GET /ownables/cid?...` lookup CID by NFT
-- `GET /ownables/chains` list available NFT chain setup
-- `GET /ownables/serverinfo` inspect wallet balances and hub info
+- `POST /ownables` upload an Ownable package in multipart field `file`. A successful creation returns `201`, the existing response body, and `Location: /ownables/{ownableId}`.
+- `GET /ownables/:id/bundle` download the stored Ownable bundle. It contains the canonical `chain.json`.
+- `GET /ownables/:id/verification` read the Hub verification report.
+- `GET /ownables/:id/public-events` read indexed public events for one Ownable.
+
+Resource collection routes:
+
+- `GET /accounts/:account/available-ownables` list local/dev-only Hub-available Ownables for one CAIP-10 account when explicitly enabled.
+- `GET /accounts/:account/available-ownables/events` receive live `available-ownable` SSE events for that account.
+- `GET /public-events?ownableId=<id>&ownableId=<id>&fromBlock=<block>` receive indexed `public-event` SSE events. One or more `ownableId` values are required and `fromBlock` defaults to `0`.
+- `GET /hub/wallet/:network` read the public Hub signer address and native balance for `eip155:ethereum`, `eip155:arbitrum`, `eip155:polygon`, or `eip155:base`.
+
+Temporary Lockable NFT routes, retained until Story #17 removes the feature:
+
+- `POST /ownables/bridge`
+- `GET /ownables/:id/unlock-proof`
+- `GET /ownables/isUnlockProofValid?...`
+- `GET /ownables/bridged`
+- `GET /ownables/chains`
 
 Swagger: `http://localhost:3000/api-docs`
 
@@ -178,7 +185,7 @@ Additional runtime configuration (feature-dependent):
 - `TESTNET_*_RPC_URL` / `MAINNET_*_RPC_URL` overrides
 - `SIWE_DOMAIN`
 - `PUBLIC_BASE_URL` for absolute package and chain URLs in Hub responses
-- `LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED=true` to expose `GET /ownables/available` outside production for localhost receive/import testing
+- `LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED=true` to expose `GET /accounts/:account/available-ownables` outside production for localhost receive/import testing
 
 ## Tests
 
@@ -195,7 +202,7 @@ yarn lint:check
 yarn test:e2e
 ```
 
-`yarn test:e2e` builds both Nest bundles and runs the native compiled-process tests. It covers core package compatibility, `/info`, `/health`, `/ownables/chains`, and rejected unsupported-runtime uploads without storage writes.
+`yarn test:e2e` builds both Nest bundles and runs the native compiled-process tests. It covers core package compatibility, the generated OpenAPI route inventory, `/info`, `/health`, the temporary `/ownables/chains` route, canonical uploads, and rejected unsupported-runtime uploads without storage writes.
 
 ## Releasing
 

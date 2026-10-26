@@ -4,6 +4,7 @@ import { ConfigService, EvmNetworkName, RuntimeNetworkProfile } from '../config/
 import { resolveEvmNetwork } from '../config/evm-network.util';
 import * as abis from './abi/index';
 import { ETHERS_RPC_PROVIDER_FACTORY, EthersRpcProviderFactory } from './ethers.tokens';
+import { UserError } from '../../interfaces/error';
 
 @Injectable()
 export class EthersService implements OnModuleInit, OnModuleDestroy {
@@ -58,6 +59,22 @@ export class EthersService implements OnModuleInit, OnModuleDestroy {
     return ethers.formatUnits(await provider.getBalance(this.signer.address), 'ether').toString();
   }
 
+  public async getHubWallet(networkName: string): Promise<{
+    address: string;
+    networkId: string;
+    balance: string;
+    unit: 'ETH' | 'POL';
+  }> {
+    const network = this.getNetwork(networkName);
+    const provider = this.getProviderForNetwork(networkName);
+    return {
+      address: this.signer.address,
+      networkId: `eip155:${network.chainId}`,
+      balance: ethers.formatUnits(await provider.getBalance(this.signer.address), 'ether'),
+      unit: network.name === 'eip155:polygon' ? 'POL' : 'ETH',
+    };
+  }
+
   private getNetwork(networkName: string): {
     name: EvmNetworkName;
     rpcName: string;
@@ -75,7 +92,7 @@ export class EthersService implements OnModuleInit, OnModuleDestroy {
       case 'eip155:base':
         return this.getResolvedNetwork('eip155:base', profile);
     }
-    throw new Error(
+    throw new UserError(
       `Incorrect network name. Supported network names: eip155:ethereum eip155:arbitrum eip155:polygon eip155:base`,
     );
   }

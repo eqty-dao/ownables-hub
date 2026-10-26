@@ -112,6 +112,36 @@ describe('EthersService', () => {
     });
   });
 
+  it.each([
+    ['testnet', 'eip155:ethereum', 'eip155:11155111', 'ETH'],
+    ['testnet', 'eip155:arbitrum', 'eip155:421614', 'ETH'],
+    ['testnet', 'eip155:polygon', 'eip155:80002', 'POL'],
+    ['testnet', 'eip155:base', 'eip155:84532', 'ETH'],
+    ['mainnet', 'eip155:ethereum', 'eip155:1', 'ETH'],
+    ['mainnet', 'eip155:arbitrum', 'eip155:42161', 'ETH'],
+    ['mainnet', 'eip155:polygon', 'eip155:137', 'POL'],
+    ['mainnet', 'eip155:base', 'eip155:8453', 'ETH'],
+  ] as const)('returns a public wallet response for %s %s', async (profile, network, networkId, unit) => {
+    await createModule(profile);
+    const provider = service['getProviderForNetwork'](network);
+    jest.spyOn(provider, 'getBalance').mockResolvedValue(1250000000000000000n);
+
+    await expect(service.getHubWallet(network)).resolves.toEqual({
+      address: expect.stringMatching(/^0x[a-fA-F0-9]{40}$/),
+      networkId,
+      balance: '1.25',
+      unit,
+    });
+  });
+
+  it('rejects unsupported wallet networks before creating a provider', async () => {
+    await createModule('testnet');
+    const factoryCalls = providerFactory.mock.calls.length;
+
+    expect(() => service.getHubWallet('eip155:unknown')).toThrow(/Incorrect network name/);
+    expect(providerFactory).toHaveBeenCalledTimes(factoryCalls);
+  });
+
   it('preserves signer verification and contract construction', async () => {
     await createModule('testnet');
 
