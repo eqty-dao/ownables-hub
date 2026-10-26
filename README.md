@@ -6,8 +6,6 @@ Canonical backend service for storing, validating, indexing, and distributing Ow
 
 The Hub is not just a file host. It accepts uploaded Ownable archives, validates them against anchored and public event history, stores package and chain data separately, derives recipient availability, exposes that availability to wallets for discovery and import, and returns indexed event data so clients can verify Ownables independently.
 
-For lockable NFT-backed Ownables, the Hub also acts as unlock-signing authority, but only when it has a validated copy of the corresponding Ownable.
-
 ## What this service does
 
 - Accepts uploaded Ownable archives and validates them before making them available
@@ -17,8 +15,6 @@ For lockable NFT-backed Ownables, the Hub also acts as unlock-signing authority,
 - Derives which owner account an Ownable is currently available to
 - Exposes Hub-backed recipient discovery for wallet import flows
 - Serves Ownable bundle downloads, including `chain.json`, and indexed event history
-- Maps NFT-backed Ownables for unlock-proof flows where applicable
-- Signs unlock challenges for lockable NFT-backed Ownables when the Hub holds a validated copy
 
 ## Product model
 
@@ -109,14 +105,6 @@ Resource collection routes:
 - `GET /public-events?ownableId=<id>&ownableId=<id>&fromBlock=<block>` receive indexed `public-event` SSE events. One or more `ownableId` values are required and `fromBlock` defaults to `0`.
 - `GET /hub/wallet/:network` read the public Hub signer address and native balance for `eip155:ethereum`, `eip155:arbitrum`, `eip155:polygon`, or `eip155:base`.
 
-Temporary Lockable NFT routes, retained until Story #17 removes the feature:
-
-- `POST /ownables/bridge`
-- `GET /ownables/:id/unlock-proof`
-- `GET /ownables/isUnlockProofValid?...`
-- `GET /ownables/bridged`
-- `GET /ownables/chains`
-
 Swagger: `http://localhost:3000/api-docs`
 
 ## Local Postgres + migrations
@@ -202,7 +190,7 @@ yarn lint:check
 yarn test:e2e
 ```
 
-`yarn test:e2e` builds both Nest bundles and runs the native compiled-process tests. It covers core package compatibility, the generated OpenAPI route inventory, `/info`, `/health`, the temporary `/ownables/chains` route, canonical uploads, and rejected unsupported-runtime uploads without storage writes.
+`yarn test:e2e` builds both Nest bundles and runs the native compiled-process tests. It covers core package compatibility, the generated OpenAPI route inventory, `/info`, `/health`, canonical uploads, and rejected unsupported-runtime uploads without storage writes.
 
 ## Releasing
 

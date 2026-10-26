@@ -2,13 +2,11 @@ import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ethers } from 'ethers';
 import { ConfigService, EvmNetworkName, RuntimeNetworkProfile } from '../config/config.service';
 import { resolveEvmNetwork } from '../config/evm-network.util';
-import * as abis from './abi/index';
 import { ETHERS_RPC_PROVIDER_FACTORY, EthersRpcProviderFactory } from './ethers.tokens';
 import { UserError } from '../../interfaces/error';
 
 @Injectable()
 export class EthersService implements OnModuleInit, OnModuleDestroy {
-  private wallet: ethers.Wallet;
   private signer: ethers.HDNodeWallet | ethers.Wallet;
   private networkProfile: RuntimeNetworkProfile;
   private readonly providers = new Map<EvmNetworkName, ethers.JsonRpcProvider>();
@@ -16,7 +14,7 @@ export class EthersService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly config: ConfigService,
     @Inject(ETHERS_RPC_PROVIDER_FACTORY) private readonly providerFactory: EthersRpcProviderFactory,
-  ) { }
+  ) {}
 
   onModuleInit(): void {
     this.networkProfile = this.config.getRuntimeNetworkProfile();
@@ -31,32 +29,6 @@ export class EthersService implements OnModuleInit, OnModuleDestroy {
     for (const provider of providers) {
       provider.destroy();
     }
-  }
-
-  public signMessage(message: string): Promise<string> {
-    return this.signer.signMessage(message);
-  }
-
-  public verifyMessage(message: string, sig: ethers.SignatureLike): string {
-    const recoveredAddress = ethers.verifyMessage(message, sig);
-    return recoveredAddress.toString();
-  }
-
-  public async testSignMessage(message: string): Promise<string> {
-    this.wallet = new ethers.Wallet(ethers.id('foobar'));
-    console.log('wallet address:', await this.wallet.getAddress());
-    const rawSig = await this.wallet.signMessage(message);
-    const sig = ethers.Signature.from(rawSig);
-    const recoveredAddress = ethers.verifyMessage(message, sig);
-    console.log('recoveredAddress', recoveredAddress);
-    console.log('message', message);
-    console.log('sig', sig);
-    return recoveredAddress.toString();
-  }
-
-  public async GetServerETHBalance(networkName: string): Promise<string> {
-    const provider = this.getProviderForNetwork(networkName);
-    return ethers.formatUnits(await provider.getBalance(this.signer.address), 'ether').toString();
   }
 
   public async getHubWallet(networkName: string): Promise<{
@@ -120,15 +92,6 @@ export class EthersService implements OnModuleInit, OnModuleDestroy {
     });
     this.providers.set(network.name, provider);
     return provider;
-  }
-
-  public getContract(type: keyof typeof abis, networkName: string, address: string): ethers.Contract {
-    if (!(type in abis)) throw new Error(`No ABI for ${type}`);
-    const provider = this.getProviderForNetwork(networkName);
-    this.signer = this.createSigner(provider);
-
-    const nftContract: ethers.Contract = new ethers.Contract(address, abis[type], this.signer);
-    return nftContract;
   }
 
   private createSigner(provider: ethers.Provider): ethers.HDNodeWallet | ethers.Wallet {

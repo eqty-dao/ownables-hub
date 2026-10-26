@@ -592,15 +592,14 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
     '/ownables/available/stream',
     '/ownables/public-events/stream',
     '/ownables/serverinfo',
+    '/ownables/bridge',
+    '/ownables/bridged',
+    '/ownables/chains',
+    '/ownables/isUnlockProofValid',
+    '/ownables/example/unlock-proof',
   ]) {
     assert.equal(openApi.paths[path], undefined, `Expected removed OpenAPI path ${path} to be absent`);
   }
-
-  const chainsResponse = await fetch(`http://127.0.0.1:${port}/ownables/chains`, {
-    signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
-  });
-  assert.equal(chainsResponse.status, 200);
-  await chainsResponse.json();
 
   const accountEventController = new AbortController();
   const accountEventResponse = fetch(
@@ -731,7 +730,12 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
     '/ownables/available/stream',
     '/ownables/public-events/stream',
     '/ownables/serverinfo',
+    '/ownables/bridge',
+    '/ownables/bridged',
+    '/ownables/chains',
+    '/ownables/isUnlockProofValid',
     '/ownables/fixture/chain',
+    '/ownables/fixture/unlock-proof',
     '/packages',
     '/packages/fixture/download',
   ]) {

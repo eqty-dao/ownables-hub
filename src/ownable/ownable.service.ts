@@ -10,11 +10,10 @@ import {
 } from '@ownables/core';
 import { calculateOwnablePackageCid, type OwnablePackageCidEntry } from '@ownables/core/utils';
 import { NodePackageAssetIO } from '@ownables/platform-node';
-import { ConfigService, RuntimeNetworkProfile } from '../common/config/config.service';
+import { ConfigService } from '../common/config/config.service';
 import { resolveCaip2Reference } from '../common/config/evm-network.util';
 import { NFTInfo } from '../interfaces/OwnableInfo';
-import { NFTService } from '../nft/nft.service';
-import { AuthError, UserError } from '../interfaces/error';
+import { UserError } from '../interfaces/error';
 import JSZip from 'jszip';
 import { EventChain } from 'eqty-core';
 import { ethers } from 'ethers';
@@ -246,7 +245,6 @@ class InMemoryStateStore implements StateStore {
 export class OwnableService {
   constructor(
     private config: ConfigService,
-    private nft: NFTService,
     private readonly storage: ArchiveStorageService,
     private readonly hubState: HubStateRepository,
     private readonly ownableTransport: OwnableTransportService,
@@ -257,10 +255,6 @@ export class OwnableService {
     if (!mnemonic && !privateKey) {
       throw new Error('Missing signer configuration: set SIGNER_PRIVATE_KEY or SIGNER_MNEMONIC');
     }
-  }
-
-  public async GetServerETHBalance(networkName: string): Promise<string> {
-    return await this.nft.GetServerETHBalance(networkName);
   }
 
   private validateEventChain(chain: EventChain): void {
@@ -718,57 +712,6 @@ export class OwnableService {
     return this.replayOwnable(packageCid, eventChainBuffer, packageZipBuffer);
   }
 
-  private async requireNftOwner(nftInfo: NFTInfo, signer?: SignerIdentity): Promise<string> {
-    if (!signer?.address) throw new AuthError('Missing SIWE signer');
-
-    const currentNftOwner = await this.nft.getOwnerOfNFT(nftInfo);
-    if (currentNftOwner.toLowerCase() !== signer.address.toLowerCase()) {
-      throw new UserError(`Signer ${signer.address} is not current NFT owner ${currentNftOwner}`);
-    }
-
-    return signer.address;
-  }
-
-  public async getOwnableCidFromNFT(nftInfo: NFTInfo): Promise<JSON> {
-    const record = await this.hubState.getOwnableByNft(nftInfo.network, nftInfo.address, nftInfo.id.toString());
-    if (!record) throw new UserError(`No CID available for nftInfo ${JSON.stringify(nftInfo)}`);
-
-    const nftOwner: string = await this.nft.getOwnerOfNFT(nftInfo);
-    return JSON.parse(
-      JSON.stringify({
-        OwnableCid: record.packageCid,
-        OwnableLastOwner: record.prevOwnerAddress,
-        network: nftInfo.network,
-        id: nftInfo.id.toString(),
-        smartContractAddress: nftInfo.address,
-        nftOwner,
-      }),
-    );
-  }
-
-  public async getAvailableNftChains(): Promise<JSON> {
-    const contractAddress = this.getBaseContractAddress();
-    const nftInfoBase: NFTInfo = { network: 'eip155:base', id: '0', address: contractAddress };
-    const nftCountBase = await this.nft.getNFTcount(nftInfoBase);
-
-    return JSON.parse(
-      JSON.stringify({
-        base: 'eip155:base',
-        baseContractAddress: contractAddress,
-        totalAmountBaseNFTs: nftCountBase.toString(),
-      }),
-    );
-  }
-
-  private getBaseContractAddress(): string {
-    return this.getBaseNftContractAddressForProfile(this.config.getRuntimeNetworkProfile());
-  }
-
-  private getBaseNftContractAddressForProfile(profile: RuntimeNetworkProfile): string {
-    if (profile === 'testnet') return process.env.TESTNET_BASE_NFT_CONTRACT_ADDRESS?.trim() || '';
-    return process.env.MAINNET_BASE_NFT_CONTRACT_ADDRESS?.trim() || '';
-  }
-
   async existsOwnableChain(ownableId: string, packageCid: string): Promise<boolean> {
     return await this.storage.hasEventChain(ownableId, packageCid);
   }
@@ -806,62 +749,12 @@ export class OwnableService {
     };
   }
 
-  public async isUnlockProofValid(network: string, address: string, id: string, proof: string): Promise<boolean> {
-    try {
-      return await this.nft.isUnlockProofValid(proof, { network, address, id });
-    } catch (err) {
-      throw new UserError(`function call isUnlockProofValid to smart contract failed with Error: ${err}`);
-    }
-  }
-
-  public getBridgedOwnableCIDs(signer?: SignerIdentity): Promise<string[]> {
-    const ownerAddress = signer?.address?.toLowerCase();
-    if (!ownerAddress) return Promise.resolve([]);
-    return this.hubState.listOwnableCidsByPrevOwner(ownerAddress);
-  }
-
   private async getCid(files: Map<string, Buffer>): Promise<string> {
     const entries: OwnablePackageCidEntry[] = Array.from(files.entries()).map(([filename, content]) => ({
       path: filename,
       content,
     }));
     return calculateOwnablePackageCid(entries);
-  }
-
-  public async getUnlockProof(ownableId: string, signer?: SignerIdentity): Promise<string> {
-    if (!signer?.address) throw new AuthError('Missing SIWE signer');
-
-    const record = await this.getOwnableRecordByOwnableId(ownableId);
-    if (!record) throw new UserError('Ownable is not registered on hub.');
-    if (!(await this.existsPkg(record.packageCid))) throw new UserError('Ownable package is not available on server.');
-
-    const replayState = await this.replayStoredOwnable(record.id, record.packageCid);
-    this.assertReplayVerification(replayState);
-    if (!replayState.nftInfo) {
-      throw new UserError('NFT metadata is unavailable for this ownable');
-    }
-    await this.requireNftOwner(replayState.nftInfo, signer);
-
-    try {
-      const locked = await this.nft.isNFTlocked({
-        network: replayState.nftInfo.network,
-        address: replayState.nftInfo.address,
-        id: replayState.nftInfo.id,
-      });
-      if (!locked) {
-        throw new UserError(
-          `NFT ${replayState.nftInfo.id} is NOT LOCKED ! Network ${replayState.nftInfo.network} and NFT smart contract ${replayState.nftInfo.address}`,
-        );
-      }
-    } catch (err) {
-      throw new UserError(`function call isNFTlocked to smart contract failed with Error: ${err}`);
-    }
-
-    return await this.nft.getUnlockProof({
-      network: replayState.nftInfo.network,
-      address: replayState.nftInfo.address,
-      id: replayState.nftInfo.id,
-    });
   }
 
   async getOwnableVerification(ownableId: string): Promise<OwnableVerificationResponse> {
@@ -1068,10 +961,6 @@ export class OwnableService {
     };
   }
 
-  async bridgeOwnable(buffer: Uint8Array, signer?: SignerIdentity, verbose = false): Promise<any> {
-    return this.uploadOwnable(buffer, signer, verbose);
-  }
-
   async downloadOwnable(ownableId: string): Promise<StreamableFile> {
     const record = await this.getOwnableRecordByOwnableId(ownableId);
     if (!record) throw new UserError(`Ownable bundle with id ${ownableId} not available on this hub`);
@@ -1171,10 +1060,12 @@ export class OwnableService {
   }
 
   private async listIndexedPublicEventsForOwnable(ownableId: string): Promise<IndexedPublicEvent[]> {
-    return (await this.hubState.listIndexedPublicEventsBySubjectId(
-      this.publicEventSubjectId(ownableId),
-      this.activePublicEventIdentity(),
-    ))
+    return (
+      await this.hubState.listIndexedPublicEventsBySubjectId(
+        this.publicEventSubjectId(ownableId),
+        this.activePublicEventIdentity(),
+      )
+    )
       .map((row) => this.toIndexedPublicEvent(row))
       .filter((event): event is IndexedPublicEvent => Boolean(event));
   }

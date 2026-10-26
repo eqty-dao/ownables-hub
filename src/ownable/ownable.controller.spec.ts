@@ -174,31 +174,6 @@ describe('OwnableController', () => {
     expect(res.status).toHaveBeenCalledWith(409);
   });
 
-  it('rejects wrong signer for proof with non-200 response', async () => {
-    const ownableService = {
-      getUnlockProof: jest.fn().mockRejectedValue(new UserError('Signer 0x1 is not current NFT owner 0x2')),
-    } as any;
-    const controller = new OwnableController(ownableService);
-    const res = buildRes();
-
-    await controller.getUnlockProof({ params: { id: 'ownable-1' } } as any, { address: '0x1' }, res);
-
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.send).toHaveBeenCalled();
-  });
-
-  it('keeps bridge as a thin alias', async () => {
-    const ownableService = {
-      uploadOwnable: jest.fn().mockResolvedValue({ cid: 'cid-1' }),
-    } as any;
-    const controller = new OwnableController(ownableService);
-
-    const uploadReq: any = { file: { buffer: Buffer.from('zip') } };
-    const uploadRes = buildRes();
-    await controller.bridgeOwnable(uploadReq, uploadRes, undefined);
-    expect(ownableService.uploadOwnable).toHaveBeenCalledWith(uploadReq.file.buffer, undefined, true);
-  });
-
   it('streams a non-empty zip body for GET /ownables/:id/bundle over HTTP', async () => {
     const zip = new JSZip();
     zip.file('chain.json', JSON.stringify({ cid: 'cid-1' }));
@@ -256,8 +231,10 @@ describe('Story #9 resource route behavior', () => {
   let app: INestApplication;
 
   beforeAll(async () => {
-    process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://planner:planner@127.0.0.1:5432/ownables_hub_test';
-    process.env.SIGNER_MNEMONIC = process.env.SIGNER_MNEMONIC || 'test test test test test test test test test test test junk';
+    process.env.DATABASE_URL =
+      process.env.DATABASE_URL || 'postgres://planner:planner@127.0.0.1:5432/ownables_hub_test';
+    process.env.SIGNER_MNEMONIC =
+      process.env.SIGNER_MNEMONIC || 'test test test test test test test test test test test junk';
 
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
@@ -549,13 +526,8 @@ describe('Story #9 resource route behavior', () => {
     }
 
     expect(Object.keys(paths).filter((path) => path.startsWith('/ownables/')).sort()).toEqual([
-      '/ownables/bridge',
-      '/ownables/bridged',
-      '/ownables/chains',
-      '/ownables/isUnlockProofValid',
       '/ownables/{id}/bundle',
       '/ownables/{id}/public-events',
-      '/ownables/{id}/unlock-proof',
       '/ownables/{id}/verification',
     ]);
   });

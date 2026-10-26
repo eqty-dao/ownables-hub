@@ -276,14 +276,6 @@ describe('OwnableService', () => {
   });
 
   const buildService = async () => {
-    const nft = {
-      getOwnerOfNFT: jest.fn().mockResolvedValue(PRIVATE_STATE_OWNER_WALLET.address),
-      isNFTlocked: jest.fn().mockResolvedValue(true),
-      getUnlockProof: jest.fn().mockResolvedValue('unlock-proof'),
-      isUnlockProofValid: jest.fn().mockResolvedValue(true),
-      getNFTcount: jest.fn().mockResolvedValue('42'),
-      GetServerETHBalance: jest.fn().mockResolvedValue('1.00'),
-    };
     const storage = {
       storePackageArtifacts: jest.fn().mockResolvedValue(undefined),
       storeEventChain: jest.fn().mockResolvedValue(undefined),
@@ -295,13 +287,11 @@ describe('OwnableService', () => {
     const hubState = {
       upsertOwnableRecord: jest.fn().mockResolvedValue({ id: 'id-1' }),
       setOwnerState: jest.fn().mockResolvedValue(undefined),
-      getOwnerStateByCid: jest
-        .fn()
-        .mockResolvedValue({
-          owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
-          version: 1,
-          latestAppliedPublicEventId: null,
-        }),
+      getOwnerStateByCid: jest.fn().mockResolvedValue({
+        owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
+        version: 1,
+        latestAppliedPublicEventId: null,
+      }),
       getOwnableByCid: jest.fn().mockResolvedValue({ id: 'id-1', packageCid: 'cid-1' }),
       getOwnableByNft: jest.fn(),
       getOwnableBySubjectId: jest.fn().mockResolvedValue(null),
@@ -329,7 +319,6 @@ describe('OwnableService', () => {
     };
     const service = new OwnableService(
       buildConfig() as any,
-      nft as any,
       storage as any,
       hubState as any,
       ownableTransport as any,
@@ -355,7 +344,7 @@ describe('OwnableService', () => {
       .spyOn(service as any, 'assertSupportedOwnableRuntime')
       .mockImplementation(() => undefined);
 
-    return { service, nft, storage, hubState, ownableTransport, runtimeValidatorSpy };
+    return { service, storage, hubState, ownableTransport, runtimeValidatorSpy };
   };
 
   const createChain = async (
@@ -393,7 +382,6 @@ describe('OwnableService', () => {
     return chain;
   };
 
-  const storedOwnableId = async () => (await createChain()).id;
   const expectedSubjectId = (ownableId: string) => ethers.keccak256(ethers.getBytes(ownableId)).toLowerCase();
 
   const toBuffer = async (stream: Readable): Promise<Buffer> => {
@@ -525,7 +513,7 @@ describe('OwnableService', () => {
   };
 
   it('accepts upload by passing indexed anchor evidence through EventChainService verification', async () => {
-    const { service, storage, hubState, nft } = await buildService();
+    const { service, storage, hubState } = await buildService();
     const chain = await createChain();
     const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
     const buffer = await createUploadBuffer(chain);
@@ -542,7 +530,6 @@ describe('OwnableService', () => {
     expect(storage.storePackageArtifacts).toHaveBeenCalledTimes(1);
     expect(storage.storeEventChain).toHaveBeenCalledTimes(1);
     expect(hubState.upsertOwnableRecord).toHaveBeenCalledTimes(1);
-    expect(nft.getOwnerOfNFT).not.toHaveBeenCalled();
     expect(hubState.setOwnerState).toHaveBeenCalledWith(
       'id-1',
       REPLAY_OWNER_WALLET.address.toLowerCase(),
@@ -1502,32 +1489,6 @@ describe('OwnableService', () => {
     expect(outputZip.file('chain.json')).toBeTruthy();
     expect(outputZip.file('eventChain.json')).toBeNull();
     expect(outputZip.file('authority_claim_msg.json')).toBeNull();
-  });
-
-  it('requires signer for unlock proof', async () => {
-    const { service } = await buildService();
-    const chainId = await storedOwnableId();
-    await expect(service.getUnlockProof(chainId)).rejects.toThrow('Missing SIWE signer');
-  });
-
-  it('rejects unlock proof when nft metadata is unavailable', async () => {
-    const { service, storage, hubState } = await buildService();
-    const chain = await createSdkIssuedChain();
-    const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
-    const packageZip = new JSZip();
-    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
-    storage.getEventChain.mockResolvedValue(chainBuffer);
-    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
-    mockReplayInfo = { owner: REPLAY_OWNER_WALLET.address.toLowerCase() };
-    hubState.getOwnableBySubjectId.mockResolvedValue({
-      id: 'id-1',
-      packageCid: 'cid-1',
-      subjectId: expectedSubjectId(chain.id),
-    });
-
-    await expect(service.getUnlockProof(chain.id, { address: PRIVATE_STATE_OWNER_WALLET.address })).rejects.toThrow(
-      'NFT metadata is unavailable for this ownable',
-    );
   });
 
   it('returns available ownables with stable keys and import metadata', async () => {
