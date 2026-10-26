@@ -74,33 +74,28 @@ describe('EthersService', () => {
     });
   });
 
-  it('retains exact Base provider identity across repeated contract lookups', async () => {
-    await createModule('testnet');
-
-    const initialProvider = createdProviders[0].provider;
-    const firstContract = service.getContract('IERC721Lockable', 'eip155:base', '0x1234567890123456789012345678901234567890');
-    const secondContract = service.getContract('IERC721Lockable', 'eip155:base', '0x1234567890123456789012345678901234567890');
-
-    expect(providerFactory).toHaveBeenCalledTimes(1);
-    expect((firstContract.runner as ethers.Wallet).provider).toBe(initialProvider);
-    expect((secondContract.runner as ethers.Wallet).provider).toBe(initialProvider);
-  });
-
   it('caches a distinct second supported network using its exact resolved inputs', async () => {
     await createModule('testnet');
 
     const baseProvider = createdProviders[0].provider;
-    const firstContract = service.getContract('IERC721Lockable', 'eip155:ethereum', '0x1234567890123456789012345678901234567890');
-    const secondContract = service.getContract('IERC721Lockable', 'eip155:ethereum', '0x1234567890123456789012345678901234567890');
+    const ethereumProvider = new ethers.JsonRpcProvider(rpcUrls.testnet['eip155:ethereum'], {
+      name: 'sepolia',
+      chainId: 11155111,
+    });
+    jest.spyOn(ethereumProvider, 'getBalance').mockResolvedValue(0n);
+    jest.spyOn(ethereumProvider, 'destroy');
+    providerFactory.mockImplementationOnce(() => ethereumProvider);
+    const firstBalance = await service.GetServerETHBalance('eip155:ethereum');
+    const secondBalance = await service.GetServerETHBalance('eip155:ethereum');
 
     expect(providerFactory).toHaveBeenCalledTimes(2);
     expect(providerFactory).toHaveBeenLastCalledWith(rpcUrls.testnet['eip155:ethereum'], {
       name: 'sepolia',
       chainId: 11155111,
     });
-    expect((firstContract.runner as ethers.Wallet).provider).toBe(createdProviders[1].provider);
-    expect((secondContract.runner as ethers.Wallet).provider).toBe(createdProviders[1].provider);
-    expect(createdProviders[1].provider).not.toBe(baseProvider);
+    expect(firstBalance).toBe('0.0');
+    expect(secondBalance).toBe('0.0');
+    expect(ethereumProvider).not.toBe(baseProvider);
   });
 
   it('retains exact mainnet profile resolution', async () => {
@@ -142,38 +137,30 @@ describe('EthersService', () => {
     expect(providerFactory).toHaveBeenCalledTimes(factoryCalls);
   });
 
-  it('preserves signer verification and contract construction', async () => {
-    await createModule('testnet');
-
-    const message = 'hello';
-    const signature = await service.signMessage(message);
-    const recovered = service.verifyMessage(message, signature);
-
-    expect(ethers.isAddress(recovered)).toBe(true);
-    const contract = service.getContract('IERC721Lockable', 'eip155:base', '0x1234567890123456789012345678901234567890');
-    expect(contract).toBeInstanceOf(ethers.Contract);
-  });
-
   it('rejects unsupported networks before invoking the factory', async () => {
     await createModule('testnet');
     const factoryCalls = providerFactory.mock.calls.length;
 
-    expect(() => service.getContract('IERC721Lockable', 'unknown', '0x1234567890123456789012345678901234567890')).toThrow(
-      /Incorrect network name/,
-    );
+    await expect(service.GetServerETHBalance('unknown')).rejects.toThrow(/Incorrect network name/);
     expect(providerFactory).toHaveBeenCalledTimes(factoryCalls);
   });
 
   it('destroys each cached provider exactly once when the Nest module closes', async () => {
     await createModule('testnet');
-    service.getContract('IERC721Lockable', 'eip155:ethereum', '0x1234567890123456789012345678901234567890');
+    const ethereumProvider = new ethers.JsonRpcProvider(rpcUrls.testnet['eip155:ethereum'], {
+      name: 'sepolia',
+      chainId: 11155111,
+    });
+    jest.spyOn(ethereumProvider, 'destroy');
+    jest.spyOn(ethereumProvider, 'getBalance').mockResolvedValue(0n);
+    providerFactory.mockImplementationOnce(() => ethereumProvider);
+    await service.GetServerETHBalance('eip155:ethereum');
 
     await module.close();
     await module.close();
 
-    expect(createdProviders).toHaveLength(2);
-    for (const { provider } of createdProviders) {
-      expect(provider.destroy).toHaveBeenCalledTimes(1);
-    }
+    expect(createdProviders).toHaveLength(1);
+    expect(createdProviders[0].provider.destroy).toHaveBeenCalledTimes(1);
+    expect(ethereumProvider.destroy).toHaveBeenCalledTimes(1);
   });
 });

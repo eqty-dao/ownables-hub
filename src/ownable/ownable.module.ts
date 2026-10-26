@@ -5,7 +5,6 @@ import { CosmWasmModule } from '../cosmwasm/cosmwasm.module';
 import { PackageModule } from '../package/package.module';
 import { ConfigModule } from '../common/config/config.module';
 import { EthersModule } from '../common/ethers/ethers.module';
-import { NFTModule } from '../nft/nft.module';
 import { OwnableService } from './ownable.service';
 import { HttpModule } from '@nestjs/axios';
 import { PersistenceModule } from '../persistence/persistence.module';
@@ -19,7 +18,6 @@ import { OwnableReplayService } from './ownable-replay.service';
     CosmWasmModule,
     PackageModule,
     EthersModule,
-    NFTModule,
     HttpModule,
     PersistenceModule,
     StorageModule,
