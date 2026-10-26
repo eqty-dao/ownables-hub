@@ -11,7 +11,6 @@ import {
 import { calculateOwnablePackageCid, type OwnablePackageCidEntry } from '@ownables/core/utils';
 import { NodePackageAssetIO } from '@ownables/platform-node';
 import { ConfigService } from '../common/config/config.service';
-import { EthersService } from '../common/ethers/ethers.service';
 import { resolveCaip2Reference } from '../common/config/evm-network.util';
 import { NFTInfo } from '../interfaces/OwnableInfo';
 import { UserError } from '../interfaces/error';
@@ -246,7 +245,6 @@ class InMemoryStateStore implements StateStore {
 export class OwnableService {
   constructor(
     private config: ConfigService,
-    private ethers: EthersService,
     private readonly storage: ArchiveStorageService,
     private readonly hubState: HubStateRepository,
     private readonly ownableTransport: OwnableTransportService,

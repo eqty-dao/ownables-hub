@@ -74,7 +74,7 @@ describe('EthersService', () => {
     });
   });
 
-  it('caches a distinct second supported network using its exact resolved inputs', async () => {
+  it('caches a distinct second wallet network using its exact resolved inputs', async () => {
     await createModule('testnet');
 
     const baseProvider = createdProviders[0].provider;
@@ -85,16 +85,14 @@ describe('EthersService', () => {
     jest.spyOn(ethereumProvider, 'getBalance').mockResolvedValue(0n);
     jest.spyOn(ethereumProvider, 'destroy');
     providerFactory.mockImplementationOnce(() => ethereumProvider);
-    const firstBalance = await service.GetServerETHBalance('eip155:ethereum');
-    const secondBalance = await service.GetServerETHBalance('eip155:ethereum');
+    await service.getHubWallet('eip155:ethereum');
+    await service.getHubWallet('eip155:ethereum');
 
     expect(providerFactory).toHaveBeenCalledTimes(2);
     expect(providerFactory).toHaveBeenLastCalledWith(rpcUrls.testnet['eip155:ethereum'], {
       name: 'sepolia',
       chainId: 11155111,
     });
-    expect(firstBalance).toBe('0.0');
-    expect(secondBalance).toBe('0.0');
     expect(ethereumProvider).not.toBe(baseProvider);
   });
 
@@ -137,14 +135,6 @@ describe('EthersService', () => {
     expect(providerFactory).toHaveBeenCalledTimes(factoryCalls);
   });
 
-  it('rejects unsupported networks before invoking the factory', async () => {
-    await createModule('testnet');
-    const factoryCalls = providerFactory.mock.calls.length;
-
-    await expect(service.GetServerETHBalance('unknown')).rejects.toThrow(/Incorrect network name/);
-    expect(providerFactory).toHaveBeenCalledTimes(factoryCalls);
-  });
-
   it('destroys each cached provider exactly once when the Nest module closes', async () => {
     await createModule('testnet');
     const ethereumProvider = new ethers.JsonRpcProvider(rpcUrls.testnet['eip155:ethereum'], {
@@ -154,7 +144,7 @@ describe('EthersService', () => {
     jest.spyOn(ethereumProvider, 'destroy');
     jest.spyOn(ethereumProvider, 'getBalance').mockResolvedValue(0n);
     providerFactory.mockImplementationOnce(() => ethereumProvider);
-    await service.GetServerETHBalance('eip155:ethereum');
+    await service.getHubWallet('eip155:ethereum');
 
     await module.close();
     await module.close();

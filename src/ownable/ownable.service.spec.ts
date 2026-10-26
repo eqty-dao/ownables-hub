@@ -319,7 +319,6 @@ describe('OwnableService', () => {
     };
     const service = new OwnableService(
       buildConfig() as any,
-      {} as any,
       storage as any,
       hubState as any,
       ownableTransport as any,

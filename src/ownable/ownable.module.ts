@@ -4,7 +4,6 @@ import { OwnableController } from './ownable.controller';
 import { CosmWasmModule } from '../cosmwasm/cosmwasm.module';
 import { PackageModule } from '../package/package.module';
 import { ConfigModule } from '../common/config/config.module';
-import { EthersModule } from '../common/ethers/ethers.module';
 import { OwnableService } from './ownable.service';
 import { HttpModule } from '@nestjs/axios';
 import { PersistenceModule } from '../persistence/persistence.module';
@@ -17,7 +16,6 @@ import { OwnableReplayService } from './ownable-replay.service';
     ConfigModule,
     CosmWasmModule,
     PackageModule,
-    EthersModule,
     HttpModule,
     PersistenceModule,
     StorageModule,

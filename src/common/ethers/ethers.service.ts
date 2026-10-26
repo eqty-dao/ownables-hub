@@ -31,11 +31,6 @@ export class EthersService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  public async GetServerETHBalance(networkName: string): Promise<string> {
-    const provider = this.getProviderForNetwork(networkName);
-    return ethers.formatUnits(await provider.getBalance(this.signer.address), 'ether').toString();
-  }
-
   public async getHubWallet(networkName: string): Promise<{
     address: string;
     networkId: string;
