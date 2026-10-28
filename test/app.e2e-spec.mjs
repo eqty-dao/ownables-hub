@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer as createHttpServer } from 'node:http';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import process from 'node:process';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { AnchorValidationService, PublicEventReplayService } from '@ownables/core';
 import { calculateOwnablePackageCid } from '@ownables/core/utils';
 import { NodeRuntimeRpcProvider, NodeRuntimeSourceProvider } from '@ownables/platform-node';
@@ -19,8 +19,6 @@ import { encode } from 'cbor-x';
 import pg from 'pg';
 
 const { Client } = pg;
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const projectRoot = join(__dirname, '..');
 const EXPECTED_UNSUPPORTED_RUNTIME_ERROR =
   "Invalid package: unsupported Ownable runtime in 'ownable_bg.wasm'. Expected raw-ABI exports with no wasm imports; found unsupported imports from module(s): wbg";
 const TEST_SIGNER_MNEMONIC = 'test test test test test test test test test test test junk';
@@ -48,11 +46,7 @@ async function buildChain(wallet) {
 }
 
 async function buildUnsupportedUploadArchive() {
-  const fixtureDir = join(projectRoot, 'src', 'cosmwasm', '_test');
-  const [ownableJs, ownableWasm] = await Promise.all([
-    readFile(join(fixtureDir, 'ownable.js')),
-    readFile(join(fixtureDir, 'ownable_bg.wasm')),
-  ]);
+  const ownableWasm = buildWasmBindgenRuntimeWasm();
 
   const moduleImports = WebAssembly.Module.imports(new WebAssembly.Module(Uint8Array.from(ownableWasm))).map(
     ({ module, name }) => ({ module, name }),
@@ -62,7 +56,6 @@ async function buildUnsupportedUploadArchive() {
   const chain = await buildChain(wallet);
   const zip = new JSZip();
   zip.file('package.json', JSON.stringify({ name: 'fixture-ownable' }));
-  zip.file('ownable.js', ownableJs);
   zip.file('ownable_bg.wasm', ownableWasm);
   zip.file('chain.json', JSON.stringify(chain.toJSON()));
 
@@ -70,6 +63,36 @@ async function buildUnsupportedUploadArchive() {
     archive: await zip.generateAsync({ type: 'uint8array' }),
     moduleImports,
   };
+}
+
+function buildWasmBindgenRuntimeWasm() {
+  return Uint8Array.from([
+    0x00,
+    0x61,
+    0x73,
+    0x6d,
+    0x01,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x04,
+    0x01,
+    0x60,
+    0x00,
+    0x00,
+    0x02,
+    0x09,
+    0x01,
+    0x03,
+    0x77,
+    0x62,
+    0x67,
+    0x01,
+    0x78,
+    0x00,
+    0x00,
+  ]);
 }
 
 function encodeUnsigned(value) {

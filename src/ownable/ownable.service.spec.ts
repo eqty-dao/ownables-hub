@@ -1,8 +1,6 @@
 import JSZip from 'jszip';
 import { Readable } from 'stream';
 import { ethers } from 'ethers';
-import { readFile } from 'fs/promises';
-import { join } from 'path';
 import { Event, EventChain } from '../test-mocks/eqty-core';
 import { OwnableService } from './ownable.service';
 import {
@@ -509,6 +507,35 @@ describe('OwnableService', () => {
     ]);
   };
 
+  const buildWasmBindgenRuntimeWasm = (): Uint8Array =>
+    Uint8Array.from([
+      0x00,
+      0x61,
+      0x73,
+      0x6d,
+      0x01,
+      0x00,
+      0x00,
+      0x00,
+      0x01,
+      0x04,
+      0x01,
+      0x60,
+      0x00,
+      0x00,
+      0x02,
+      0x09,
+      0x01,
+      0x03,
+      0x77,
+      0x62,
+      0x67,
+      0x01,
+      0x78,
+      0x00,
+      0x00,
+    ]);
+
   it('accepts upload by passing indexed anchor evidence through EventChainService verification', async () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain();
@@ -718,8 +745,7 @@ describe('OwnableService', () => {
   it('rejects wasm-bindgen runtime fixtures as invalid upload input', async () => {
     const { service, storage, hubState, runtimeValidatorSpy } = await buildService();
     const chain = await createChain();
-    const wasmBindgenRuntime = await readFile(join(__dirname, '..', 'cosmwasm', '_test', 'ownable_bg.wasm'));
-    const buffer = await createUploadBuffer(chain, ['chain.json'], {}, wasmBindgenRuntime);
+    const buffer = await createUploadBuffer(chain, ['chain.json'], {}, buildWasmBindgenRuntimeWasm());
     runtimeValidatorSpy.mockRestore();
 
     await expect(service.uploadOwnable(buffer, undefined, false)).rejects.toThrow(

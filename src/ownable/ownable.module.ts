@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AnchorValidationService, PublicEventReplayService } from '@ownables/core';
 import { OwnableController } from './ownable.controller';
-import { CosmWasmModule } from '../cosmwasm/cosmwasm.module';
 import { PackageModule } from '../package/package.module';
 import { ConfigModule } from '../common/config/config.module';
 import { OwnableService } from './ownable.service';
@@ -14,7 +13,6 @@ import { OwnableReplayService } from './ownable-replay.service';
 @Module({
   imports: [
     ConfigModule,
-    CosmWasmModule,
     PackageModule,
     HttpModule,
     PersistenceModule,
