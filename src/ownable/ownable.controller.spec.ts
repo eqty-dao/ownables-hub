@@ -490,7 +490,7 @@ describe('Story #9 resource route behavior', () => {
       .expect(401);
   });
 
-  it('publishes the canonical non-NFT inventory and excludes removed non-NFT paths', async () => {
+  it('publishes the canonical route inventory and excludes removed paths', async () => {
     const response = await request(app.getHttpServer()).get('/api-docs-json').expect(200);
     const paths = response.body.paths as Record<string, unknown>;
 

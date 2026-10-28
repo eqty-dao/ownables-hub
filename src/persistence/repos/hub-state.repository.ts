@@ -6,9 +6,6 @@ export interface OwnableRecordInput {
   packageCid: string;
   prevOwnerAddress: string;
   subjectId?: string;
-  nftNetwork?: string;
-  nftContractAddress?: string;
-  nftTokenId?: string;
   chainFileName?: string;
 }
 
@@ -17,9 +14,6 @@ export interface OwnableRecord {
   packageCid: string;
   prevOwnerAddress: string;
   subjectId: string | null;
-  nftNetwork: string | null;
-  nftContractAddress: string | null;
-  nftTokenId: string | null;
 }
 
 export interface IndexedWalletEvent {
@@ -126,9 +120,6 @@ export interface AvailableOwnableRow {
   ownerStateVersion: number;
   availableAt: string;
   issuerAddress: string;
-  nftNetwork: string | null;
-  nftContractAddress: string | null;
-  nftTokenId: string | null;
 }
 
 @Injectable()
@@ -140,9 +131,6 @@ export class HubStateRepository {
       input.packageCid,
       input.prevOwnerAddress,
       input.subjectId ?? null,
-      input.nftNetwork ?? null,
-      input.nftContractAddress ?? null,
-      input.nftTokenId ?? null,
       input.chainFileName ?? 'eventChain.json',
     ];
     const sql =
@@ -151,30 +139,21 @@ export class HubStateRepository {
              package_cid,
              prev_owner_address,
              subject_id,
-             nft_network,
-             nft_contract_address,
-             nft_token_id,
              chain_file_name
-           ) VALUES ($1, LOWER($2), LOWER($3), $4, $5, $6, $7)
+           ) VALUES ($1, LOWER($2), LOWER($3), $4)
            ON CONFLICT (subject_id) WHERE subject_id IS NOT NULL DO UPDATE SET
              package_cid = EXCLUDED.package_cid,
              prev_owner_address = EXCLUDED.prev_owner_address,
-             nft_network = EXCLUDED.nft_network,
-             nft_contract_address = EXCLUDED.nft_contract_address,
-             nft_token_id = EXCLUDED.nft_token_id,
              chain_file_name = EXCLUDED.chain_file_name,
              updated_at = NOW()
-           RETURNING id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"`
+           RETURNING id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId"`
         : `INSERT INTO ownable_records (
              package_cid,
              prev_owner_address,
              subject_id,
-             nft_network,
-             nft_contract_address,
-             nft_token_id,
              chain_file_name
-           ) VALUES ($1, LOWER($2), LOWER($3), $4, $5, $6, $7)
-           RETURNING id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"`;
+           ) VALUES ($1, LOWER($2), LOWER($3), $4)
+           RETURNING id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId"`;
 
     const result = await this.db.query<OwnableRecord>(sql, values);
 
@@ -183,7 +162,7 @@ export class HubStateRepository {
 
   async getOwnableByCid(cid: string): Promise<OwnableRecord | null> {
     const result = await this.db.query<OwnableRecord>(
-      `SELECT id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
+      `SELECT id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId"
        FROM ownable_records
        WHERE package_cid = $1
        ORDER BY updated_at DESC, created_at DESC
@@ -194,20 +173,9 @@ export class HubStateRepository {
     return result.rows[0] ?? null;
   }
 
-  async getOwnableByNft(nftNetwork: string, nftContractAddress: string, nftTokenId: string): Promise<OwnableRecord | null> {
-    const result = await this.db.query<OwnableRecord>(
-      `SELECT id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
-       FROM ownable_records
-       WHERE nft_network = $1 AND nft_contract_address = $2 AND nft_token_id = $3`,
-      [nftNetwork, nftContractAddress, nftTokenId],
-    );
-
-    return result.rows[0] ?? null;
-  }
-
   async getOwnableBySubjectId(subjectId: string): Promise<OwnableRecord | null> {
     const result = await this.db.query<OwnableRecord>(
-      `SELECT id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId", nft_network AS "nftNetwork", nft_contract_address AS "nftContractAddress", nft_token_id AS "nftTokenId"
+      `SELECT id, package_cid AS "packageCid", prev_owner_address AS "prevOwnerAddress", subject_id AS "subjectId"
        FROM ownable_records
        WHERE subject_id = LOWER($1)
        ORDER BY updated_at DESC, created_at DESC
@@ -376,10 +344,7 @@ export class HubStateRepository {
          os.current_owner_account AS "ownerAccount",
          os.owner_state_version AS "ownerStateVersion",
          os.updated_at AS "availableAt",
-         o.prev_owner_address AS "issuerAddress",
-         o.nft_network AS "nftNetwork",
-         o.nft_contract_address AS "nftContractAddress",
-         o.nft_token_id AS "nftTokenId"
+         o.prev_owner_address AS "issuerAddress"
        FROM ownable_owner_state os
        INNER JOIN ownable_records o ON o.id = os.ownable_id
        WHERE os.current_owner_account = $1

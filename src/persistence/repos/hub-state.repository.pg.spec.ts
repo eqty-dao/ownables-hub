@@ -69,15 +69,12 @@ describeWithDatabase('HubStateRepository recipient discovery postgres integratio
   it('returns available ownables by persisted current owner account on the migrated schema', async () => {
     await withSchema(null, async (repo, client) => {
       await client.query(
-        `INSERT INTO ownable_records (id, package_cid, prev_owner_address, subject_id, nft_network, nft_contract_address, nft_token_id)
+        `INSERT INTO ownable_records (id, package_cid, prev_owner_address, subject_id)
          VALUES (
            '00000000-0000-0000-0000-000000000001',
            'cid-available-1',
            '0xissuer',
-           '0x11',
-           'eip155:base',
-           '0xnft',
-           '1'
+           '0x11'
          )`,
       );
       await client.query(
@@ -109,6 +106,68 @@ describeWithDatabase('HubStateRepository recipient discovery postgres integratio
         }),
       ]);
     });
+  });
+
+  it('removes NFT columns from an existing schema while retaining the Ownable record', async () => {
+    const schema = `hub_nft_removal_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    runMigrationsForSchema(schema, '1717197000000');
+
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    await client.query(`SET search_path TO "${schema}", public`);
+    try {
+      await client.query(
+        `INSERT INTO ownable_records (
+           id, package_cid, prev_owner_address, subject_id, nft_network, nft_contract_address, nft_token_id
+         ) VALUES (
+           '00000000-0000-0000-0000-000000000019',
+           'cid-existing-19',
+           '0xissuer',
+           '0x19',
+           'eip155:84532',
+           '0xlegacy',
+           '19'
+         )`,
+      );
+
+      runMigrationsForSchema(schema, null);
+
+      const nftColumns = await client.query(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_schema = $1
+           AND table_name = 'ownable_records'
+           AND column_name IN ('nft_network', 'nft_contract_address', 'nft_token_id')`,
+        [schema],
+      );
+      expect(nftColumns.rows).toEqual([]);
+      const nftConstraint = await client.query(
+        `SELECT conname FROM pg_constraint WHERE connamespace = $1::regnamespace AND conname = 'ownable_records_nft_unique'`,
+        [schema],
+      );
+      expect(nftConstraint.rows).toEqual([]);
+      const stored = await client.query(
+        `SELECT id, package_cid, prev_owner_address, subject_id FROM ownable_records WHERE id = $1`,
+        ['00000000-0000-0000-0000-000000000019'],
+      );
+      expect(stored.rows).toEqual([
+        {
+          id: '00000000-0000-0000-0000-000000000019',
+          package_cid: 'cid-existing-19',
+          prev_owner_address: '0xissuer',
+          subject_id: '0x19',
+        },
+      ]);
+    } finally {
+      await client.end();
+      const cleanupClient = new Client({ connectionString: databaseUrl });
+      await cleanupClient.connect();
+      try {
+        await cleanupClient.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      } finally {
+        await cleanupClient.end();
+      }
+    }
   });
 
   it('keeps cursor progress isolated by chain and normalized anchor identity', async () => {

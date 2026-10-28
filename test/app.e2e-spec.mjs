@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer as createHttpServer } from 'node:http';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import process from 'node:process';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { AnchorValidationService, PublicEventReplayService } from '@ownables/core';
 import { calculateOwnablePackageCid } from '@ownables/core/utils';
 import { NodeRuntimeRpcProvider, NodeRuntimeSourceProvider } from '@ownables/platform-node';
@@ -19,8 +19,6 @@ import { encode } from 'cbor-x';
 import pg from 'pg';
 
 const { Client } = pg;
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const projectRoot = join(__dirname, '..');
 const EXPECTED_UNSUPPORTED_RUNTIME_ERROR =
   "Invalid package: unsupported Ownable runtime in 'ownable_bg.wasm'. Expected raw-ABI exports with no wasm imports; found unsupported imports from module(s): wbg";
 const TEST_SIGNER_MNEMONIC = 'test test test test test test test test test test test junk';
@@ -36,11 +34,7 @@ async function buildChain(wallet) {
   const chain = EventChain.create(wallet.address, 84532);
   const event = new Event({
     '@context': 'instantiate_msg.json',
-    nft: {
-      network: 'eip155:base',
-      address: '0xabc0000000000000000000000000000000000001',
-      id: '1',
-    },
+    network_id: 84532,
   });
 
   await event.addTo(chain).signWith({
@@ -52,11 +46,7 @@ async function buildChain(wallet) {
 }
 
 async function buildUnsupportedUploadArchive() {
-  const fixtureDir = join(projectRoot, 'src', 'cosmwasm', '_test');
-  const [ownableJs, ownableWasm] = await Promise.all([
-    readFile(join(fixtureDir, 'ownable.js')),
-    readFile(join(fixtureDir, 'ownable_bg.wasm')),
-  ]);
+  const ownableWasm = buildWasmBindgenRuntimeWasm();
 
   const moduleImports = WebAssembly.Module.imports(new WebAssembly.Module(Uint8Array.from(ownableWasm))).map(
     ({ module, name }) => ({ module, name }),
@@ -66,7 +56,6 @@ async function buildUnsupportedUploadArchive() {
   const chain = await buildChain(wallet);
   const zip = new JSZip();
   zip.file('package.json', JSON.stringify({ name: 'fixture-ownable' }));
-  zip.file('ownable.js', ownableJs);
   zip.file('ownable_bg.wasm', ownableWasm);
   zip.file('chain.json', JSON.stringify(chain.toJSON()));
 
@@ -74,6 +63,36 @@ async function buildUnsupportedUploadArchive() {
     archive: await zip.generateAsync({ type: 'uint8array' }),
     moduleImports,
   };
+}
+
+function buildWasmBindgenRuntimeWasm() {
+  return Uint8Array.from([
+    0x00,
+    0x61,
+    0x73,
+    0x6d,
+    0x01,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x04,
+    0x01,
+    0x60,
+    0x00,
+    0x00,
+    0x02,
+    0x09,
+    0x01,
+    0x03,
+    0x77,
+    0x62,
+    0x67,
+    0x01,
+    0x78,
+    0x00,
+    0x00,
+  ]);
 }
 
 function encodeUnsigned(value) {
@@ -462,7 +481,7 @@ test('core packages provide the supported compatibility surface', async () => {
   const chain = EventChain.create(wallet.address, 84532);
   const event = new Event({
     '@context': 'instantiate_msg.json',
-    nft: { network: 'eip155:base', address: '0xabc', id: '1' },
+    network_id: 84532,
   });
 
   await event.addTo(chain).signWith({
@@ -618,7 +637,19 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   assert.equal(supportedUploadResponse.status, 201, 'Expected the canonical upload to create an Ownable');
   const supportedUpload = await supportedUploadResponse.json();
   assert.equal(supportedUpload.ownableId, chain.id);
+  assert.equal(Object.hasOwn(supportedUpload, 'nftNetwork'), false);
+  assert.equal(Object.hasOwn(supportedUpload, 'smartContractAddress'), false);
+  assert.equal(Object.hasOwn(supportedUpload, 'NftId'), false);
   assert.equal(supportedUploadResponse.headers.get('location'), `/ownables/${encodeURIComponent(chain.id)}`);
+
+  const verificationResponse = await fetch(
+    `http://127.0.0.1:${port}/ownables/${encodeURIComponent(chain.id)}/verification`,
+    { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
+  );
+  assert.equal(verificationResponse.status, 200, 'Expected the canonical verification response');
+  const verification = await verificationResponse.json();
+  assert.equal(Object.hasOwn(verification, 'nft'), false);
+
   const storedFilesBeforeInvalidUpload = (await listStoredFiles(storageRoot)).sort();
   assert.ok(storedFilesBeforeInvalidUpload.length > 0, 'Expected the successful upload to persist bundle files');
 

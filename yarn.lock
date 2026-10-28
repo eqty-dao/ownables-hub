@@ -121,7 +121,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@babel/core@npm:^7.23.9, @babel/core@npm:^7.27.4, @babel/core@npm:^7.28.4, @babel/core@npm:^7.29.7":
+"@babel/core@npm:^7.23.9, @babel/core@npm:^7.27.4, @babel/core@npm:^7.28.4":
   version: 7.29.7
   resolution: "@babel/core@npm:7.29.7"
   dependencies:
@@ -2019,16 +2019,16 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@ownables/core@npm:0.10.0, @ownables/core@npm:^0.10.0":
-  version: 0.10.0
-  resolution: "@ownables/core@npm:0.10.0"
+"@ownables/core@npm:2.0.1":
+  version: 2.0.1
+  resolution: "@ownables/core@npm:2.0.1"
   dependencies:
     blockstore-core: "npm:^6.1.2"
     cbor-x: "npm:^1.6.0"
     eqty-core: "npm:^1.1.1"
     ipfs-unixfs-importer: "npm:^16.1.4"
     jszip: "npm:^3.10.1"
-  checksum: 10c0/bf03cd28f2aad42ec222fc628dd231d2baade1d543f8ad1a90da59554e0df3a7a85876748ddf8bafae5464eb211232ff27511c03d2339f68c219ad97d5688ad8
+  checksum: 10c0/0660dd7a399b92d4458878f73d37f1016b75aca8f6c713a2b6be482a4253774173c0fc1619a9c7eadd67cf41da5d384369dbe7e8ff6922464dac7dc3a395f326
   languageName: node
   linkType: hard
 
@@ -2036,7 +2036,6 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@ownables/hub@workspace:."
   dependencies:
-    "@babel/core": "npm:^7.29.7"
     "@nestjs/axios": "npm:^4.0.1"
     "@nestjs/cli": "npm:^11.0.21"
     "@nestjs/common": "npm:^11.1.24"
@@ -2045,8 +2044,8 @@ __metadata:
     "@nestjs/schematics": "npm:^11.1.0"
     "@nestjs/swagger": "npm:^11.4.4"
     "@nestjs/testing": "npm:^11.1.24"
-    "@ownables/core": "npm:^0.10.0"
-    "@ownables/platform-node": "npm:^0.10.0"
+    "@ownables/core": "npm:2.0.1"
+    "@ownables/platform-node": "npm:2.0.1"
     "@semantic-release/commit-analyzer": "npm:^13.0.1"
     "@semantic-release/github": "npm:^12.0.8"
     "@semantic-release/release-notes-generator": "npm:^14.1.1"
@@ -2059,7 +2058,6 @@ __metadata:
     "@typescript-eslint/parser": "npm:^8.60.0"
     any-bucket: "npm:^0.1.6"
     axios: "npm:^1.16.1"
-    babel-plugin-remove-import-export: "npm:^1.1.1"
     bs58: "npm:^6.0.0"
     conventional-changelog-conventionalcommits: "npm:9.3.1"
     eqty-core: "npm:^1.0.2"
@@ -2086,17 +2084,17 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@ownables/platform-node@npm:^0.10.0":
-  version: 0.10.0
-  resolution: "@ownables/platform-node@npm:0.10.0"
+"@ownables/platform-node@npm:2.0.1":
+  version: 2.0.1
+  resolution: "@ownables/platform-node@npm:2.0.1"
   dependencies:
     "@babel/core": "npm:^7.28.4"
-    "@ownables/core": "npm:0.10.0"
+    "@ownables/core": "npm:2.0.1"
     any-bucket: "npm:^0.1.6"
     babel-plugin-remove-import-export: "npm:^1.1.1"
     cbor-x: "npm:^1.6.0"
     jszip: "npm:^3.10.1"
-  checksum: 10c0/a8b4159c5b6ead769844f00d74aa869f5e7538f54092a2089e473e8bbf875ceab231aa8e11058962be16485d572a758cee7b48da6535945131bf6f930de05d6f
+  checksum: 10c0/9a6996129cb3742630f0671a080f6f44e38efc24cdd5658c28297e638abafb4a395da8005e79ab9c3924299097f4f3fd9ef4f63839a61540e6660b27f50a98e2
   languageName: node
   linkType: hard
 
