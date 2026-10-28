@@ -49,7 +49,6 @@ export default class Contract {
   }
 
   async instantiate(msg: Dict, info: MsgInfo): Promise<{ attributes: Dict }> {
-    if (!('nft' in msg)) msg.nft = undefined;
     if (!('ownable_type' in msg)) msg.ownable_type = undefined;
     if (typeof msg.network_id === 'string') msg.network_id = msg.network_id.charCodeAt(0);
 

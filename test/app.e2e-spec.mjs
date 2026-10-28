@@ -36,11 +36,7 @@ async function buildChain(wallet) {
   const chain = EventChain.create(wallet.address, 84532);
   const event = new Event({
     '@context': 'instantiate_msg.json',
-    nft: {
-      network: 'eip155:base',
-      address: '0xabc0000000000000000000000000000000000001',
-      id: '1',
-    },
+    network_id: 84532,
   });
 
   await event.addTo(chain).signWith({
@@ -462,7 +458,7 @@ test('core packages provide the supported compatibility surface', async () => {
   const chain = EventChain.create(wallet.address, 84532);
   const event = new Event({
     '@context': 'instantiate_msg.json',
-    nft: { network: 'eip155:base', address: '0xabc', id: '1' },
+    network_id: 84532,
   });
 
   await event.addTo(chain).signWith({

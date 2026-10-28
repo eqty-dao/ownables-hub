@@ -17,7 +17,7 @@ describe('HubStateRepository', () => {
     repo = new HubStateRepository(db as any);
   });
 
-  it('upserts and resolves ownable lookups by cid, nft, and subject', async () => {
+  it('upserts and resolves ownable lookups by cid and subject', async () => {
     query.mockResolvedValueOnce({ rows: [{ id: 'own-1', packageCid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
     query.mockResolvedValueOnce({ rows: [{ id: 'own-1', packageCid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
     query.mockResolvedValueOnce({ rows: [{ id: 'own-1', packageCid: 'cid-1', prevOwnerAddress: '0xabc', subjectId: '0x11' }] });
@@ -27,18 +27,14 @@ describe('HubStateRepository', () => {
       packageCid: 'cid-1',
       prevOwnerAddress: '0xABC',
       subjectId: '0x11',
-      nftNetwork: 'eip155:base',
-      nftContractAddress: '0xNFT',
-      nftTokenId: '1',
     });
 
     const byCid = await repo.getOwnableByCid('cid-1');
-    const byNft = await repo.getOwnableByNft('eip155:base', '0xNFT', '1');
     const bySubject = await repo.getOwnableBySubjectId('0x11');
 
     expect(byCid?.packageCid).toBe('cid-1');
-    expect(byNft?.id).toBe('own-1');
     expect(bySubject?.subjectId).toBe('0x11');
+    expect(query.mock.calls.flatMap(([, values]) => values ?? [])).not.toContain('eip155:base');
   });
 
   it('reads bridged cid list by previous owner', async () => {
@@ -455,9 +451,6 @@ describe('HubStateRepository', () => {
           ownerStateVersion: 3,
           availableAt: '2026-06-06T10:01:00.000Z',
           issuerAddress: '0xissuer',
-          nftNetwork: 'eip155:base',
-          nftContractAddress: '0xnft',
-          nftTokenId: '1',
         },
       ],
     });

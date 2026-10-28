@@ -12,7 +12,6 @@ import { calculateOwnablePackageCid, type OwnablePackageCidEntry } from '@ownabl
 import { NodePackageAssetIO } from '@ownables/platform-node';
 import { ConfigService } from '../common/config/config.service';
 import { resolveCaip2Reference } from '../common/config/evm-network.util';
-import { NFTInfo } from '../interfaces/OwnableInfo';
 import { UserError } from '../interfaces/error';
 import JSZip from 'jszip';
 import { EventChain } from 'eqty-core';
@@ -48,8 +47,7 @@ interface ReplayDerivedState {
     latestReplayKey?: string;
   };
   ignoredPublicEvents: ReplayIgnoredPublicEvent[];
-  nftInfo: NFTInfo | null;
-  ownerNetwork: string | null;
+  ownerNetwork: string;
   ownerAccount: string | null;
   owner: string;
   latestAppliedPublicEventId: string | null;
@@ -73,7 +71,6 @@ interface OwnableVerificationResponse {
     logIndex: number;
     reason: string;
   }>;
-  nft?: NFTInfo;
 }
 
 interface AvailableOwnablePackageMetadata {
@@ -264,43 +261,6 @@ export class OwnableService {
     }
   }
 
-  private parseNftInfoFromChain(chain: EventChain): NFTInfo {
-    const parsed = chain.events[0]?.parsedData;
-    if (!parsed?.nft?.network || !parsed?.nft?.address || parsed?.nft?.id === undefined) {
-      throw new UserError('Invalid event chain: missing NFT metadata in first event');
-    }
-    return { network: parsed.nft.network, address: parsed.nft.address, id: String(parsed.nft.id) };
-  }
-
-  private parseNftInfoFromOwnableInfo(info: unknown): NFTInfo | null {
-    const nft = (info as { nft?: { network?: string; address?: string; id?: string | number } } | null)?.nft;
-    if (!nft?.network || !nft.address || nft.id === undefined) {
-      return null;
-    }
-    return {
-      network: nft.network,
-      address: nft.address,
-      id: String(nft.id),
-    };
-  }
-
-  private parseNftInfoFromRecord(
-    record: {
-      nftNetwork: string | null;
-      nftContractAddress: string | null;
-      nftTokenId: string | null;
-    } | null,
-  ): NFTInfo | null {
-    if (!record?.nftNetwork || !record.nftContractAddress || record.nftTokenId === null) {
-      return null;
-    }
-    return {
-      network: record.nftNetwork,
-      address: record.nftContractAddress,
-      id: record.nftTokenId,
-    };
-  }
-
   private publicEventSubjectId(ownableId: string): string {
     return ethers.keccak256(ethers.getBytes(ownableId)).toLowerCase();
   }
@@ -316,55 +276,22 @@ export class OwnableService {
     return chain.id;
   }
 
-  private async deriveNftInfo(chain: EventChain, replayInfo?: unknown): Promise<NFTInfo | null> {
-    try {
-      return this.parseNftInfoFromChain(chain);
-    } catch (error) {
-      if (
-        !(error instanceof UserError) ||
-        error.message !== 'Invalid event chain: missing NFT metadata in first event'
-      ) {
-        throw error;
-      }
-    }
-
-    const replayNftInfo = this.parseNftInfoFromOwnableInfo(replayInfo);
-    if (replayNftInfo) {
-      return replayNftInfo;
-    }
-
-    const persistedNftInfo = this.parseNftInfoFromRecord(await this.getOwnableRecordByOwnableId(chain.id));
-    if (persistedNftInfo) {
-      return persistedNftInfo;
-    }
-
-    return null;
-  }
-
-  private deriveOwnerNetwork(chain: EventChain, nftInfo: NFTInfo | null): string | null {
+  private deriveOwnerNetwork(chain: EventChain): string {
     const parsed = chain.events[0]?.parsedData as { network_id?: string | number } | undefined;
     const networkId = parsed?.network_id;
-    if (typeof networkId === 'number' && Number.isInteger(networkId) && networkId > 0) {
+    if (typeof networkId === 'number' && Number.isSafeInteger(networkId) && networkId > 0) {
       return `eip155:${networkId}`;
     }
-    if (typeof networkId === 'string') {
-      const trimmed = networkId.trim();
-      if (/^\d+$/.test(trimmed)) {
-        return `eip155:${trimmed}`;
-      }
-      if (/^eip155:\d+$/.test(trimmed)) {
-        return trimmed;
-      }
+
+    const match = typeof networkId === 'string' ? /^(?:eip155:)?([1-9]\d*)$/.exec(networkId) : null;
+    if (match?.[1]) {
+      return `eip155:${match[1]}`;
     }
 
-    return nftInfo?.network ?? null;
+    throw new UserError('Invalid event chain: invalid network_id in first event');
   }
 
-  private deriveOwnerAccount(ownerAddress: string, ownerNetwork: string | null): string | null {
-    if (!ownerNetwork) {
-      return null;
-    }
-
+  private deriveOwnerAccount(ownerAddress: string, ownerNetwork: string): string | null {
     const reference = resolveCaip2Reference(ownerNetwork, this.config.getRuntimeNetworkProfile());
     if (!reference) {
       return null;
@@ -689,15 +616,14 @@ export class OwnableService {
                 event.logIndex === latestAppliedPublicEvent.logIndex,
             )?.rowId ?? null);
 
-      const nftInfo = await this.deriveNftInfo(chain, info);
+      const ownerNetwork = this.deriveOwnerNetwork(chain);
 
       return {
         anchorVerification,
         freshness,
         ignoredPublicEvents: replay.ignoredPublicEvents,
-        nftInfo,
-        ownerNetwork: this.deriveOwnerNetwork(chain, nftInfo),
-        ownerAccount: this.deriveOwnerAccount(owner, this.deriveOwnerNetwork(chain, nftInfo)),
+        ownerNetwork,
+        ownerAccount: this.deriveOwnerAccount(owner, ownerNetwork),
         owner,
         latestAppliedPublicEventId: latestAppliedPublicEventId ?? null,
       };
@@ -778,7 +704,6 @@ export class OwnableService {
       freshness: replayState.freshness,
       anchorVerification: replayState.anchorVerification,
       ignoredPublicEvents: this.sanitizeIgnoredPublicEvents(replayState.ignoredPublicEvents),
-      ...(replayState.nftInfo ? { nft: replayState.nftInfo } : {}),
     };
   }
 
@@ -932,9 +857,6 @@ export class OwnableService {
       packageCid: cid,
       prevOwnerAddress: ownerFromPrivateState || '0x0000000000000000000000000000000000000000',
       subjectId: this.publicEventSubjectId(chain.id),
-      nftNetwork: replayState.nftInfo?.network,
-      nftContractAddress: replayState.nftInfo?.address,
-      nftTokenId: replayState.nftInfo?.id,
     });
     await this.storage.storePackageArtifacts(cid, content, packageFiles);
     await this.storage.storeEventChain(record.id, eventChainBuffer);
@@ -951,13 +873,6 @@ export class OwnableService {
       cid: cid.toString(),
       owner: replayState.owner,
       ownerAccount: replayState.ownerAccount,
-      ...(replayState.nftInfo
-        ? {
-            nftNetwork: replayState.nftInfo.network,
-            smartContractAddress: replayState.nftInfo.address,
-            NftId: replayState.nftInfo.id,
-          }
-        : {}),
     };
   }
 

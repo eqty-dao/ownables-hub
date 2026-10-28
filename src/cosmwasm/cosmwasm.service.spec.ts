@@ -40,21 +40,6 @@ describe('CosmWasmService', () => {
       assert.equal(result.attributes.current_amount, '100');
     });
 
-    it('instantiates the smart contract with NFT information', async () => {
-      await contract.instantiate(
-        {
-          ownable_id: '88pDRu52FpsU3kKHwdvPV21RMkBqVqNnthjfdCesTHQhLnUpanw49n6b2PzGnEy',
-          package: 'bafybeie4ts4mbcw4pswzh45bj32ulcyztup2dr7zbbjv3y2ym3q3uuejba',
-          network_id: 'T',
-          nft: {
-            network: 'eip155:84532',
-            address: '0x6ebeaf8e8e946f0716e6533a6f2cefc83f60e8ab',
-            id: '1',
-          },
-        },
-        { sender: senderPublicKey, funds: [] },
-      );
-    });
   });
 
   describe('query', () => {
@@ -66,11 +51,6 @@ describe('CosmWasmService', () => {
           ownable_id: '88pDRu52FpsU3kKHwdvPV21RMkBqVqNnthjfdCesTHQhLnUpanw49n6b2PzGnEy',
           package: 'bafybeie4ts4mbcw4pswzh45bj32ulcyztup2dr7zbbjv3y2ym3q3uuejba',
           network_id: 'T',
-          nft: {
-            network: 'eip155:84532',
-            address: '0x6ebeaf8e8e946f0716e6533a6f2cefc83f60e8ab',
-            id: '1',
-          },
         },
         { sender: senderPublicKey, funds: [] },
       );

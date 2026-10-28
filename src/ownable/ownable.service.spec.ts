@@ -15,7 +15,6 @@ import { take, toArray } from 'rxjs/operators';
 
 const PRIVATE_STATE_OWNER_WALLET = ethers.Wallet.createRandom();
 const REPLAY_OWNER_WALLET = ethers.Wallet.createRandom();
-const REPLAY_NFT_INFO = { network: 'eip155:base', address: '0xabc', id: '1' };
 const DEFAULT_ANCHORS = [{ key: { hex: '0xanchor' }, value: { hex: '0xbbb' } }];
 const ACTIVE_LIVE_IDENTITY = {
   slotName: 'testnet',
@@ -260,7 +259,6 @@ describe('OwnableService', () => {
     mockReplayFailure = null;
     mockReplayInfo = {
       owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
-      nft: REPLAY_NFT_INFO,
     };
   });
 
@@ -293,7 +291,6 @@ describe('OwnableService', () => {
         latestAppliedPublicEventId: null,
       }),
       getOwnableByCid: jest.fn().mockResolvedValue({ id: 'id-1', packageCid: 'cid-1' }),
-      getOwnableByNft: jest.fn(),
       getOwnableBySubjectId: jest.fn().mockResolvedValue(null),
       listAvailableOwnablesByOwnerAccount: jest.fn().mockResolvedValue([]),
       listOwnableCidsByPrevOwner: jest.fn().mockResolvedValue(['cid-a']),
@@ -348,7 +345,7 @@ describe('OwnableService', () => {
   };
 
   const createChain = async (
-    nft = { network: 'eip155:base', address: '0xabc', id: '1' },
+    networkId: string | number = 84532,
     anchors: Array<{ key: { hex: string }; value: { hex: string } }> = DEFAULT_ANCHORS,
   ) => {
     const chain = new EventChain(`0x${'11'.repeat(32)}`);
@@ -356,7 +353,7 @@ describe('OwnableService', () => {
       getAddress: async () => PRIVATE_STATE_OWNER_WALLET.address,
       signTypedData: async () => `0x${'00'.repeat(65)}`,
     };
-    const event = new Event({ '@context': 'instantiate_msg.json', nft, anchors });
+    const event = new Event({ '@context': 'instantiate_msg.json', network_id: networkId, anchors });
     event.previous = {
       toHex: () => `0x${'12'.repeat(32)}`,
     } as any;
@@ -527,6 +524,9 @@ describe('OwnableService', () => {
 
     expect(result.cid).toEqual(expect.any(String));
     expect(result.ownerAccount).toEqual(`eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`);
+    expect(result).not.toHaveProperty('nftNetwork');
+    expect(result).not.toHaveProperty('smartContractAddress');
+    expect(result).not.toHaveProperty('NftId');
     expect(storage.storePackageArtifacts).toHaveBeenCalledTimes(1);
     expect(storage.storeEventChain).toHaveBeenCalledTimes(1);
     expect(hubState.upsertOwnableRecord).toHaveBeenCalledTimes(1);
@@ -550,86 +550,7 @@ describe('OwnableService', () => {
     expect(mockClearRpc).toHaveBeenCalledWith(chain.id);
   });
 
-  it('accepts localhost-issued uploads when nft metadata is only available from replayed ownable info', async () => {
-    const { service, storage, hubState } = await buildService();
-    const chain = await createSdkIssuedChain();
-    const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
-    const buffer = await createUploadBuffer(chain);
-    const packageZip = new JSZip();
-    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
-    packageZip.file('package.json', JSON.stringify({ name: 'test' }));
-    storage.getEventChain.mockResolvedValue(chainBuffer);
-    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
-
-    const result = await service.uploadOwnable(buffer, undefined, false);
-
-    expect(result.owner).toEqual(REPLAY_OWNER_WALLET.address.toLowerCase());
-    expect(result.ownerAccount).toEqual(`eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`);
-    expect(result.nftNetwork).toEqual(REPLAY_NFT_INFO.network);
-    expect(result.smartContractAddress).toEqual(REPLAY_NFT_INFO.address);
-    expect(result.NftId).toEqual(REPLAY_NFT_INFO.id);
-    expect(hubState.upsertOwnableRecord).toHaveBeenCalledWith(
-      expect.objectContaining({
-        subjectId: expectedSubjectId(chain.id),
-        nftNetwork: REPLAY_NFT_INFO.network,
-        nftContractAddress: REPLAY_NFT_INFO.address,
-        nftTokenId: REPLAY_NFT_INFO.id,
-      }),
-    );
-    expect(hubState.setOwnerState).toHaveBeenCalledWith(
-      'id-1',
-      REPLAY_OWNER_WALLET.address.toLowerCase(),
-      `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
-      null,
-    );
-  });
-
-  it('accepts localhost-issued uploads when nft metadata is only available from a stored subject record', async () => {
-    const { service, storage, hubState } = await buildService();
-    const chain = await createSdkIssuedChain();
-    const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
-    const buffer = await createUploadBuffer(chain);
-    const packageZip = new JSZip();
-    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
-    packageZip.file('package.json', JSON.stringify({ name: 'test' }));
-    storage.getEventChain.mockResolvedValue(chainBuffer);
-    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
-    mockReplayInfo = { owner: REPLAY_OWNER_WALLET.address.toLowerCase() };
-    hubState.getOwnableBySubjectId.mockResolvedValue({
-      id: 'own-existing',
-      packageCid: 'cid-existing',
-      prevOwnerAddress: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase(),
-      subjectId: expectedSubjectId(chain.id),
-      nftNetwork: REPLAY_NFT_INFO.network,
-      nftContractAddress: REPLAY_NFT_INFO.address,
-      nftTokenId: REPLAY_NFT_INFO.id,
-    });
-
-    const result = await service.uploadOwnable(buffer, undefined, false);
-
-    expect(result.owner).toEqual(REPLAY_OWNER_WALLET.address.toLowerCase());
-    expect(result.ownerAccount).toEqual(`eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`);
-    expect(result.nftNetwork).toEqual(REPLAY_NFT_INFO.network);
-    expect(result.smartContractAddress).toEqual(REPLAY_NFT_INFO.address);
-    expect(result.NftId).toEqual(REPLAY_NFT_INFO.id);
-    expect(hubState.getOwnableBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id));
-    expect(hubState.upsertOwnableRecord).toHaveBeenCalledWith(
-      expect.objectContaining({
-        subjectId: expectedSubjectId(chain.id),
-        nftNetwork: REPLAY_NFT_INFO.network,
-        nftContractAddress: REPLAY_NFT_INFO.address,
-        nftTokenId: REPLAY_NFT_INFO.id,
-      }),
-    );
-    expect(hubState.setOwnerState).toHaveBeenCalledWith(
-      'id-1',
-      REPLAY_OWNER_WALLET.address.toLowerCase(),
-      `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
-      null,
-    );
-  });
-
-  it('accepts first localhost transfer uploads without any nft metadata source and derives ownerAccount from network_id', async () => {
+  it('derives the owner account from the first event network_id', async () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createSdkIssuedChain();
     const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
@@ -651,9 +572,6 @@ describe('OwnableService', () => {
     expect(hubState.upsertOwnableRecord).toHaveBeenCalledWith(
       expect.objectContaining({
         subjectId: expectedSubjectId(chain.id),
-        nftNetwork: undefined,
-        nftContractAddress: undefined,
-        nftTokenId: undefined,
       }),
     );
     expect(hubState.setOwnerState).toHaveBeenCalledWith(
@@ -661,6 +579,49 @@ describe('OwnableService', () => {
       REPLAY_OWNER_WALLET.address.toLowerCase(),
       `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
       null,
+    );
+  });
+
+  it.each([undefined, 0, -1, 1.5, '', '0', '84532.5', 'eip155:0', 'cosmos:84532', ' eip155:84532'])(
+    'rejects upload without a valid first-event network_id: %p',
+    async (networkId) => {
+      const { service, storage, hubState } = await buildService();
+      const chain = await createChain();
+      chain.events[0].parsedData.network_id = networkId;
+
+      await expect(service.uploadOwnable(await createUploadBuffer(chain), undefined, false)).rejects.toThrow(
+        'Invalid event chain: invalid network_id in first event',
+      );
+
+      expect(hubState.upsertOwnableRecord).not.toHaveBeenCalled();
+      expect(storage.storePackageArtifacts).not.toHaveBeenCalled();
+      expect(storage.storeEventChain).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['84532', 'eip155:84532'])('accepts the supported first-event network_id shape: %s', async (networkId) => {
+    const { service } = await buildService();
+    const chain = await createChain(networkId);
+
+    await expect(service.uploadOwnable(await createUploadBuffer(chain), undefined, false)).resolves.toEqual(
+      expect.objectContaining({
+        ownerAccount: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
+      }),
+    );
+  });
+
+  it('rejects stored verification when the first event has no network_id', async () => {
+    const { service, storage, hubState } = await buildService();
+    const chain = await createChain();
+    delete chain.events[0].parsedData.network_id;
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1' });
+    storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
+    const packageZip = new JSZip();
+    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
+    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
+
+    await expect(service.getOwnableVerification(chain.id)).rejects.toThrow(
+      'Invalid event chain: invalid network_id in first event',
     );
   });
 
@@ -913,6 +874,7 @@ describe('OwnableService', () => {
       }),
     );
     expect(verification).not.toHaveProperty('publicEvents');
+    expect(verification).not.toHaveProperty('nft');
   });
 
   it('returns the dedicated public-events snapshot without routing through verification', async () => {
@@ -1503,9 +1465,6 @@ describe('OwnableService', () => {
         ownerStateVersion: 4,
         availableAt: '2026-06-07T10:02:00.000Z',
         issuerAddress: '0xissuer',
-        nftNetwork: 'eip155:base',
-        nftContractAddress: '0xnft',
-        nftTokenId: '1',
       },
     ]);
     const packageZip = new JSZip();
@@ -1573,9 +1532,6 @@ describe('OwnableService', () => {
         ownerStateVersion: 4,
         availableAt: '2026-06-07T10:02:00.000Z',
         issuerAddress: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase(),
-        nftNetwork: 'eip155:base',
-        nftContractAddress: '0xnft',
-        nftTokenId: '1',
       },
     ]);
 
@@ -1609,9 +1565,6 @@ describe('OwnableService', () => {
         ownerStateVersion: 1,
         availableAt: '2026-06-08T12:00:00.000Z',
         issuerAddress: '0xissuer',
-        nftNetwork: null,
-        nftContractAddress: null,
-        nftTokenId: null,
       },
     ]);
     storage.getPackageZip.mockRejectedValue(new Error('missing package zip'));
