@@ -614,7 +614,19 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   assert.equal(supportedUploadResponse.status, 201, 'Expected the canonical upload to create an Ownable');
   const supportedUpload = await supportedUploadResponse.json();
   assert.equal(supportedUpload.ownableId, chain.id);
+  assert.equal(Object.hasOwn(supportedUpload, 'nftNetwork'), false);
+  assert.equal(Object.hasOwn(supportedUpload, 'smartContractAddress'), false);
+  assert.equal(Object.hasOwn(supportedUpload, 'NftId'), false);
   assert.equal(supportedUploadResponse.headers.get('location'), `/ownables/${encodeURIComponent(chain.id)}`);
+
+  const verificationResponse = await fetch(
+    `http://127.0.0.1:${port}/ownables/${encodeURIComponent(chain.id)}/verification`,
+    { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
+  );
+  assert.equal(verificationResponse.status, 200, 'Expected the canonical verification response');
+  const verification = await verificationResponse.json();
+  assert.equal(Object.hasOwn(verification, 'nft'), false);
+
   const storedFilesBeforeInvalidUpload = (await listStoredFiles(storageRoot)).sort();
   assert.ok(storedFilesBeforeInvalidUpload.length > 0, 'Expected the successful upload to persist bundle files');
 

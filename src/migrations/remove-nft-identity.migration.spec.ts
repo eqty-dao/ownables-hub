@@ -1,4 +1,16 @@
-const migration = require('../../migrations/1717198000000_remove_nft_identity.cjs');
+type MigrationBuilder = {
+  dropConstraint: (...args: unknown[]) => void;
+  dropColumns: (...args: unknown[]) => void;
+  addColumns: (...args: unknown[]) => void;
+  addConstraint: (...args: unknown[]) => void;
+};
+
+const migration = require('../../migrations/1717198000000_remove_nft_identity.cjs') as {
+  up: (pgm: MigrationBuilder) => void;
+  down: (pgm: MigrationBuilder) => void;
+};
+
+export {};
 
 describe('remove NFT identity migration', () => {
   const pgm = {
@@ -11,7 +23,7 @@ describe('remove NFT identity migration', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('drops the uniqueness constraint before the identity columns', () => {
-    migration.up(pgm);
+    migration.up(pgm as MigrationBuilder);
 
     expect(pgm.dropConstraint).toHaveBeenCalledWith('ownable_records', 'ownable_records_nft_unique');
     expect(pgm.dropColumns).toHaveBeenCalledWith('ownable_records', [
@@ -23,7 +35,7 @@ describe('remove NFT identity migration', () => {
   });
 
   it('restores only nullable schema on down', () => {
-    migration.down(pgm);
+    migration.down(pgm as MigrationBuilder);
 
     expect(pgm.addColumns).toHaveBeenCalledWith('ownable_records', {
       nft_network: { type: 'text' },
