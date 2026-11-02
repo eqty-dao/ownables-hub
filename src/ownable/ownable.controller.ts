@@ -9,6 +9,9 @@ import { MulterFileSizeFilter } from '../quarantine/multer-file-size.filter';
 import { QuarantineUploadInterceptor } from '../quarantine/quarantine-upload.interceptor';
 
 const MAX_UPLOAD_BYTES = 268435456;
+// Multer treats its fileSize limit as exclusive. The service below remains the
+// authoritative inclusive 256 MiB boundary before any replay or staging work.
+const MULTER_FILE_SIZE_LIMIT_BYTES = MAX_UPLOAD_BYTES + 1;
 
 interface SignerIdentity {
   address?: string;
@@ -39,7 +42,7 @@ export class OwnableController {
   })
   @ApiCreatedResponse({ description: 'Ownable created', headers: { Location: { schema: { type: 'string' } } } })
   @UseFilters(MulterFileSizeFilter)
-  @UseInterceptors(QuarantineUploadInterceptor, FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @UseInterceptors(QuarantineUploadInterceptor, FileInterceptor('file', { limits: { fileSize: MULTER_FILE_SIZE_LIMIT_BYTES } }))
   async uploadOwnable(@Req() req: FileUploadRequest, @Res() res: Response, @Signer() signer?: SignerIdentity): Promise<Response> {
     const buffer = req.file?.buffer;
     if (!buffer || !Buffer.isBuffer(buffer)) {

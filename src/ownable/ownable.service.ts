@@ -277,13 +277,7 @@ export class OwnableService {
     private readonly ownableTransport: OwnableTransportService,
     private readonly replay: OwnableReplayService,
     private readonly quarantine: QuarantineService,
-  ) {
-    const mnemonic = this.config.getAuthoritySignerMnemonic();
-    const privateKey = this.config.getAuthoritySignerPrivateKey();
-    if (!mnemonic && !privateKey) {
-      throw new Error('Missing signer configuration: set SIGNER_PRIVATE_KEY or SIGNER_MNEMONIC');
-    }
-  }
+  ) {}
 
   private validateEventChain(chain: EventChain): void {
     if (!chain.events.length) throw new UserError('Empty event chain');
