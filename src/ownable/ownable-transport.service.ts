@@ -37,11 +37,13 @@ export interface AvailableOwnableDiscoveryMessage {
 @Injectable()
 export class OwnableTransportService implements OnModuleInit, OnModuleDestroy {
   private static readonly PUBLIC_EVENT_CHANNEL = 'ownables_public_events';
+  private static readonly AVAILABLE_OWNABLE_CHANNEL = 'ownables_available_ownables';
   private readonly logger = new Logger(OwnableTransportService.name);
   private readonly publicEventSubject = new Subject<LiveIndexedPublicEvent>();
   private readonly discoverySubject = new Subject<AvailableOwnableDiscoveryMessage>();
   private readonly instanceId = randomUUID();
   private stopPublicEventBridge: (() => Promise<void>) | null = null;
+  private stopAvailableOwnableBridge: (() => Promise<void>) | null = null;
 
   constructor(private readonly postgres: PostgresService) {}
 
@@ -56,6 +58,18 @@ export class OwnableTransportService implements OnModuleInit, OnModuleDestroy {
       } catch (error) {
         this.logger.error(
           'Failed to decode cross-process public-event notification',
+          error instanceof Error ? error.stack : String(error),
+        );
+      }
+    });
+    this.stopAvailableOwnableBridge = await this.postgres.listen(OwnableTransportService.AVAILABLE_OWNABLE_CHANNEL, (payload) => {
+      try {
+        const message = JSON.parse(payload) as { notification?: AvailableOwnableDiscoveryMessage };
+        if (!message.notification?.owner || !message.notification.entry) return;
+        this.discoverySubject.next(message.notification);
+      } catch (error) {
+        this.logger.error(
+          'Failed to decode cross-process available-Ownable notification',
           error instanceof Error ? error.stack : String(error),
         );
       }
@@ -95,5 +109,7 @@ export class OwnableTransportService implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy(): Promise<void> {
     await this.stopPublicEventBridge?.();
     this.stopPublicEventBridge = null;
+    await this.stopAvailableOwnableBridge?.();
+    this.stopAvailableOwnableBridge = null;
   }
 }

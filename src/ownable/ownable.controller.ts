@@ -1,10 +1,14 @@
-import { Controller, Get, Header, Post, Req, Res, StreamableFile, UseInterceptors } from '@nestjs/common';
+import { Controller, Get, Header, Post, Req, Res, StreamableFile, UseFilters, UseInterceptors } from '@nestjs/common';
 import { ApiBody, ApiConsumes, ApiCreatedResponse, ApiParam, ApiProduces, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { OwnableService } from './ownable.service';
 import { Signer } from '../common/http-signature/signer';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { writeHttpError } from '../common/http/http-error-response';
+import { MulterFileSizeFilter } from '../quarantine/multer-file-size.filter';
+import { QuarantineUploadInterceptor } from '../quarantine/quarantine-upload.interceptor';
+
+const MAX_UPLOAD_BYTES = 268435456;
 
 interface SignerIdentity {
   address?: string;
@@ -34,7 +38,8 @@ export class OwnableController {
     },
   })
   @ApiCreatedResponse({ description: 'Ownable created', headers: { Location: { schema: { type: 'string' } } } })
-  @UseInterceptors(FileInterceptor('file'))
+  @UseFilters(MulterFileSizeFilter)
+  @UseInterceptors(QuarantineUploadInterceptor, FileInterceptor('file', { limits: { fileSize: MAX_UPLOAD_BYTES } }))
   async uploadOwnable(@Req() req: FileUploadRequest, @Res() res: Response, @Signer() signer?: SignerIdentity): Promise<Response> {
     const buffer = req.file?.buffer;
     if (!buffer || !Buffer.isBuffer(buffer)) {
@@ -44,6 +49,13 @@ export class OwnableController {
     try {
       const ownableInfo = await this.ownableService.uploadOwnable(buffer, signer, true);
       const ownableId = String(ownableInfo.ownableId ?? '');
+      if (ownableInfo.status === 'pending') {
+        return res.status(202).json(ownableInfo);
+      }
+      if (ownableInfo.status === 'available') {
+        if (ownableInfo.created) res.location(`/ownables/${encodeURIComponent(ownableId)}`);
+        return res.status(ownableInfo.created ? 201 : 200).json(ownableInfo);
+      }
       return res.location(`/ownables/${encodeURIComponent(ownableId)}`).status(201).json(ownableInfo);
     } catch (err) {
       return writeHttpError(res, err);

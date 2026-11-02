@@ -13,8 +13,25 @@ export interface AppConfig {
   publicBaseUrl: string;
   databaseUrl: string;
   ownablesStorage: string;
+  quarantineStorage: string;
+  quarantine: QuarantineConfig;
   siweDomain: string;
   corsOrigins: string[];
+}
+
+export interface QuarantineConfig {
+  ingressConcurrency: number;
+  rateLimitWindowSeconds: number;
+  rateLimitMaxRequests: number;
+  processingConcurrency: number;
+  maxExpandedProcessingBytes: number;
+  maxPendingObjects: number;
+  maxPendingBytes: number;
+  retentionSeconds: number;
+  promotionBatchSize: number;
+  cleanupBatchSize: number;
+  leaseSeconds: number;
+  orphanGraceSeconds: number;
 }
 
 interface ChainRpcUrls {
@@ -68,6 +85,37 @@ function parsePort(name: string): number {
     throw new Error(`Invalid ${name}: ${value}`);
   }
   return value;
+}
+
+function parsePositiveInteger(name: string, fallback?: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw && fallback !== undefined) return fallback;
+  if (!raw || !/^\d+$/.test(raw)) {
+    throw new Error(`${name} is required and must be a positive integer`);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`Invalid ${name}: ${raw}`);
+  }
+  return value;
+}
+
+function parseQuarantineConfig(env: AppEnv): QuarantineConfig {
+  const fallback = env === 'production' || env === 'staging' ? undefined : 1;
+  return {
+    ingressConcurrency: parsePositiveInteger('UPLOAD_INGRESS_CONCURRENCY', fallback),
+    rateLimitWindowSeconds: parsePositiveInteger('UPLOAD_RATE_LIMIT_WINDOW_SECONDS', env === 'production' || env === 'staging' ? undefined : 60),
+    rateLimitMaxRequests: parsePositiveInteger('UPLOAD_RATE_LIMIT_MAX_REQUESTS', env === 'production' || env === 'staging' ? undefined : 8),
+    processingConcurrency: parsePositiveInteger('UPLOAD_PROCESSING_CONCURRENCY', fallback),
+    maxExpandedProcessingBytes: parsePositiveInteger('UPLOAD_MAX_EXPANDED_PROCESSING_BYTES', env === 'production' || env === 'staging' ? undefined : 536870912),
+    maxPendingObjects: parsePositiveInteger('QUARANTINE_MAX_PENDING_OBJECTS', env === 'production' || env === 'staging' ? undefined : 4),
+    maxPendingBytes: parsePositiveInteger('QUARANTINE_MAX_PENDING_BYTES', env === 'production' || env === 'staging' ? undefined : 536870912),
+    retentionSeconds: parsePositiveInteger('QUARANTINE_RETENTION_SECONDS', env === 'production' || env === 'staging' ? undefined : 86400),
+    promotionBatchSize: parsePositiveInteger('QUARANTINE_PROMOTION_BATCH_SIZE', env === 'production' || env === 'staging' ? undefined : 16),
+    cleanupBatchSize: parsePositiveInteger('QUARANTINE_CLEANUP_BATCH_SIZE', env === 'production' || env === 'staging' ? undefined : 16),
+    leaseSeconds: parsePositiveInteger('QUARANTINE_LEASE_SECONDS', env === 'production' || env === 'staging' ? undefined : 300),
+    orphanGraceSeconds: parsePositiveInteger('QUARANTINE_ORPHAN_GRACE_SECONDS', env === 'production' || env === 'staging' ? undefined : 60),
+  };
 }
 
 function parseRequiredEnv(name: string): string {
@@ -132,9 +180,13 @@ export function resolveStorageRoot(ownablesStorage: string): string {
 function buildConfig(): AppConfig {
   const env = parseEnv('NODE_ENV');
   const ownablesStorage = readEnv('OWNABLES_STORAGE', 'file://storage');
+  const quarantineStorage = readEnv('QUARANTINE_STORAGE', env === 'production' || env === 'staging' ? '' : 'file://quarantine-storage');
   const databaseUrl = readEnv('DATABASE_URL', '');
   if (!databaseUrl) {
     throw new Error('DATABASE_URL is required');
+  }
+  if (!quarantineStorage) {
+    throw new Error('QUARANTINE_STORAGE is required');
   }
 
   const publicBaseUrl = readEnv('PUBLIC_BASE_URL', '');
@@ -149,6 +201,8 @@ function buildConfig(): AppConfig {
     publicBaseUrl,
     databaseUrl,
     ownablesStorage,
+    quarantineStorage,
+    quarantine: parseQuarantineConfig(env),
     siweDomain: readEnv('SIWE_DOMAIN', 'localhost'),
     corsOrigins: parseCorsOrigins(env),
   };

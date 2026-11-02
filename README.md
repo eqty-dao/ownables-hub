@@ -93,7 +93,7 @@ Auth routes:
 
 Ownable routes:
 
-- `POST /ownables` upload an Ownable package in multipart field `file`. A successful creation returns `201`, the existing response body, and `Location: /ownables/{ownableId}`.
+- `POST /ownables` upload an Ownable package in multipart field `file`. A newly available upload returns `201`, an identical available retry returns `200`, and an upload awaiting indexed anchor evidence returns `202` with its expiry. The compressed upload limit is 268,435,456 bytes.
 - `GET /ownables/:id/bundle` download the stored Ownable bundle. It contains the canonical `chain.json`.
 - `GET /ownables/:id/verification` read the Hub verification report.
 - `GET /ownables/:id/public-events` read indexed public events for one Ownable.
@@ -164,6 +164,7 @@ Set these env vars for local runtime:
 
 - `DATABASE_URL`
 - `OWNABLES_STORAGE` (optional; defaults to `file://storage`, set to override)
+- `QUARANTINE_STORAGE` (optional outside staging and production; use a separate private `file://` path or `s3://bucket/prefix`)
 - `CORS_ORIGINS` (optional; comma-separated browser origins allowed to call Hub. Outside production the default allowlist is `http://127.0.0.1:5173,http://localhost:5173` for local SDK smoke; production defaults to no allowed origins until explicitly configured.)
 
 Additional runtime configuration (feature-dependent):
@@ -174,6 +175,8 @@ Additional runtime configuration (feature-dependent):
 - `SIWE_DOMAIN`
 - `PUBLIC_BASE_URL` for absolute package and chain URLs in Hub responses
 - `LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED=true` to expose `GET /accounts/:account/available-ownables` outside production for localhost receive/import testing
+
+Staging and production also require explicit `UPLOAD_INGRESS_CONCURRENCY`, `UPLOAD_RATE_LIMIT_WINDOW_SECONDS`, `UPLOAD_RATE_LIMIT_MAX_REQUESTS`, `UPLOAD_PROCESSING_CONCURRENCY`, `UPLOAD_MAX_EXPANDED_PROCESSING_BYTES`, `QUARANTINE_MAX_PENDING_OBJECTS`, `QUARANTINE_MAX_PENDING_BYTES`, `QUARANTINE_RETENTION_SECONDS`, `QUARANTINE_PROMOTION_BATCH_SIZE`, `QUARANTINE_CLEANUP_BATCH_SIZE`, `QUARANTINE_LEASE_SECONDS`, and `QUARANTINE_ORPHAN_GRACE_SECONDS`. These budgets are shared across Hub processes through PostgreSQL.
 
 ## Tests
 

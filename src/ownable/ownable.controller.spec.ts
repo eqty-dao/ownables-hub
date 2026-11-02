@@ -59,6 +59,33 @@ describe('OwnableController', () => {
     expect(res.status).toHaveBeenCalledWith(201);
   });
 
+  it('returns a non-public pending upload result without a Location header', async () => {
+    const ownableService = {
+      uploadOwnable: jest.fn().mockResolvedValue({ status: 'pending', ownableId: 'ownable-1', expiresAt: '2026-11-03T00:00:00.000Z' }),
+    } as any;
+    const controller = new OwnableController(ownableService);
+    const res = buildRes();
+
+    await controller.uploadOwnable({ file: { buffer: Buffer.from('zip') } } as any, res, undefined);
+
+    expect(res.status).toHaveBeenCalledWith(202);
+    expect(res.location).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith({ status: 'pending', ownableId: 'ownable-1', expiresAt: '2026-11-03T00:00:00.000Z' });
+  });
+
+  it('returns 200 for an identical accepted upload retry', async () => {
+    const ownableService = {
+      uploadOwnable: jest.fn().mockResolvedValue({ status: 'available', created: false, ownableId: 'ownable-1', cid: 'cid-1' }),
+    } as any;
+    const controller = new OwnableController(ownableService);
+    const res = buildRes();
+
+    await controller.uploadOwnable({ file: { buffer: Buffer.from('zip') } } as any, res, undefined);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.location).not.toHaveBeenCalled();
+  });
+
   it('maps malformed upload archives to 400 client rejection', async () => {
     const ownableService = {
       uploadOwnable: jest

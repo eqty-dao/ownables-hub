@@ -4,6 +4,7 @@ import { ConfigService, IndexerSlotConfig } from '../common/config/config.servic
 import { HubStateRepository, type IndexerCursorState } from '../persistence/repos/hub-state.repository';
 import { OwnableTransportService } from '../ownable/ownable-transport.service';
 import { EVM_RPC_PROVIDER_FACTORY, type EvmRpcProviderFactory } from './indexer.tokens';
+import { OwnableService } from '../ownable/ownable.service';
 
 const ANCHOR_CURSOR_NAME = 'anchor-public-events';
 const MAX_LOG_BLOCK_RANGE = 2_000n;
@@ -43,6 +44,7 @@ export class IndexerService {
     private readonly configService: ConfigService,
     private readonly hubStateRepository: HubStateRepository,
     private readonly ownableTransport: OwnableTransportService,
+    private readonly ownableService: OwnableService,
     @Inject(EVM_RPC_PROVIDER_FACTORY) private readonly providerFactory: EvmRpcProviderFactory,
   ) {}
 
@@ -54,6 +56,7 @@ export class IndexerService {
   }
 
   async runSlot(slot: IndexerSlotConfig): Promise<void> {
+    await this.ownableService.promoteQuarantinedUploads();
     const cursor = await this.hubStateRepository.getIndexerCursor(
       slot.slotName,
       ANCHOR_CURSOR_NAME,
@@ -66,6 +69,7 @@ export class IndexerService {
     const toBlock = BigInt(head);
     if (fromBlock > toBlock) {
       this.logger.log(`Slot ${slot.slotName}: no new blocks (from=${fromBlock.toString()}, head=${toBlock.toString()})`);
+      await this.ownableService.promoteQuarantinedUploads();
       return;
     }
 
@@ -79,6 +83,7 @@ export class IndexerService {
       const normalized = this.normalizeLogs(rawLogs, slot);
 
       await this.persistWindow(slot, windowTo, normalized);
+      await this.ownableService.promoteQuarantinedUploads();
       this.publishPublicEvents(normalized);
 
       const anchorEventCount = normalized.filter((event) => event.eventKind === 'anchor').length;
@@ -87,6 +92,7 @@ export class IndexerService {
         `Slot ${slot.slotName}: indexed ${normalized.length} logs (${anchorEventCount} anchor, ${publicEventCount} public) from block ${windowFrom.toString()} to ${windowTo.toString()}`,
       );
     }
+    await this.ownableService.promoteQuarantinedUploads();
   }
 
   private async persistWindow(

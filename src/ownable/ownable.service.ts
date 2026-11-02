@@ -1,4 +1,4 @@
-import { Injectable, MessageEvent, StreamableFile } from '@nestjs/common';
+import { Injectable, MessageEvent, Optional, StreamableFile } from '@nestjs/common';
 import {
   type AnchorValidationResult,
   type IndexedAnchorRecord,
@@ -17,6 +17,7 @@ import JSZip from 'jszip';
 import { EventChain } from 'eqty-core';
 import { ethers } from 'ethers';
 import { Readable } from 'stream';
+import { createHash } from 'node:crypto';
 import { ArchiveStorageService } from '../storage/archive-storage.service';
 import {
   HubStateRepository,
@@ -34,6 +35,9 @@ import {
 import { Observable } from 'rxjs';
 import { filter, map } from 'rxjs/operators';
 import { OwnableReplayService } from './ownable-replay.service';
+import { QuarantineService } from '../quarantine/quarantine.service';
+import { ConflictError, CapacityError } from '../interfaces/error';
+import type { QuarantinedOwnableUpload } from '../persistence/repos/hub-state.repository';
 
 interface SignerIdentity {
   address?: string;
@@ -94,6 +98,34 @@ interface AvailableOwnableEntry {
 interface OwnablePublicEventsResponse {
   ownableId: string;
   publicEvents: IndexedPublicEvent[];
+}
+
+interface PreparedUpload {
+  ownableId: string;
+  subjectId: string;
+  cid: string;
+  uploadDigest: string;
+  eventChainDigest: string;
+  eventChainBuffer: Buffer;
+  packageContent: Buffer;
+  packageFiles: Map<string, Buffer>;
+  previousOwnerAddress: string;
+  expandedBytes: number;
+}
+
+interface AvailableUploadResult {
+  status: 'available';
+  created: boolean;
+  ownableId: string;
+  cid: string;
+  owner?: string;
+  ownerAccount?: string | null;
+}
+
+interface PendingUploadResult {
+  status: 'pending';
+  ownableId: string;
+  expiresAt: string;
 }
 
 const CANONICAL_CHAIN_FILENAME = 'chain.json';
@@ -246,6 +278,7 @@ export class OwnableService {
     private readonly hubState: HubStateRepository,
     private readonly ownableTransport: OwnableTransportService,
     private readonly replay: OwnableReplayService,
+    @Optional() private readonly quarantine?: QuarantineService,
   ) {
     const mnemonic = this.config.getAuthoritySignerMnemonic();
     const privateKey = this.config.getAuthoritySignerPrivateKey();
@@ -269,8 +302,8 @@ export class OwnableService {
     return await this.hubState.getOwnableBySubjectId(this.publicEventSubjectId(ownableId));
   }
 
-  private async readStoredOwnableId(recordId: string, packageCid: string): Promise<string> {
-    const chainBuffer = await this.storage.getEventChain(recordId, packageCid);
+  private async readStoredOwnableId(recordId: string, packageCid: string, chainStorageKey?: string | null): Promise<string> {
+    const chainBuffer = await this.storage.getEventChain(recordId, packageCid, chainStorageKey);
     const chain = EventChain.from(JSON.parse(chainBuffer.toString('utf8')));
     this.validateEventChain(chain);
     return chain.id;
@@ -632,14 +665,14 @@ export class OwnableService {
     }
   }
 
-  private async replayStoredOwnable(ownableId: string, packageCid: string): Promise<ReplayDerivedState> {
-    const eventChainBuffer = await this.storage.getEventChain(ownableId, packageCid);
+  private async replayStoredOwnable(ownableId: string, packageCid: string, chainStorageKey?: string | null): Promise<ReplayDerivedState> {
+    const eventChainBuffer = await this.storage.getEventChain(ownableId, packageCid, chainStorageKey);
     const packageZipBuffer = await this.storage.getPackageZip(packageCid);
     return this.replayOwnable(packageCid, eventChainBuffer, packageZipBuffer);
   }
 
-  async existsOwnableChain(ownableId: string, packageCid: string): Promise<boolean> {
-    return await this.storage.hasEventChain(ownableId, packageCid);
+  async existsOwnableChain(ownableId: string, packageCid: string, chainStorageKey?: string | null): Promise<boolean> {
+    return await this.storage.hasEventChain(ownableId, packageCid, chainStorageKey);
   }
 
   async existsPkg(pkg: string): Promise<boolean> {
@@ -649,12 +682,19 @@ export class OwnableService {
   private async unzip(data: Uint8Array): Promise<Map<string, Buffer>> {
     const zip = new JSZip();
     const archive = await zip.loadAsync(data, { createFolders: true });
-    const entries: Array<[string, Buffer]> = await Promise.all(
-      Object.entries(archive.files)
-        .filter(([, file]) => !file.dir)
-        .map(async ([filename, file]) => [filename, await file.async('nodebuffer')]),
-    );
-    return new Map(entries);
+    const entries = new Map<string, Buffer>();
+    let expandedBytes = 0;
+    const maxExpandedBytes = this.config.getAppConfig().quarantine?.maxExpandedProcessingBytes ?? 536870912;
+    for (const [filename, file] of Object.entries(archive.files)) {
+      if (file.dir) continue;
+      const content = await file.async('nodebuffer');
+      expandedBytes += content.length;
+      if (expandedBytes > maxExpandedBytes) {
+        throw new CapacityError(503, 'QUARANTINE_CAPACITY_EXHAUSTED', 'Expanded upload processing capacity is exhausted');
+      }
+      entries.set(filename, content);
+    }
+    return entries;
   }
 
   private resolveChainFile(files: Map<string, Buffer>): { buffer: Buffer; aliases: string[] } {
@@ -686,14 +726,14 @@ export class OwnableService {
   async getOwnableVerification(ownableId: string): Promise<OwnableVerificationResponse> {
     const record = await this.getOwnableRecordByOwnableId(ownableId);
     if (!record) throw new UserError(`Ownable with id ${ownableId} not available on this hub`);
-    if (!(await this.existsOwnableChain(record.id, record.packageCid))) {
+    if (!(await this.existsOwnableChain(record.id, record.packageCid, record.chainStorageKey))) {
       throw new UserError(`Ownable chain with id ${ownableId} not available on this hub`);
     }
     if (!(await this.existsPkg(record.packageCid))) {
       throw new UserError(`Ownable package with id ${ownableId} not available on this hub`);
     }
 
-    const replayState = await this.replayStoredOwnable(record.id, record.packageCid);
+    const replayState = await this.replayStoredOwnable(record.id, record.packageCid, record.chainStorageKey);
 
     return {
       ownableId,
@@ -825,7 +865,10 @@ export class OwnableService {
     );
   }
 
-  async uploadOwnable(buffer: Uint8Array, signer?: SignerIdentity, verbose = false): Promise<any> {
+  private async prepareUpload(buffer: Uint8Array, signer?: SignerIdentity, verbose = false): Promise<PreparedUpload> {
+    if (buffer.byteLength > 268435456) {
+      throw new CapacityError(413, 'UPLOAD_TOO_LARGE', 'Upload exceeds the 268435456 byte limit');
+    }
     if (verbose) console.log('unzipping Zip files into memory');
     const files = await this.unzip(buffer);
     const { buffer: eventChainBuffer, aliases: chainAliases } = this.resolveChainFile(files);
@@ -851,49 +894,237 @@ export class OwnableService {
     for (const alias of chainAliases) newZip.remove(alias);
     const content = await newZip.generateAsync({ type: 'uint8array' });
 
-    const replayState = await this.replayOwnable(cid, eventChainBuffer, Buffer.from(content));
+    return {
+      ownableId: chain.id,
+      subjectId: this.publicEventSubjectId(chain.id),
+      cid,
+      uploadDigest: createHash('sha256').update(buffer).digest('hex'),
+      eventChainDigest: createHash('sha256').update(eventChainBuffer).digest('hex'),
+      eventChainBuffer,
+      packageContent: Buffer.from(content),
+      packageFiles,
+      previousOwnerAddress: ownerFromPrivateState || '0x0000000000000000000000000000000000000000',
+      expandedBytes: Array.from(files.values()).reduce((size, file) => size + file.length, 0),
+    };
+  }
+
+  private hasOnlyMissingAnchorEvidence(replayState: ReplayDerivedState): boolean {
+    if (replayState.anchorVerification.verified) return false;
+    const transactionHashes = Object.values(replayState.anchorVerification.anchors);
+    return transactionHashes.length > 0 && transactionHashes.every((transactionHash) => !transactionHash);
+  }
+
+  private async isStrictSuccessor(record: { id: string; packageCid: string; chainStorageKey?: string | null }, chainBuffer: Buffer): Promise<boolean> {
+    try {
+      const current = EventChain.from(
+        JSON.parse((await this.storage.getEventChain(record.id, record.packageCid, record.chainStorageKey)).toString('utf8')),
+      );
+      const candidate = EventChain.from(JSON.parse(chainBuffer.toString('utf8')));
+      if (candidate.events.length <= current.events.length) return false;
+      return current.events.every(
+        (event, index) => JSON.stringify(event) === JSON.stringify(candidate.events[index]),
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private async availableEntry(prepared: PreparedUpload, replayState: ReplayDerivedState): Promise<AvailableOwnableDiscoveryEntry> {
+    const metadata = await this.readAvailableOwnablePackageMetadata(prepared.cid);
+    return {
+      id: prepared.ownableId,
+      title: metadata.title,
+      ...(metadata.description ? { description: metadata.description } : {}),
+      ...(prepared.previousOwnerAddress ? { issuer: prepared.previousOwnerAddress } : {}),
+      availableAt: new Date().toISOString(),
+      package: { cid: prepared.cid, thumbnailUrl: metadata.thumbnailUrl ?? null },
+    };
+  }
+
+  private async publishPreparedUpload(
+    prepared: PreparedUpload,
+    replayState: ReplayDerivedState,
+    quarantineId: string,
+  ): Promise<AvailableUploadResult> {
+    await this.storage.storePackageArtifacts(prepared.cid, prepared.packageContent, prepared.packageFiles);
+    const chainStorageKey = await this.storage.storeImmutableEventChain(
+      prepared.ownableId,
+      prepared.eventChainDigest,
+      prepared.eventChainBuffer,
+    );
+    const entry = await this.availableEntry(prepared, replayState);
+    await this.hubState.publishQuarantinedUpload({
+      quarantineId,
+      ownableId: prepared.ownableId,
+      packageCid: prepared.cid,
+      uploadDigest: prepared.uploadDigest,
+      previousOwnerAddress: prepared.previousOwnerAddress,
+      subjectId: prepared.subjectId,
+      chainStorageKey,
+      owner: replayState.owner,
+      ownerAccount: replayState.ownerAccount,
+      latestAppliedPublicEventId: replayState.latestAppliedPublicEventId,
+      notification: { owner: replayState.ownerAccount, entry },
+    });
+    return {
+      status: 'available',
+      created: true,
+      ownableId: prepared.ownableId,
+      cid: prepared.cid,
+      owner: replayState.owner,
+      ownerAccount: replayState.ownerAccount,
+    };
+  }
+
+  private async promoteQuarantinedUpload(upload: QuarantinedOwnableUpload): Promise<AvailableUploadResult | PendingUploadResult | null> {
+    if (!this.quarantine) return null;
+    let prepared: PreparedUpload;
+    try {
+      const release = await this.quarantine.acquireProcessing();
+      try {
+        prepared = await this.prepareUpload(await this.quarantine.load(upload));
+      } finally {
+        await release();
+      }
+    } catch (error) {
+      await this.quarantine.reject(upload.id, 'STAGED_UPLOAD_INVALID', error instanceof Error ? error.message : String(error));
+      await this.quarantine.cleanupPrivateObject(upload);
+      return null;
+    }
+    if (
+      prepared.ownableId !== upload.ownableId ||
+      prepared.uploadDigest !== upload.uploadDigest ||
+      prepared.cid !== upload.packageCid ||
+      prepared.subjectId !== upload.subjectId
+    ) {
+      await this.quarantine.reject(upload.id, 'STAGED_UPLOAD_IDENTITY_MISMATCH');
+      await this.quarantine.cleanupPrivateObject(upload);
+      return null;
+    }
+    try {
+      const replayState = await this.replayOwnable(prepared.cid, prepared.eventChainBuffer, prepared.packageContent);
+      if (this.hasOnlyMissingAnchorEvidence(replayState)) {
+        await this.quarantine.defer(upload.id);
+        return { status: 'pending', ownableId: upload.ownableId, expiresAt: upload.expiresAt };
+      }
+      this.assertReplayVerification(replayState);
+      const result = await this.publishPreparedUpload(prepared, replayState, upload.id);
+      await this.quarantine.cleanupPrivateObject(upload);
+      return result;
+    } catch (error) {
+      await this.quarantine.reject(upload.id, 'PROMOTION_REPLAY_REJECTED', error instanceof Error ? error.message : String(error));
+      await this.quarantine.cleanupPrivateObject(upload);
+      return null;
+    }
+  }
+
+  async promoteQuarantinedUploads(): Promise<void> {
+    if (!this.quarantine) return;
+    await this.quarantine.cleanup();
+    for (const upload of await this.quarantine.claimForPromotion()) {
+      await this.promoteQuarantinedUpload(upload);
+    }
+  }
+
+  private async uploadOwnableLegacy(buffer: Uint8Array, signer?: SignerIdentity, verbose = false): Promise<any> {
+    const prepared = await this.prepareUpload(buffer, signer, verbose);
+    const replayState = await this.replayOwnable(prepared.cid, prepared.eventChainBuffer, prepared.packageContent);
     this.assertReplayVerification(replayState);
     const record = await this.hubState.upsertOwnableRecord({
-      packageCid: cid,
-      prevOwnerAddress: ownerFromPrivateState || '0x0000000000000000000000000000000000000000',
-      subjectId: this.publicEventSubjectId(chain.id),
+      packageCid: prepared.cid,
+      prevOwnerAddress: prepared.previousOwnerAddress,
+      subjectId: prepared.subjectId,
     });
-    await this.storage.storePackageArtifacts(cid, content, packageFiles);
-    await this.storage.storeEventChain(record.id, eventChainBuffer);
+    await this.storage.storePackageArtifacts(prepared.cid, prepared.packageContent, prepared.packageFiles);
+    await this.storage.storeEventChain(record.id, prepared.eventChainBuffer);
     await this.hubState.setOwnerState(
       record.id,
       replayState.owner,
       replayState.ownerAccount,
       replayState.latestAppliedPublicEventId,
     );
-    await this.publishAvailableOwnableDiscovery(replayState.ownerAccount, chain.id);
+    await this.publishAvailableOwnableDiscovery(replayState.ownerAccount, prepared.ownableId);
 
     return {
-      ownableId: chain.id,
-      cid: cid.toString(),
+      ownableId: prepared.ownableId,
+      cid: prepared.cid.toString(),
       owner: replayState.owner,
       ownerAccount: replayState.ownerAccount,
     };
   }
 
+  async uploadOwnable(buffer: Uint8Array, signer?: SignerIdentity, verbose = false): Promise<any> {
+    if (!this.quarantine) return this.uploadOwnableLegacy(buffer, signer, verbose);
+    if (buffer.byteLength > 268435456) {
+      throw new CapacityError(413, 'UPLOAD_TOO_LARGE', 'Upload exceeds the 268435456 byte limit');
+    }
+    const processingStartedAt = Date.now();
+    const uploadDigest = this.quarantine.digest(buffer);
+    const exact = await this.quarantine.findExactRetry(uploadDigest);
+    if (exact.pending) {
+      return { status: 'pending', ownableId: exact.pending.ownableId, expiresAt: exact.pending.expiresAt } satisfies PendingUploadResult;
+    }
+    if (exact.available) {
+      return { status: 'available', created: false, ownableId: exact.available.ownableId, cid: exact.available.cid } satisfies AvailableUploadResult;
+    }
+    const release = await this.quarantine.acquireProcessing();
+    let prepared: PreparedUpload;
+    try {
+      prepared = await this.prepareUpload(buffer, signer, verbose);
+    } finally {
+      await release();
+    }
+    const existing = await this.hubState.getOwnableBySubjectId(prepared.subjectId);
+    if (existing && !(await this.isStrictSuccessor(existing, prepared.eventChainBuffer))) {
+      throw new ConflictError('OWNABLE_UPLOAD_CONFLICT', 'A conflicting upload already exists for this Ownable');
+    }
+    const replayState = await this.replayOwnable(prepared.cid, prepared.eventChainBuffer, prepared.packageContent);
+    if (!this.hasOnlyMissingAnchorEvidence(replayState)) {
+      this.assertReplayVerification(replayState);
+    }
+    const staged = await this.quarantine.stage(
+      {
+        ownableId: prepared.ownableId,
+        subjectId: prepared.subjectId,
+        packageCid: prepared.cid,
+        uploadDigest: prepared.uploadDigest,
+        compressedBytes: buffer.byteLength,
+        expandedBytes: prepared.expandedBytes,
+        eventChainDigest: prepared.eventChainDigest,
+        previousOwnerAddress: prepared.previousOwnerAddress,
+      },
+      buffer,
+      processingStartedAt,
+    );
+    if (this.hasOnlyMissingAnchorEvidence(replayState)) {
+      return { status: 'pending', ownableId: staged.ownableId, expiresAt: staged.expiresAt } satisfies PendingUploadResult;
+    }
+    const claimed = await this.quarantine.claim(staged.id);
+    const result = claimed ? await this.promoteQuarantinedUpload(claimed) : null;
+    if (!result || result.status !== 'available') {
+      throw new UserError('Unable to publish verified Ownable');
+    }
+    return result;
+  }
+
   async downloadOwnable(ownableId: string): Promise<StreamableFile> {
     const record = await this.getOwnableRecordByOwnableId(ownableId);
     if (!record) throw new UserError(`Ownable bundle with id ${ownableId} not available on this hub`);
-    if (!(await this.existsOwnableChain(record.id, record.packageCid))) {
+    if (!(await this.existsOwnableChain(record.id, record.packageCid, record.chainStorageKey))) {
       throw new UserError(`Ownable bundle with id ${ownableId} not available on this hub`);
     }
     if (!(await this.existsPkg(record.packageCid))) {
       throw new UserError(`Ownable package with id ${ownableId} not available on this hub`);
     }
 
-    const replayState = await this.replayStoredOwnable(record.id, record.packageCid);
+    const replayState = await this.replayStoredOwnable(record.id, record.packageCid, record.chainStorageKey);
     this.assertReplayVerification(replayState);
 
     const zipped = new JSZip();
     const zipFile = await this.storage.getPackageZip(record.packageCid);
     await zipped.loadAsync(zipFile, { createFolders: true });
     zipped.remove(LEGACY_CHAIN_FILENAME);
-    zipped.file(CANONICAL_CHAIN_FILENAME, await this.storage.getEventChain(record.id, record.packageCid));
+    zipped.file(CANONICAL_CHAIN_FILENAME, await this.storage.getEventChain(record.id, record.packageCid, record.chainStorageKey));
 
     const content = await zipped.generateAsync({ type: 'uint8array' });
     return new StreamableFile(Readable.from(Buffer.from(content)));
@@ -902,10 +1133,10 @@ export class OwnableService {
   async downloadOwnableChain(ownableId: string): Promise<Buffer> {
     const record = await this.getOwnableRecordByOwnableId(ownableId);
     if (!record) throw new UserError(`Ownable chain with id ${ownableId} not available on this hub`);
-    if (!(await this.existsOwnableChain(record.id, record.packageCid))) {
+    if (!(await this.existsOwnableChain(record.id, record.packageCid, record.chainStorageKey))) {
       throw new UserError(`Ownable chain with id ${ownableId} not available on this hub`);
     }
-    return await this.storage.getEventChain(record.id, record.packageCid);
+    return await this.storage.getEventChain(record.id, record.packageCid, record.chainStorageKey);
   }
 
   async getAvailableOwnables(ownerAccount: string): Promise<{
@@ -921,7 +1152,7 @@ export class OwnableService {
     const entries = await Promise.all(
       rows.map(async (row): Promise<AvailableOwnableEntry> => {
         const metadata = await this.readAvailableOwnablePackageMetadata(row.packageCid);
-        const storedOwnableId = await this.readStoredOwnableId(row.ownableId, row.packageCid);
+        const storedOwnableId = row.ownableIdentity ?? (await this.readStoredOwnableId(row.ownableId, row.packageCid, row.chainStorageKey));
         return {
           id: storedOwnableId,
           title: metadata.title,

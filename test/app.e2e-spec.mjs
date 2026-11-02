@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { createServer as createHttpServer } from 'node:http';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { createServer as createHttpServer, request as createHttpRequest } from 'node:http';
+import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,6 +29,8 @@ const MAX_OUTPUT_LENGTH = 20_000;
 const E2E_ANCHOR_CONTRACT = '0x0000000000000000000000000000000000000099';
 const E2E_ANCHOR_TRANSACTION = `0x${'9'.repeat(64)}`;
 const E2E_PUBLIC_EVENT_TRANSACTION = `0x${'8'.repeat(64)}`;
+const STORY10_EXACT_UPLOAD_BYTES = 268435456;
+const STORY10_TIMEOUT_MS = 180_000;
 
 async function buildChain(wallet) {
   const chain = EventChain.create(wallet.address, 84532);
@@ -266,6 +268,22 @@ async function buildSupportedUploadArchive() {
   };
 }
 
+async function buildStory10ExactLimitArchive() {
+  const supported = await buildSupportedUploadArchive();
+  const archive = new JSZip();
+  archive.file('package.json', JSON.stringify({ name: 'compiled-route-fixture', title: 'Compiled route fixture' }));
+  archive.file('chain.json', JSON.stringify(supported.chain.toJSON()));
+  archive.file('ownable_bg.wasm', buildE2ERuntimeWasm(supported.owner.address));
+  archive.file('representative-attachment.bin', Buffer.alloc(1), { compression: 'STORE' });
+  const oneByteArchive = await archive.generateAsync({ type: 'uint8array', compression: 'STORE' });
+  const attachmentBytes = STORY10_EXACT_UPLOAD_BYTES - (oneByteArchive.byteLength - 1);
+  assert.ok(attachmentBytes > 0, 'Expected the Story #10 ZIP fixture to have room for its representative attachment');
+  archive.file('representative-attachment.bin', Buffer.alloc(attachmentBytes), { compression: 'STORE' });
+  const exactArchive = await archive.generateAsync({ type: 'uint8array', compression: 'STORE' });
+  assert.equal(exactArchive.byteLength, STORY10_EXACT_UPLOAD_BYTES, 'Expected an exact 256 MiB multipart file');
+  return { ...supported, archive: exactArchive };
+}
+
 async function reservePort() {
   const server = createServer();
 
@@ -304,6 +322,19 @@ function startHub(port, storageRoot, extraEnv = {}) {
       PORT: String(port),
       PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
       OWNABLES_STORAGE: pathToFileURL(storageRoot).href,
+      QUARANTINE_STORAGE: pathToFileURL(join(storageRoot, 'quarantine')).href,
+      UPLOAD_INGRESS_CONCURRENCY: '1',
+      UPLOAD_RATE_LIMIT_WINDOW_SECONDS: '60',
+      UPLOAD_RATE_LIMIT_MAX_REQUESTS: '8',
+      UPLOAD_PROCESSING_CONCURRENCY: '1',
+      UPLOAD_MAX_EXPANDED_PROCESSING_BYTES: '536870912',
+      QUARANTINE_MAX_PENDING_OBJECTS: '4',
+      QUARANTINE_MAX_PENDING_BYTES: '536870912',
+      QUARANTINE_RETENTION_SECONDS: '86400',
+      QUARANTINE_PROMOTION_BATCH_SIZE: '16',
+      QUARANTINE_CLEANUP_BATCH_SIZE: '16',
+      QUARANTINE_LEASE_SECONDS: '300',
+      QUARANTINE_ORPHAN_GRACE_SECONDS: '60',
       SIGNER_MNEMONIC: process.env.SIGNER_MNEMONIC || TEST_SIGNER_MNEMONIC,
       ...extraEnv,
     },
@@ -459,6 +490,71 @@ async function listStoredFiles(storageRoot) {
     if (error?.code === 'ENOENT') return [];
     throw error;
   }
+}
+
+async function listStoredObjectStats(storageRoot) {
+  const files = await listStoredFiles(storageRoot);
+  const sizes = await Promise.all(files.map(async (file) => (await stat(join(storageRoot, file))).size));
+  return { count: files.length, bytes: sizes.reduce((total, size) => total + size, 0) };
+}
+
+async function postMultipartStream(port, fileName, fileChunks, fileBytes, timeoutMs) {
+  const boundary = `----ownables-story10-${Math.random().toString(16).slice(2)}`;
+  const prefix = Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${fileName}"\r\nContent-Type: application/zip\r\n\r\n`,
+  );
+  const suffix = Buffer.from(`\r\n--${boundary}--\r\n`);
+  const response = await new Promise((resolve, reject) => {
+    let responded = false;
+    const request = createHttpRequest(
+      {
+        host: '127.0.0.1',
+        port,
+        method: 'POST',
+        path: '/ownables',
+        headers: {
+          'content-type': `multipart/form-data; boundary=${boundary}`,
+          'content-length': String(prefix.length + fileBytes + suffix.length),
+        },
+        timeout: timeoutMs,
+      },
+      async (incoming) => {
+        const body = [];
+        for await (const chunk of incoming) body.push(Buffer.from(chunk));
+        responded = true;
+        resolve({ status: incoming.statusCode, headers: incoming.headers, body: Buffer.concat(body).toString('utf8') });
+      },
+    );
+    request.once('error', (error) => {
+      if (!responded) reject(error);
+    });
+    request.once('timeout', () => request.destroy(new Error(`Multipart request exceeded ${timeoutMs}ms`)));
+    request.write(prefix);
+    (async () => {
+      try {
+        for await (const chunk of fileChunks) {
+          if (!request.write(chunk)) await new Promise((resume) => request.once('drain', resume));
+        }
+        if (!request.destroyed) request.end(suffix);
+      } catch (error) {
+        request.destroy(error);
+      }
+    })();
+  });
+  return response;
+}
+
+function countStructuredLog(hub, event) {
+  return hub.stdout
+    .split('\n')
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter((record) => record?.event === event);
 }
 
 test('core packages provide the supported compatibility surface', async () => {
@@ -775,4 +871,109 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
     });
     assert.equal(removedResponse.status, 404, `Expected removed route ${path} to return 404`);
   }
+});
+
+test('story10-256mib quarantines the exact ingress limit and rejects one byte more before replay', { timeout: STORY10_TIMEOUT_MS * 2 + SHUTDOWN_TIMEOUT_MS * 2 }, async (t) => {
+  assert.ok(process.env.DATABASE_URL, 'DATABASE_URL is required for the compiled Hub E2E test');
+
+  const { archive, chain } = await buildStory10ExactLimitArchive();
+  const subjectId = ethers.keccak256(ethers.getBytes(chain.id)).toLowerCase();
+  const database = new Client({ connectionString: process.env.DATABASE_URL });
+  await database.connect();
+  t.after(async () => {
+    try {
+      await database.query('DELETE FROM quarantined_ownable_uploads WHERE subject_id = LOWER($1)', [subjectId]);
+      await database.query('DELETE FROM ownable_records WHERE subject_id = LOWER($1)', [subjectId]);
+    } finally {
+      await database.end();
+    }
+  });
+
+  const port = await reservePort();
+  const storageRoot = await mkdtemp(join(tmpdir(), 'ownables-hub-story10-256mib-'));
+  const hub = startHub(port, storageRoot, {
+    STORY10_RESOURCE_PROFILE: 'story10-256mib',
+    NODE_OPTIONS: '--max-old-space-size=2048',
+    HUB_NETWORK_PROFILE: 'testnet',
+    TESTNET_CHAIN_ID: '84532',
+    TESTNET_RPC_URL: 'http://127.0.0.1:1',
+    TESTNET_BASE_RPC_URL: 'http://127.0.0.1:1',
+    TESTNET_ANCHOR_CONTRACT_ADDR: E2E_ANCHOR_CONTRACT,
+    TESTNET_ANCHOR_START_BLOCK: '0',
+    MAINNET_CHAIN_ID: '8453',
+    MAINNET_RPC_URL: 'http://127.0.0.1:1',
+    MAINNET_ANCHOR_CONTRACT_ADDR: '0x0000000000000000000000000000000000000098',
+    MAINNET_ANCHOR_START_BLOCK: '0',
+  });
+  t.after(async () => {
+    try {
+      await stopHub(hub);
+    } finally {
+      await rm(storageRoot, { recursive: true, force: true });
+    }
+  });
+
+  await waitForReady(hub, port);
+  const exactStartedAt = Date.now();
+  const exactResponse = await postMultipartStream(port, 'exact-256mib.zip', [archive], archive.byteLength, STORY10_TIMEOUT_MS);
+  const exactElapsedMilliseconds = Date.now() - exactStartedAt;
+  assert.equal(exactResponse.status, 202, 'Expected the exact compressed ingress limit to quarantine pending evidence');
+  const exactBody = JSON.parse(exactResponse.body);
+  assert.deepEqual(Object.keys(exactBody).sort(), ['expiresAt', 'ownableId', 'status']);
+  assert.equal(exactBody.status, 'pending');
+  assert.equal(exactBody.ownableId, chain.id);
+  assert.ok(exactElapsedMilliseconds <= STORY10_TIMEOUT_MS, 'Expected exact-limit upload within the Story timeout');
+
+  const healthResponse = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(STORY10_TIMEOUT_MS) });
+  assert.equal(healthResponse.status, 200, 'Expected Hub to remain alive after exact-limit upload');
+  const pending = await database.query(
+    `SELECT COUNT(*)::int AS count, COALESCE(SUM(compressed_bytes), 0)::text AS bytes
+       FROM quarantined_ownable_uploads WHERE subject_id = LOWER($1) AND status = 'pending'`,
+    [subjectId],
+  );
+  assert.deepEqual(pending.rows[0], { count: 1, bytes: String(STORY10_EXACT_UPLOAD_BYTES) });
+  const privateObjects = await listStoredObjectStats(join(storageRoot, 'quarantine'));
+  assert.deepEqual(privateObjects, { count: 1, bytes: STORY10_EXACT_UPLOAD_BYTES });
+
+  async function* overLimitChunks() {
+    const chunk = Buffer.alloc(1024 * 1024);
+    for (let index = 0; index < 256; index += 1) yield chunk;
+    yield Buffer.alloc(1);
+  }
+  const tooLargeStartedAt = Date.now();
+  const tooLargeResponse = await postMultipartStream(
+    port,
+    'one-byte-too-large.zip',
+    overLimitChunks(),
+    STORY10_EXACT_UPLOAD_BYTES + 1,
+    STORY10_TIMEOUT_MS,
+  );
+  assert.equal(tooLargeResponse.status, 413, 'Expected byte 268435457 to fail at multipart ingress');
+  assert.ok(Date.now() - tooLargeStartedAt <= STORY10_TIMEOUT_MS, 'Expected oversized ingress rejection within the Story timeout');
+  assert.equal((await database.query(
+    `SELECT COUNT(*)::int AS count, COALESCE(SUM(compressed_bytes), 0)::text AS bytes
+       FROM quarantined_ownable_uploads WHERE subject_id = LOWER($1) AND status = 'pending'`,
+    [subjectId],
+  )).rows[0].count, 1, 'Expected oversized upload to leave pending rows unchanged');
+  assert.deepEqual(await listStoredObjectStats(join(storageRoot, 'quarantine')), privateObjects);
+
+  const stagingRecords = countStructuredLog(hub, 'quarantine_staged');
+  assert.equal(stagingRecords.length, 1, 'Expected oversized ingress to skip staging');
+  const measurement = {
+    profile: 'story10-256mib',
+    compressedBytesReceived: archive.byteLength,
+    actualExpandedBytes: stagingRecords[0]?.expandedBytes,
+    elapsedMilliseconds: exactElapsedMilliseconds,
+    maxRssBytes: stagingRecords[0]?.maxRssBytes,
+    memoryUsage: stagingRecords[0]?.memoryUsage,
+    response: { status: exactResponse.status, body: exactBody },
+    pending: pending.rows[0],
+    privateObjects,
+    replayInvocationCount: (hub.stdout.match(/unzipping Zip files into memory/g) ?? []).length,
+    stagingInvocationCount: stagingRecords.length,
+  };
+  assert.ok(measurement.actualExpandedBytes <= 536870912, 'Expected expanded bytes to remain within the processing lease');
+  assert.ok(measurement.maxRssBytes <= 3221225472, 'Expected the Hub child RSS to remain below 3 GiB');
+  assert.equal(measurement.replayInvocationCount, 1, 'Expected oversized ingress to skip replay');
+  console.log(JSON.stringify({ event: 'story10_256mib_measurement', ...measurement }));
 });

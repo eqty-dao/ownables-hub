@@ -12,10 +12,10 @@ describe('OwnableTransportService', () => {
   });
 
   it('emits locally, forwards cross-process notifications, and ignores same-origin echoes', async () => {
-    let handleNotification!: (payload: string) => void;
+    const handlers = new Map<string, (payload: string) => void>();
     const stop = jest.fn().mockResolvedValue(undefined);
-    listen.mockImplementation(async (_channel: string, onPayload: (payload: string) => void) => {
-      handleNotification = onPayload;
+    listen.mockImplementation(async (channel: string, onPayload: (payload: string) => void) => {
+      handlers.set(channel, onPayload);
       return stop;
     });
 
@@ -58,8 +58,8 @@ describe('OwnableTransportService', () => {
     );
 
     const firstPayload = JSON.parse(notify.mock.calls[0][1] as string) as { origin: string };
-    handleNotification(JSON.stringify({ origin: firstPayload.origin, message: outbound }));
-    handleNotification(
+    handlers.get('ownables_public_events')?.(JSON.stringify({ origin: firstPayload.origin, message: outbound }));
+    handlers.get('ownables_public_events')?.(
       JSON.stringify({
         origin: 'remote-process',
         message: {
@@ -89,6 +89,6 @@ describe('OwnableTransportService', () => {
 
     subscription.unsubscribe();
     await module.close();
-    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenCalledTimes(2);
   });
 });

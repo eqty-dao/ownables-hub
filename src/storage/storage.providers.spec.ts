@@ -23,6 +23,17 @@ describe('storageProviders', () => {
     expect(typeof bucket.get).toBe('function');
   });
 
+  it('builds the separate quarantine bucket from its own DSN', async () => {
+    const factory = storageProviders[1]?.useFactory as (config: any) => Promise<any>;
+    const config = { getAppConfig: () => ({ quarantineStorage: 'file://tmp/quarantine' }) };
+
+    const bucket = await factory(config);
+
+    expect(bucket).toBeDefined();
+    expect(typeof bucket.put).toBe('function');
+    expect(typeof bucket.delete).toBe('function');
+  });
+
   it('rejects unsupported remote DSN', async () => {
     const factory = storageProviders[0]?.useFactory as (config: any) => Promise<any>;
     const config = { getAppConfig: () => ({ ownablesStorage: 'gs://my-bucket' }) };
