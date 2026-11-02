@@ -272,9 +272,11 @@ describe('OwnableService', () => {
   });
 
   const buildService = async () => {
+    let stagedContents = Buffer.alloc(0);
     const storage = {
       storePackageArtifacts: jest.fn().mockResolvedValue(undefined),
       storeEventChain: jest.fn().mockResolvedValue(undefined),
+      storeImmutableEventChain: jest.fn().mockResolvedValue('archives/chains/ownable/chain.json'),
       hasEventChain: jest.fn().mockResolvedValue(true),
       hasPackage: jest.fn().mockResolvedValue(true),
       getEventChain: jest.fn(),
@@ -283,6 +285,7 @@ describe('OwnableService', () => {
     const hubState = {
       upsertOwnableRecord: jest.fn().mockResolvedValue({ id: 'id-1' }),
       setOwnerState: jest.fn().mockResolvedValue(undefined),
+      publishQuarantinedUpload: jest.fn().mockResolvedValue({ recordId: 'id-1', ownerAccount: null, ownerStateVersion: 1 }),
       getOwnerStateByCid: jest.fn().mockResolvedValue({
         owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
         version: 1,
@@ -312,6 +315,55 @@ describe('OwnableService', () => {
       publishAvailableOwnable: jest.fn(),
       watchAvailableOwnables: jest.fn(),
     };
+    const quarantine = {
+      digest: jest.fn(() => 'upload-digest'),
+      findExactRetry: jest.fn().mockResolvedValue({ pending: null, available: null }),
+      acquireProcessing: jest.fn().mockResolvedValue(async () => undefined),
+      stage: jest.fn(async (input, contents) => {
+        stagedContents = Buffer.from(contents);
+        return {
+          id: 'quarantine-1',
+          ...input,
+          status: 'pending',
+          expiresAt: '2026-11-03T00:00:00.000Z',
+          promotionLeaseOwner: null,
+          promotionLeaseExpiresAt: null,
+          reasonCode: null,
+          reasonDetail: null,
+          createdAt: '2026-11-02T00:00:00.000Z',
+          privateObjectKey: 'quarantine/uploads/upload-digest.zip',
+        };
+      }),
+      claim: jest.fn(async () => ({
+        id: 'quarantine-1',
+        ownableId: '',
+        subjectId: '',
+        packageCid: '',
+        uploadDigest: '',
+        compressedBytes: '0',
+        expandedBytes: '0',
+        privateObjectKey: 'quarantine/uploads/upload-digest.zip',
+        eventChainDigest: '',
+        previousOwnerAddress: '',
+        status: 'promoting',
+        expiresAt: '2026-11-03T00:00:00.000Z',
+        promotionLeaseOwner: null,
+        promotionLeaseExpiresAt: null,
+        reasonCode: null,
+        reasonDetail: null,
+        createdAt: '2026-11-02T00:00:00.000Z',
+      })),
+      load: jest.fn(async () => stagedContents),
+      defer: jest.fn(),
+      reject: jest.fn(),
+      cleanup: jest.fn(),
+      cleanupPrivateObject: jest.fn(),
+      claimForPromotion: jest.fn().mockResolvedValue([]),
+    };
+    quarantine.claim.mockImplementation(async () => {
+      const [input] = quarantine.stage.mock.calls.at(-1) ?? [];
+      return { ...input, id: 'quarantine-1', status: 'promoting', expiresAt: '2026-11-03T00:00:00.000Z' };
+    });
     const service = new OwnableService(
       buildConfig() as any,
       storage as any,
@@ -334,12 +386,13 @@ describe('OwnableService', () => {
           ownables: new (jest.requireMock('@ownables/core').OwnableService)(),
         })),
       } as any,
+      quarantine as any,
     );
     const runtimeValidatorSpy = jest
       .spyOn(service as any, 'assertSupportedOwnableRuntime')
       .mockImplementation(() => undefined);
 
-    return { service, storage, hubState, ownableTransport, runtimeValidatorSpy };
+    return { service, storage, hubState, ownableTransport, quarantine, runtimeValidatorSpy };
   };
 
   const createChain = async (
@@ -555,14 +608,17 @@ describe('OwnableService', () => {
     expect(result).not.toHaveProperty('smartContractAddress');
     expect(result).not.toHaveProperty('NftId');
     expect(storage.storePackageArtifacts).toHaveBeenCalledTimes(1);
-    expect(storage.storeEventChain).toHaveBeenCalledTimes(1);
-    expect(hubState.upsertOwnableRecord).toHaveBeenCalledTimes(1);
-    expect(hubState.setOwnerState).toHaveBeenCalledWith(
-      'id-1',
-      REPLAY_OWNER_WALLET.address.toLowerCase(),
-      `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
-      null,
+    expect(storage.storeImmutableEventChain).toHaveBeenCalledTimes(1);
+    expect(hubState.publishQuarantinedUpload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownableId: chain.id,
+        owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
+        ownerAccount: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
+      }),
     );
+    expect(hubState.upsertOwnableRecord).not.toHaveBeenCalled();
+    expect(hubState.setOwnerState).not.toHaveBeenCalled();
+    expect(storage.storeEventChain).not.toHaveBeenCalled();
     expect(mockClearRpc).toHaveBeenCalledWith(chain.id);
   });
 
@@ -596,16 +652,8 @@ describe('OwnableService', () => {
     expect(result).not.toHaveProperty('nftNetwork');
     expect(result).not.toHaveProperty('smartContractAddress');
     expect(result).not.toHaveProperty('NftId');
-    expect(hubState.upsertOwnableRecord).toHaveBeenCalledWith(
-      expect.objectContaining({
-        subjectId: expectedSubjectId(chain.id),
-      }),
-    );
-    expect(hubState.setOwnerState).toHaveBeenCalledWith(
-      'id-1',
-      REPLAY_OWNER_WALLET.address.toLowerCase(),
-      `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
-      null,
+    expect(hubState.publishQuarantinedUpload).toHaveBeenCalledWith(
+      expect.objectContaining({ subjectId: expectedSubjectId(chain.id) }),
     );
   });
 
@@ -620,9 +668,9 @@ describe('OwnableService', () => {
         'Invalid event chain: invalid network_id in first event',
       );
 
-      expect(hubState.upsertOwnableRecord).not.toHaveBeenCalled();
+      expect(hubState.publishQuarantinedUpload).not.toHaveBeenCalled();
       expect(storage.storePackageArtifacts).not.toHaveBeenCalled();
-      expect(storage.storeEventChain).not.toHaveBeenCalled();
+      expect(storage.storeImmutableEventChain).not.toHaveBeenCalled();
     },
   );
 
@@ -666,7 +714,7 @@ describe('OwnableService', () => {
     const result = await service.uploadOwnable(buffer, undefined, false);
 
     expect(result.cid).toEqual(expect.any(String));
-    expect(storage.storeEventChain).toHaveBeenCalledWith('id-1', expect.any(Buffer));
+    expect(storage.storeImmutableEventChain).toHaveBeenCalledWith(chain.id, expect.any(String), expect.any(Buffer));
   });
 
   it('normalizes matching chain file aliases to the same CID', async () => {
@@ -752,8 +800,8 @@ describe('OwnableService', () => {
       "Invalid package: unsupported Ownable runtime in 'ownable_bg.wasm'",
     );
     expect(storage.storePackageArtifacts).not.toHaveBeenCalled();
-    expect(storage.storeEventChain).not.toHaveBeenCalled();
-    expect(hubState.upsertOwnableRecord).not.toHaveBeenCalled();
+    expect(storage.storeImmutableEventChain).not.toHaveBeenCalled();
+    expect(hubState.publishQuarantinedUpload).not.toHaveBeenCalled();
   });
 
   it('rejects wrong-kind raw-ABI exports before persistence', async () => {
@@ -766,8 +814,8 @@ describe('OwnableService', () => {
       "Invalid package: unsupported Ownable runtime in 'ownable_bg.wasm'. Expected raw-ABI exports with no wasm imports; wrong raw-ABI export kinds: memory (expected memory, found global)",
     );
     expect(storage.storePackageArtifacts).not.toHaveBeenCalled();
-    expect(storage.storeEventChain).not.toHaveBeenCalled();
-    expect(hubState.upsertOwnableRecord).not.toHaveBeenCalled();
+    expect(storage.storeImmutableEventChain).not.toHaveBeenCalled();
+    expect(hubState.publishQuarantinedUpload).not.toHaveBeenCalled();
   });
 
   it('delegates public replay to core service without persisting replay-derived owner state on download', async () => {
@@ -1532,8 +1580,8 @@ describe('OwnableService', () => {
     );
   });
 
-  it('publishes a discovery update after storing a newly available ownable', async () => {
-    const { service, storage, hubState, ownableTransport } = await buildService();
+  it('includes the discovery transition in the atomic publication request', async () => {
+    const { service, storage, hubState } = await buildService();
     const chain = await createChain();
     const chainBuffer = Buffer.from(JSON.stringify(chain.toJSON()), 'utf8');
     const buffer = await createUploadBuffer(chain);
@@ -1563,20 +1611,24 @@ describe('OwnableService', () => {
 
     await service.uploadOwnable(buffer, undefined, false);
 
-    expect(ownableTransport.publishAvailableOwnable).toHaveBeenCalledWith({
-      owner: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
-      entry: {
-        id: chain.id,
-        title: 'Potion',
-        description: 'Recovered from the stored package.',
-        issuer: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase(),
-        availableAt: '2026-06-07T10:02:00.000Z',
-        package: {
-          cid: expect.any(String),
-          thumbnailUrl: 'https://example.com/potion.png',
+    expect(hubState.publishQuarantinedUpload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notification: {
+          owner: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
+          entry: {
+            id: chain.id,
+            title: 'Potion',
+            description: 'Recovered from the stored package.',
+            issuer: PRIVATE_STATE_OWNER_WALLET.address.toLowerCase(),
+            availableAt: expect.any(String),
+            package: {
+              cid: expect.any(String),
+              thumbnailUrl: 'https://example.com/potion.png',
+            },
+          },
         },
-      },
-    });
+      }),
+    );
   });
 
   it('falls back to cid metadata when stored package metadata is unavailable', async () => {

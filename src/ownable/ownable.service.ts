@@ -1,4 +1,4 @@
-import { Injectable, MessageEvent, Optional, StreamableFile } from '@nestjs/common';
+import { Injectable, MessageEvent, StreamableFile } from '@nestjs/common';
 import {
   type AnchorValidationResult,
   type IndexedAnchorRecord,
@@ -12,7 +12,7 @@ import { calculateOwnablePackageCid, type OwnablePackageCidEntry } from '@ownabl
 import { NodePackageAssetIO } from '@ownables/platform-node';
 import { ConfigService } from '../common/config/config.service';
 import { resolveCaip2Reference } from '../common/config/evm-network.util';
-import { UserError } from '../interfaces/error';
+import { CapacityError, ConflictError, UserError } from '../interfaces/error';
 import JSZip from 'jszip';
 import { EventChain } from 'eqty-core';
 import { ethers } from 'ethers';
@@ -26,7 +26,6 @@ import {
   type IndexedEventIdentity,
 } from '../persistence/repos/hub-state.repository';
 import {
-  AvailableOwnableDiscoveryMessage,
   OwnableTransportService,
   type LiveIndexedPublicEvent,
   type AvailableOwnableDiscoveryEntry,
@@ -36,7 +35,6 @@ import { Observable } from 'rxjs';
 import { filter, map } from 'rxjs/operators';
 import { OwnableReplayService } from './ownable-replay.service';
 import { QuarantineService } from '../quarantine/quarantine.service';
-import { ConflictError, CapacityError } from '../interfaces/error';
 import type { QuarantinedOwnableUpload } from '../persistence/repos/hub-state.repository';
 
 interface SignerIdentity {
@@ -278,7 +276,7 @@ export class OwnableService {
     private readonly hubState: HubStateRepository,
     private readonly ownableTransport: OwnableTransportService,
     private readonly replay: OwnableReplayService,
-    @Optional() private readonly quarantine?: QuarantineService,
+    private readonly quarantine: QuarantineService,
   ) {
     const mnemonic = this.config.getAuthoritySignerMnemonic();
     const privateKey = this.config.getAuthoritySignerPrivateKey();
@@ -977,7 +975,6 @@ export class OwnableService {
   }
 
   private async promoteQuarantinedUpload(upload: QuarantinedOwnableUpload): Promise<AvailableUploadResult | PendingUploadResult | null> {
-    if (!this.quarantine) return null;
     let prepared: PreparedUpload;
     try {
       const release = await this.quarantine.acquireProcessing();
@@ -1019,42 +1016,13 @@ export class OwnableService {
   }
 
   async promoteQuarantinedUploads(): Promise<void> {
-    if (!this.quarantine) return;
     await this.quarantine.cleanup();
     for (const upload of await this.quarantine.claimForPromotion()) {
       await this.promoteQuarantinedUpload(upload);
     }
   }
 
-  private async uploadOwnableLegacy(buffer: Uint8Array, signer?: SignerIdentity, verbose = false): Promise<any> {
-    const prepared = await this.prepareUpload(buffer, signer, verbose);
-    const replayState = await this.replayOwnable(prepared.cid, prepared.eventChainBuffer, prepared.packageContent);
-    this.assertReplayVerification(replayState);
-    const record = await this.hubState.upsertOwnableRecord({
-      packageCid: prepared.cid,
-      prevOwnerAddress: prepared.previousOwnerAddress,
-      subjectId: prepared.subjectId,
-    });
-    await this.storage.storePackageArtifacts(prepared.cid, prepared.packageContent, prepared.packageFiles);
-    await this.storage.storeEventChain(record.id, prepared.eventChainBuffer);
-    await this.hubState.setOwnerState(
-      record.id,
-      replayState.owner,
-      replayState.ownerAccount,
-      replayState.latestAppliedPublicEventId,
-    );
-    await this.publishAvailableOwnableDiscovery(replayState.ownerAccount, prepared.ownableId);
-
-    return {
-      ownableId: prepared.ownableId,
-      cid: prepared.cid.toString(),
-      owner: replayState.owner,
-      ownerAccount: replayState.ownerAccount,
-    };
-  }
-
   async uploadOwnable(buffer: Uint8Array, signer?: SignerIdentity, verbose = false): Promise<any> {
-    if (!this.quarantine) return this.uploadOwnableLegacy(buffer, signer, verbose);
     if (buffer.byteLength > 268435456) {
       throw new CapacityError(413, 'UPLOAD_TOO_LARGE', 'Upload exceeds the 268435456 byte limit');
     }
@@ -1233,34 +1201,4 @@ export class OwnableService {
     );
   }
 
-  private async publishAvailableOwnableDiscovery(ownerAccount: string | null, ownableId: string): Promise<void> {
-    if (!ownerAccount || !this.config.isLocalDevRecipientDiscoveryEnabled()) {
-      return;
-    }
-
-    const discovery = await this.getAvailableOwnables(ownerAccount);
-    const entry = discovery.entries.find((candidate) => candidate.id === ownableId);
-    if (!entry) {
-      return;
-    }
-
-    this.ownableTransport.publishAvailableOwnable({
-      owner: discovery.owner,
-      entry: this.toAvailableOwnableDiscoveryEntry(entry),
-    } satisfies AvailableOwnableDiscoveryMessage);
-  }
-
-  private toAvailableOwnableDiscoveryEntry(entry: AvailableOwnableEntry): AvailableOwnableDiscoveryEntry {
-    return {
-      id: entry.id,
-      title: entry.title,
-      ...(entry.description ? { description: entry.description } : {}),
-      ...(entry.issuer ? { issuer: entry.issuer } : {}),
-      availableAt: entry.availableAt,
-      package: {
-        cid: entry.package.cid,
-        thumbnailUrl: entry.package.thumbnailUrl ?? null,
-      },
-    };
-  }
 }
