@@ -54,3 +54,4 @@ describe('quarantine Ownable uploads migration', () => {
     expect(pgm.dropTable).toHaveBeenCalledWith('quarantined_ownable_uploads');
     expect(pgm.dropColumns).toHaveBeenCalledWith('ownable_records', ['upload_digest', 'chain_storage_key', 'ownable_identity']);
   });
+});
