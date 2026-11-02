@@ -1,4 +1,5 @@
 type MigrationBuilder = {
+  func: (value: string) => unknown;
   addColumns: (...args: unknown[]) => void;
   createIndex: (...args: unknown[]) => void;
   createTable: (...args: unknown[]) => void;
@@ -17,6 +18,7 @@ export {};
 
 describe('quarantine Ownable uploads migration', () => {
   const pgm = {
+    func: jest.fn((value: string) => value),
     addColumns: jest.fn(),
     createIndex: jest.fn(),
     createTable: jest.fn(),

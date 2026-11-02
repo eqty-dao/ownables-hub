@@ -7,6 +7,7 @@ import { OwnableController } from './ownable.controller';
 import { UserError } from '../interfaces/error';
 import { OwnableService } from './ownable.service';
 import { OwnableTransportService } from './ownable-transport.service';
+import { QuarantineService } from '../quarantine/quarantine.service';
 import { of } from 'rxjs';
 import { configureApp } from '../app.bootstrap';
 
@@ -211,7 +212,10 @@ describe('OwnableController', () => {
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       controllers: [OwnableController],
-      providers: [{ provide: OwnableService, useValue: ownableService }],
+      providers: [
+        { provide: OwnableService, useValue: ownableService },
+        { provide: QuarantineService, useValue: { acquireIngress: jest.fn(async () => async () => undefined) } },
+      ],
     }).compile();
 
     let app: INestApplication | undefined;
