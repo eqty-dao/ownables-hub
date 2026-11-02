@@ -1128,6 +1128,7 @@ test('story10-256mib quarantines the exact ingress limit and rejects one byte mo
   const storageRoot = await mkdtemp(join(tmpdir(), 'ownables-hub-story10-256mib-'));
   const hub = startHub(port, storageRoot, {
     STORY10_RESOURCE_PROFILE: 'story10-256mib',
+    UPLOAD_RATE_LIMIT_MAX_REQUESTS: '1000',
     NODE_OPTIONS: '--max-old-space-size=2048',
     HUB_NETWORK_PROFILE: 'testnet',
     TESTNET_CHAIN_ID: '84532',
