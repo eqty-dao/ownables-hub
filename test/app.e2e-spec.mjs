@@ -31,6 +31,10 @@ const E2E_ANCHOR_TRANSACTION = `0x${'9'.repeat(64)}`;
 const E2E_PUBLIC_EVENT_TRANSACTION = `0x${'8'.repeat(64)}`;
 const STORY10_EXACT_UPLOAD_BYTES = 268435456;
 const STORY10_TIMEOUT_MS = 180_000;
+const STORY10_LIFECYCLE_ANCHOR = '0x0000000000000000000000000000000000000077';
+const story10AnchorInterface = new ethers.Interface([
+  'event Anchored(bytes32 indexed key, bytes32 value, address indexed sender, uint64 timestamp)',
+]);
 
 async function buildChain(wallet) {
   const chain = EventChain.create(wallet.address, 84532);
@@ -383,6 +387,86 @@ function startWalletRpcServer() {
   });
 }
 
+function startIndexerRpcServer() {
+  let anchorLogs = [];
+  let head = 7;
+  const server = createHttpServer(async (request, response) => {
+    let raw = '';
+    for await (const chunk of request) raw += chunk;
+    const incoming = JSON.parse(raw);
+    const requests = Array.isArray(incoming) ? incoming : [incoming];
+    const replies = requests.map((message) => {
+      let result;
+      switch (message.method) {
+        case 'eth_chainId': result = '0x14a34'; break;
+        case 'eth_blockNumber': result = `0x${head.toString(16)}`; break;
+        case 'eth_getLogs': {
+          const filter = message.params[0];
+          const from = Number(BigInt(filter.fromBlock));
+          const to = Number(BigInt(filter.toBlock));
+          result = anchorLogs.filter((log) => Number(BigInt(log.blockNumber)) >= from && Number(BigInt(log.blockNumber)) <= to);
+          break;
+        }
+        case 'eth_getBalance': result = '0x1158e460913d0000'; break;
+        case 'eth_call': result = `0x${'0'.repeat(64)}`; break;
+        default: result = '0x';
+      }
+      return { jsonrpc: '2.0', id: message.id, result };
+    });
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(Array.isArray(incoming) ? replies : replies[0]));
+  });
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('Expected an IPv4 RPC port'));
+      resolve({
+        server,
+        url: `http://127.0.0.1:${address.port}`,
+        setAnchors(chain, owner) {
+          anchorLogs = [...chain.anchorMap.entries()].map(([index, anchor]) => {
+            const encoded = story10AnchorInterface.encodeEventLog(story10AnchorInterface.getEvent('Anchored'), [
+              anchor.key.hex, anchor.value.hex, owner.address, 7n,
+            ]);
+            return {
+              address: STORY10_LIFECYCLE_ANCHOR,
+              topics: encoded.topics,
+              data: encoded.data,
+              blockNumber: '0x7',
+              blockHash: `0x${'7'.repeat(64)}`,
+              transactionHash: `0x${'a'.repeat(63)}${index.toString(16)}`,
+              transactionIndex: '0x0',
+              logIndex: `0x${index.toString(16)}`,
+            };
+          });
+        },
+        setHead(value) { head = value; },
+      });
+    });
+  });
+}
+
+function runCompiledIndexer(extraEnv) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--env-file-if-exists=.env', 'dist/indexer/main.js'], {
+      cwd: process.cwd(),
+      env: { ...process.env, NODE_ENV: 'test', ...extraEnv },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout.on('data', (chunk) => { output += chunk; });
+    child.stderr.on('data', (chunk) => { output += chunk; });
+    child.once('error', reject);
+    const timer = setTimeout(() => child.kill('SIGKILL'), STARTUP_TIMEOUT_MS);
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      if (code !== 0) reject(new Error(`Compiled indexer exited ${code ?? signal}\n${output}`));
+      else resolve(output);
+    });
+  });
+}
+
 async function readSseEvent(response, expectedType) {
   assert.ok(response.body, 'Expected an SSE response body');
   const reader = response.body.getReader();
@@ -493,8 +577,14 @@ async function listStoredFiles(storageRoot) {
 }
 
 async function listStoredObjectStats(storageRoot) {
-  const files = await listStoredFiles(storageRoot);
-  const sizes = await Promise.all(files.map(async (file) => (await stat(join(storageRoot, file))).size));
+  let files;
+  try {
+    files = (await readdir(storageRoot, { recursive: true, withFileTypes: true })).filter((entry) => entry.isFile());
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { count: 0, bytes: 0 };
+    throw error;
+  }
+  const sizes = await Promise.all(files.map(async (file) => (await stat(join(file.parentPath, file.name))).size));
   return { count: files.length, bytes: sizes.reduce((total, size) => total + size, 0) };
 }
 
@@ -871,6 +961,151 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
     });
     assert.equal(removedResponse.status, 404, `Expected removed route ${path} to return 404`);
   }
+});
+
+test('story10 compiled Hub and indexer promote a durable pending upload across processes', { timeout: 120_000 }, async (t) => {
+  assert.ok(process.env.DATABASE_URL, 'DATABASE_URL is required for the compiled Hub E2E test');
+  const { archive, chain, owner } = await buildSupportedUploadArchive();
+  const subjectId = ethers.keccak256(ethers.getBytes(chain.id)).toLowerCase();
+  let expiringSubject = null;
+  const account = `eip155:84532:${owner.address.toLowerCase()}`;
+  const database = new Client({ connectionString: process.env.DATABASE_URL });
+  await database.connect();
+  await database.query(
+    `DELETE FROM indexed_anchor_events WHERE slot_name = 'testnet' AND anchor_contract_address = LOWER($1)`,
+    [STORY10_LIFECYCLE_ANCHOR],
+  );
+  await database.query(
+    `DELETE FROM indexer_cursors WHERE slot_name = 'testnet' AND anchor_contract_address = LOWER($1)`,
+    [STORY10_LIFECYCLE_ANCHOR],
+  );
+  t.after(async () => {
+    try {
+      await database.query('DELETE FROM quarantined_ownable_uploads WHERE subject_id = LOWER($1)', [subjectId]);
+      if (expiringSubject) await database.query('DELETE FROM quarantined_ownable_uploads WHERE subject_id = LOWER($1)', [expiringSubject]);
+      await database.query('DELETE FROM ownable_records WHERE subject_id = LOWER($1)', [subjectId]);
+      await database.query(
+        `DELETE FROM indexed_anchor_events WHERE slot_name = 'testnet' AND anchor_contract_address = LOWER($1)`,
+        [STORY10_LIFECYCLE_ANCHOR],
+      );
+      await database.query(
+        `DELETE FROM indexer_cursors WHERE slot_name = 'testnet' AND anchor_contract_address = LOWER($1)`,
+        [STORY10_LIFECYCLE_ANCHOR],
+      );
+    } finally {
+      await database.end();
+    }
+  });
+
+  const rpc = await startIndexerRpcServer();
+  t.after(() => new Promise((resolve, reject) => rpc.server.close((error) => (error ? reject(error) : resolve()))));
+  const storageRoot = await mkdtemp(join(tmpdir(), 'ownables-hub-story10-lifecycle-'));
+  t.after(() => rm(storageRoot, { recursive: true, force: true }));
+  const env = {
+    LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED: 'true',
+    HUB_NETWORK_PROFILE: 'testnet',
+    TESTNET_CHAIN_ID: '84532',
+    TESTNET_RPC_URL: rpc.url,
+    TESTNET_BASE_RPC_URL: rpc.url,
+    TESTNET_ANCHOR_CONTRACT_ADDR: STORY10_LIFECYCLE_ANCHOR,
+    TESTNET_ANCHOR_START_BLOCK: '0',
+    MAINNET_CHAIN_ID: '8453',
+    MAINNET_RPC_URL: rpc.url,
+    MAINNET_ANCHOR_CONTRACT_ADDR: '0x0000000000000000000000000000000000000098',
+    MAINNET_ANCHOR_START_BLOCK: '0',
+    OWNABLES_STORAGE: pathToFileURL(storageRoot).href,
+    QUARANTINE_STORAGE: pathToFileURL(join(storageRoot, 'quarantine')).href,
+    QUARANTINE_MAX_PENDING_OBJECTS: '4',
+    QUARANTINE_MAX_PENDING_BYTES: '536870912',
+    UPLOAD_RATE_LIMIT_MAX_REQUESTS: '1000',
+    SIGNER_MNEMONIC: TEST_SIGNER_MNEMONIC,
+  };
+  const port = await reservePort();
+  env.PUBLIC_BASE_URL = `http://127.0.0.1:${port}`;
+  let hub = startHub(port, storageRoot, env);
+  t.after(async () => stopHub(hub));
+  await waitForReady(hub, port);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  async function upload(bytes = archive) {
+    const form = new FormData();
+    form.set('file', new Blob([bytes], { type: 'application/zip' }), 'pending-ownable.zip');
+    return fetch(`${baseUrl}/ownables`, { method: 'POST', body: form, signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) });
+  }
+  async function assertHidden() {
+    const discovery = await fetch(`${baseUrl}/accounts/${encodeURIComponent(account)}/available-ownables`);
+    assert.equal(discovery.status, 200);
+    assert.deepEqual((await discovery.json()).entries, []);
+    for (const suffix of ['bundle', 'verification']) {
+      const response = await fetch(`${baseUrl}/ownables/${encodeURIComponent(chain.id)}/${suffix}`);
+      assert.notEqual(response.status, 200, `Pending Ownable ${suffix} must remain private`);
+    }
+    const records = await database.query('SELECT COUNT(*)::int AS count FROM ownable_records WHERE subject_id = LOWER($1)', [subjectId]);
+    assert.equal(records.rows[0].count, 0, 'Pending uploads must not create an accepted Ownable row');
+  }
+
+  const first = await upload();
+  assert.equal(first.status, 202);
+  const pending = await first.json();
+  assert.deepEqual(Object.keys(pending).sort(), ['expiresAt', 'ownableId', 'status']);
+  assert.equal(pending.ownableId, chain.id);
+  assert.equal(pending.status, 'pending');
+  await assertHidden();
+  const retry = await upload();
+  assert.equal(retry.status, 202);
+  assert.deepEqual(await retry.json(), pending, 'Identical retry must retain the original expiry');
+  assert.equal((await listStoredFiles(join(storageRoot, 'quarantine'))).length, 1);
+
+  await stopHub(hub);
+  hub = startHub(port, storageRoot, env);
+  await waitForReady(hub, port);
+  assert.deepEqual(await (await upload()).json(), pending, 'Pending identity must survive a Hub restart');
+  await assertHidden();
+
+  const subscriber = new AbortController();
+  t.after(() => subscriber.abort());
+  const eventResponse = await fetch(`${baseUrl}/accounts/${encodeURIComponent(account)}/available-ownables/events`, {
+    signal: subscriber.signal,
+  });
+  assert.equal(eventResponse.status, 200);
+  assert.match(eventResponse.headers.get('content-type') ?? '', /text\/event-stream/);
+  rpc.setAnchors(chain, owner);
+  await runCompiledIndexer(env);
+  const event = await readSseEvent(eventResponse, 'available-ownable');
+  subscriber.abort();
+  assert.match(event, new RegExp(`"id":"${chain.id}"`));
+  assert.match(event, new RegExp(`"owner":"${account}"`));
+
+  const discovery = await fetch(`${baseUrl}/accounts/${encodeURIComponent(account)}/available-ownables`);
+  assert.deepEqual((await discovery.json()).entries.map((entry) => entry.id), [chain.id]);
+  const bundle = await fetch(`${baseUrl}/ownables/${encodeURIComponent(chain.id)}/bundle`);
+  assert.equal(bundle.status, 200, 'Promoted Ownable must be downloadable');
+  const zip = await JSZip.loadAsync(await bundle.arrayBuffer());
+  assert.ok(zip.file('chain.json'));
+  assert.ok(zip.file('ownable_bg.wasm'));
+  const availableRetry = await upload();
+  assert.equal(availableRetry.status, 200);
+  assert.equal((await availableRetry.json()).status, 'available');
+  await runCompiledIndexer(env);
+  const published = await database.query('SELECT COUNT(*)::int AS count FROM ownable_records WHERE subject_id = LOWER($1)', [subjectId]);
+  assert.equal(published.rows[0].count, 1, 'Repeated indexer runs must not duplicate publication');
+
+  const expiring = await buildSupportedUploadArchive();
+  expiringSubject = ethers.keccak256(ethers.getBytes(expiring.chain.id)).toLowerCase();
+  const expiringResponse = await upload(expiring.archive);
+  assert.equal(expiringResponse.status, 202);
+  await database.query(
+    `UPDATE quarantined_ownable_uploads SET expires_at = NOW() - INTERVAL '1 second' WHERE subject_id = LOWER($1)`,
+    [expiringSubject],
+  );
+  await runCompiledIndexer(env);
+  const expired = await database.query(
+    `SELECT status, private_object_deleted_at IS NOT NULL AS deleted FROM quarantined_ownable_uploads WHERE subject_id = LOWER($1)`,
+    [expiringSubject],
+  );
+  assert.deepEqual(expired.rows, [{ status: 'expired', deleted: true }], 'Expired private upload must be deleted');
+  assert.equal((await database.query('SELECT COUNT(*)::int AS count FROM ownable_records WHERE subject_id = LOWER($1)', [expiringSubject])).rows[0].count, 0);
+  const expiredBundle = await fetch(`${baseUrl}/ownables/${encodeURIComponent(expiring.chain.id)}/bundle`);
+  assert.notEqual(expiredBundle.status, 200);
 });
 
 test('story10-256mib quarantines the exact ingress limit and rejects one byte more before replay', { timeout: STORY10_TIMEOUT_MS * 2 + SHUTDOWN_TIMEOUT_MS * 2 }, async (t) => {
