@@ -25,6 +25,12 @@ jest.mock('ethers', () => {
   };
 });
 
+jest.mock('../ownable/ownable.service', () => ({
+  OwnableService: class OwnableService {},
+}));
+
+import { OwnableService } from '../ownable/ownable.service';
+
 describe('IndexerService', () => {
   const configService = {
     getIndexerSlots: jest.fn(),
@@ -39,6 +45,10 @@ describe('IndexerService', () => {
     publishPublicEvent: jest.fn(),
   } as unknown as OwnableTransportService;
 
+  const ownableService = {
+    promoteQuarantinedUploads: jest.fn(),
+  } as unknown as OwnableService;
+
   let service: IndexerService;
   let module: TestingModule;
   const providerFactory = jest.fn(() => new JsonRpcProvider());
@@ -51,6 +61,7 @@ describe('IndexerService', () => {
     (hubStateRepository.getIndexerCursor as jest.Mock).mockReset();
     (hubStateRepository.withIndexerPersistenceTransaction as jest.Mock).mockReset();
     (ownableTransport.publishPublicEvent as jest.Mock).mockReset();
+    (ownableService.promoteQuarantinedUploads as jest.Mock).mockReset().mockResolvedValue(undefined);
     providerFactory.mockClear();
     module = await Test.createTestingModule({
       providers: [
@@ -58,6 +69,7 @@ describe('IndexerService', () => {
         { provide: ConfigService, useValue: configService },
         { provide: HubStateRepository, useValue: hubStateRepository },
         { provide: OwnableTransportService, useValue: ownableTransport },
+        { provide: OwnableService, useValue: ownableService },
         { provide: EVM_RPC_PROVIDER_FACTORY, useValue: providerFactory },
       ],
     }).compile();

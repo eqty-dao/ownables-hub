@@ -7,6 +7,7 @@ import { OwnableController } from './ownable.controller';
 import { UserError } from '../interfaces/error';
 import { OwnableService } from './ownable.service';
 import { OwnableTransportService } from './ownable-transport.service';
+import { QuarantineService } from '../quarantine/quarantine.service';
 import { of } from 'rxjs';
 import { configureApp } from '../app.bootstrap';
 
@@ -57,6 +58,33 @@ describe('OwnableController', () => {
     expect(ownableService.uploadOwnable).toHaveBeenCalledWith(req.file.buffer, undefined, true);
     expect(res.location).toHaveBeenCalledWith('/ownables/ownable%2Fid');
     expect(res.status).toHaveBeenCalledWith(201);
+  });
+
+  it('returns a non-public pending upload result without a Location header', async () => {
+    const ownableService = {
+      uploadOwnable: jest.fn().mockResolvedValue({ status: 'pending', ownableId: 'ownable-1', expiresAt: '2026-11-03T00:00:00.000Z' }),
+    } as any;
+    const controller = new OwnableController(ownableService);
+    const res = buildRes();
+
+    await controller.uploadOwnable({ file: { buffer: Buffer.from('zip') } } as any, res, undefined);
+
+    expect(res.status).toHaveBeenCalledWith(202);
+    expect(res.location).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith({ status: 'pending', ownableId: 'ownable-1', expiresAt: '2026-11-03T00:00:00.000Z' });
+  });
+
+  it('returns 200 for an identical accepted upload retry', async () => {
+    const ownableService = {
+      uploadOwnable: jest.fn().mockResolvedValue({ status: 'available', created: false, ownableId: 'ownable-1', cid: 'cid-1' }),
+    } as any;
+    const controller = new OwnableController(ownableService);
+    const res = buildRes();
+
+    await controller.uploadOwnable({ file: { buffer: Buffer.from('zip') } } as any, res, undefined);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.location).not.toHaveBeenCalled();
   });
 
   it('maps malformed upload archives to 400 client rejection', async () => {
@@ -184,7 +212,10 @@ describe('OwnableController', () => {
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       controllers: [OwnableController],
-      providers: [{ provide: OwnableService, useValue: ownableService }],
+      providers: [
+        { provide: OwnableService, useValue: ownableService },
+        { provide: QuarantineService, useValue: { acquireIngress: jest.fn(async () => async () => undefined) } },
+      ],
     }).compile();
 
     let app: INestApplication | undefined;

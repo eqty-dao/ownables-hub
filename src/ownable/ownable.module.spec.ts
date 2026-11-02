@@ -18,7 +18,13 @@ describe('OwnableModule', () => {
   it('owns the real Nest-managed replay dependencies', async () => {
     const module = await Test.createTestingModule({ imports: [OwnableModule] })
       .overrideProvider(ConfigService)
-      .useValue({})
+      .useValue({
+        getAppConfig: () => ({
+          databaseUrl: 'postgres://user:pass@127.0.0.1:5432/ownables_hub',
+          ownablesStorage: 'file://tmp/ownables',
+          quarantineStorage: 'file://tmp/quarantine',
+        }),
+      })
       .overrideProvider(POSTGRES_POOL)
       .useValue({ on: jest.fn(), end: jest.fn() })
       .overrideProvider(OWNABLES_BUCKET)

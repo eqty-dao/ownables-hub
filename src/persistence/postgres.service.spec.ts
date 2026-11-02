@@ -149,8 +149,10 @@ describe('PostgresService', () => {
     await module.close();
 
     expect(listenerClient.query).toHaveBeenCalledWith('LISTEN ownables_public_events');
+    expect(listenerClient.query).toHaveBeenCalledWith('LISTEN ownables_available_ownables');
     expect(listenerClient.query).toHaveBeenCalledWith('UNLISTEN ownables_public_events');
-    expect(releaseMock).toHaveBeenCalledTimes(1);
+    expect(listenerClient.query).toHaveBeenCalledWith('UNLISTEN ownables_available_ownables');
+    expect(releaseMock).toHaveBeenCalledTimes(2);
     expect(endMock).toHaveBeenCalledTimes(1);
   });
 });

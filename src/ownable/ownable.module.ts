@@ -9,6 +9,7 @@ import { PersistenceModule } from '../persistence/persistence.module';
 import { StorageModule } from '../storage/storage.module';
 import { OwnableTransportModule } from './ownable-transport.module';
 import { OwnableReplayService } from './ownable-replay.service';
+import { QuarantineModule } from '../quarantine/quarantine.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { OwnableReplayService } from './ownable-replay.service';
     PersistenceModule,
     StorageModule,
     OwnableTransportModule,
+    QuarantineModule,
   ],
   providers: [
     { provide: AnchorValidationService, useClass: AnchorValidationService },

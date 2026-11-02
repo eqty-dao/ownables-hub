@@ -20,6 +20,10 @@ export class ArchiveStorageService {
     return `${this.root}/chains/${ownableId}/eventChain.json`;
   }
 
+  immutableChainKey(ownableId: string, chainDigest: string): string {
+    return `${this.root}/chains/${ownableId}/${chainDigest}.json`;
+  }
+
   async storePackageArtifacts(cid: string, zipData: Uint8Array, files: Map<string, Buffer>): Promise<void> {
     await this.bucket.put(this.packageZipKey(cid), Buffer.from(zipData));
     await Promise.all(
@@ -33,14 +37,20 @@ export class ArchiveStorageService {
     await this.bucket.put(this.chainKey(ownableId), Buffer.from(eventChainData));
   }
 
+  async storeImmutableEventChain(ownableId: string, chainDigest: string, eventChainData: Uint8Array): Promise<string> {
+    const key = this.immutableChainKey(ownableId, chainDigest);
+    if (!(await this.bucket.has(key))) await this.bucket.put(key, Buffer.from(eventChainData));
+    return key;
+  }
+
   async getPackageZip(cid: string): Promise<Buffer> {
     const data = await this.bucket.get(this.packageZipKey(cid));
     return Buffer.isBuffer(data) ? data : Buffer.from(data as Uint8Array);
   }
 
-  async getEventChain(ownableId: string, legacyPackageCid?: string): Promise<Buffer> {
+  async getEventChain(ownableId: string, legacyPackageCid?: string, chainStorageKey?: string | null): Promise<Buffer> {
     try {
-      const data = await this.bucket.get(this.chainKey(ownableId));
+      const data = await this.bucket.get(chainStorageKey ?? this.chainKey(ownableId));
       return Buffer.isBuffer(data) ? data : Buffer.from(data as Uint8Array);
     } catch (error) {
       if (!legacyPackageCid || legacyPackageCid === ownableId) throw error;
@@ -62,9 +72,9 @@ export class ArchiveStorageService {
     }
   }
 
-  async hasEventChain(ownableId: string, legacyPackageCid?: string): Promise<boolean> {
+  async hasEventChain(ownableId: string, legacyPackageCid?: string, chainStorageKey?: string | null): Promise<boolean> {
     try {
-      await this.getEventChain(ownableId, legacyPackageCid);
+      await this.getEventChain(ownableId, legacyPackageCid, chainStorageKey);
       return true;
     } catch {
       return false;

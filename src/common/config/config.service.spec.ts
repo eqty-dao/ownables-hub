@@ -2,6 +2,23 @@ import { ConfigService } from './config.service';
 
 describe('ConfigService', () => {
   const originalEnv = process.env;
+  const setQuarantineEnv = () => {
+    Object.assign(process.env, {
+      QUARANTINE_STORAGE: 'file://tmp/quarantine',
+      UPLOAD_INGRESS_CONCURRENCY: '1',
+      UPLOAD_RATE_LIMIT_WINDOW_SECONDS: '60',
+      UPLOAD_RATE_LIMIT_MAX_REQUESTS: '8',
+      UPLOAD_PROCESSING_CONCURRENCY: '1',
+      UPLOAD_MAX_EXPANDED_PROCESSING_BYTES: '536870912',
+      QUARANTINE_MAX_PENDING_OBJECTS: '4',
+      QUARANTINE_MAX_PENDING_BYTES: '536870912',
+      QUARANTINE_RETENTION_SECONDS: '86400',
+      QUARANTINE_PROMOTION_BATCH_SIZE: '16',
+      QUARANTINE_CLEANUP_BATCH_SIZE: '16',
+      QUARANTINE_LEASE_SECONDS: '300',
+      QUARANTINE_ORPHAN_GRACE_SECONDS: '60',
+    });
+  };
 
   beforeEach(() => {
     process.env = { ...originalEnv };
@@ -37,6 +54,7 @@ describe('ConfigService', () => {
 
   it('parses explicit CORS origins from env and disables implicit defaults', () => {
     process.env.NODE_ENV = 'production';
+    setQuarantineEnv();
     process.env.CORS_ORIGINS = 'https://sdk.example.com, http://127.0.0.1:5173 ,https://sdk.example.com';
 
     const service = new ConfigService();
@@ -47,6 +65,16 @@ describe('ConfigService', () => {
   it('throws when DATABASE_URL is missing', () => {
     delete process.env.DATABASE_URL;
     expect(() => new ConfigService()).toThrow('DATABASE_URL is required');
+  });
+
+  it('requires quarantine storage and budgets in production', () => {
+    process.env.NODE_ENV = 'production';
+    delete process.env.QUARANTINE_STORAGE;
+
+    expect(() => new ConfigService()).toThrow('QUARANTINE_STORAGE is required');
+
+    process.env.QUARANTINE_STORAGE = 's3://hub-private/quarantine';
+    expect(() => new ConfigService()).toThrow('UPLOAD_INGRESS_CONCURRENCY is required and must be a positive integer');
   });
 
   it('parses exactly two explicit indexer slots in deterministic order', () => {
@@ -102,6 +130,7 @@ describe('ConfigService', () => {
     expect(new ConfigService().isLocalDevRecipientDiscoveryEnabled()).toBe(true);
 
     process.env.NODE_ENV = 'production';
+    setQuarantineEnv();
     expect(new ConfigService().isLocalDevRecipientDiscoveryEnabled()).toBe(false);
   });
 
