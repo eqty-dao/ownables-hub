@@ -1929,7 +1929,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@noble/hashes@npm:^1.1.5, @noble/hashes@npm:^1.4.0":
+"@noble/hashes@npm:^1.1.5":
   version: 1.8.0
   resolution: "@noble/hashes@npm:1.8.0"
   checksum: 10c0/06a0b52c81a6fa7f04d67762e08b2c476a00285858150caeaaff4037356dd5e119f45b2a530f638b77a5eeca013168ec1b655db41bae3236cb2e9d511484fc77
@@ -2316,7 +2316,7 @@ __metadata:
     axios: "npm:^1.16.1"
     bs58: "npm:^6.0.0"
     conventional-changelog-conventionalcommits: "npm:9.3.1"
-    eqty-core: "npm:^1.0.2"
+    eqty-core: "npm:^1.1.1"
     eslint: "npm:^10.4.1"
     eslint-config-prettier: "npm:^10.1.8"
     eslint-plugin-prettier: "npm:^5.5.6"
@@ -2408,13 +2408,6 @@ __metadata:
   version: 1.4.0
   resolution: "@scarf/scarf@npm:1.4.0"
   checksum: 10c0/332118bb488e7a70eaad068fb1a33f016d30442fb0498b37a80cb425c1e741853a5de1a04dce03526ed6265481ecf744aa6e13f072178d19e6b94b19f623ae1c
-  languageName: node
-  linkType: hard
-
-"@scure/base@npm:^1.2.6":
-  version: 1.2.6
-  resolution: "@scure/base@npm:1.2.6"
-  checksum: 10c0/49bd5293371c4e062cb6ba689c8fe3ea3981b7bb9c000400dc4eafa29f56814cdcdd27c04311c2fec34de26bc373c593a1d6ca6d754398a488d587943b7c128a
   languageName: node
   linkType: hard
 
@@ -5129,16 +5122,6 @@ __metadata:
   version: 1.1.0
   resolution: "environment@npm:1.1.0"
   checksum: 10c0/fb26434b0b581ab397039e51ff3c92b34924a98b2039dcb47e41b7bca577b9dbf134a8eadb364415c74464b682e2d3afe1a4c0eb9873dc44ea814c5d3103331d
-  languageName: node
-  linkType: hard
-
-"eqty-core@npm:^1.0.2":
-  version: 1.0.2
-  resolution: "eqty-core@npm:1.0.2"
-  dependencies:
-    "@noble/hashes": "npm:^1.4.0"
-    "@scure/base": "npm:^1.2.6"
-  checksum: 10c0/3134c21891b714a7414f3297563c5d1e1efa176185caa34301860ea78cd692968074b50058a566c73d0fcb043c8dc38520d52b2356670744e3fce0049d4b1525
   languageName: node
   linkType: hard
 
