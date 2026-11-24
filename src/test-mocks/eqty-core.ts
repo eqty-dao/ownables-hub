@@ -59,10 +59,12 @@ export class EventChain {
     return chain;
   }
 
-  get anchorMap(): Array<{ key: { hex: string }; value: { hex: string } }> {
+  get anchorMap(): Array<{ key: { hex: string }; value: { hex: string }; signer?: string }> {
     return this.events.flatMap((event) => {
       const anchors = event.parsedData?.anchors;
-      return Array.isArray(anchors) ? anchors : [];
+      return Array.isArray(anchors)
+        ? anchors.map((anchor) => ({ ...anchor, signer: event.signerAddress }))
+        : [];
     });
   }
 

@@ -24,7 +24,7 @@ export class ArchiveStorageService {
     return `${this.root}/chains/${ownableId}/${chainDigest}.json`;
   }
 
-  async storePackageArtifacts(cid: string, zipData: Uint8Array, files: Map<string, Buffer>): Promise<void> {
+  async storePackageArtifacts(cid: string, zipData: Uint8Array, files: ReadonlyMap<string, Uint8Array>): Promise<void> {
     await this.bucket.put(this.packageZipKey(cid), Buffer.from(zipData));
     await Promise.all(
       Array.from(files.entries()).map(async ([filename, content]) => {
@@ -41,6 +41,18 @@ export class ArchiveStorageService {
     const key = this.immutableChainKey(ownableId, chainDigest);
     if (!(await this.bucket.has(key))) await this.bucket.put(key, Buffer.from(eventChainData));
     return key;
+  }
+
+  async storeEventChainAttachments(chainStorageKey: string, zipData: Buffer): Promise<void> {
+    const key = `${chainStorageKey}.attachments.zip`;
+    if (!(await this.bucket.has(key))) await this.bucket.put(key, zipData);
+  }
+
+  async getEventChainAttachments(chainStorageKey: string): Promise<Buffer | undefined> {
+    const key = `${chainStorageKey}.attachments.zip`;
+    if (!(await this.bucket.has(key))) return undefined;
+    const data = await this.bucket.get(key);
+    return Buffer.isBuffer(data) ? data : Buffer.from(data as Uint8Array);
   }
 
   async getPackageZip(cid: string): Promise<Buffer> {

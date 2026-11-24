@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { AnchorValidationService, PublicEventReplayService } from '@ownables/core';
-import { calculateOwnablePackageCid } from '@ownables/core/utils';
+import { calculateAttachmentCid, calculateOwnablePackageCid, createConsumptionSnapshot, serializeOwnableChain } from '@ownables/core/utils';
 import { NodeRuntimeRpcProvider, NodeRuntimeSourceProvider } from '@ownables/platform-node';
 import { Event, EventChain } from 'eqty-core';
 import { ethers } from 'ethers';
@@ -140,14 +140,14 @@ function packedPointerLength(pointer, length) {
   return (BigInt(length) << 32n) | BigInt(pointer);
 }
 
-function buildE2ERuntimeWasm(owner) {
+function buildE2ERuntimeWasm(owner, events = []) {
   const actionEnvelope = encode({
     success: true,
-    payload: encode({ result: encode({ attributes: [] }), mem: { state_dump: [] } }),
+    payload: encode({ result: encode({ attributes: [], events }), mem: { state_dump: [] } }),
   });
   const queryEnvelope = encode({
     success: true,
-    payload: encode({ result: Buffer.from(JSON.stringify({ owner }), 'utf8'), mem: { state_dump: [] } }),
+    payload: encode({ result: Buffer.from(JSON.stringify({ owner, issuer: owner }), 'utf8'), mem: { state_dump: [] } }),
   });
   const actionPointer = 1024;
   const queryPointer = 2048;
@@ -245,31 +245,72 @@ function buildE2ERuntimeWasm(owner) {
   ]);
 }
 
-async function buildSupportedUploadArchive() {
+async function buildSupportedUploadArchive(attachment, events) {
   const owner = ethers.Wallet.createRandom();
   const chain = EventChain.create(owner.address, 84532);
+  const packageJson = JSON.stringify({ name: 'compiled-route-fixture', title: 'Compiled route fixture' });
+  const wasm = buildE2ERuntimeWasm(owner.address, events);
+  const packageCid = await calculateOwnablePackageCid([
+    { path: 'package.json', content: Buffer.from(packageJson) },
+    { path: 'ownable_bg.wasm', content: wasm },
+  ]);
   const event = new Event({
     '@context': 'instantiate_msg.json',
     ownable_id: chain.id,
-    package: 'compiled-route-fixture',
+    package: packageCid,
     network_id: 84532,
     keywords: [],
   });
-  await event.addTo(chain).signWith({
+  const signer = {
     getAddress: async () => owner.address,
     signTypedData: (domain, types, value) => owner.signTypedData(domain, types, value),
-  });
+  };
+  await event.addTo(chain).signWith(signer);
 
   const archive = new JSZip();
-  archive.file('package.json', JSON.stringify({ name: 'compiled-route-fixture', title: 'Compiled route fixture' }));
+  archive.file('package.json', packageJson);
+  if (attachment) {
+    const cid = await calculateAttachmentCid(attachment);
+    const attach = new Event({
+      '@context': 'execute_msg.json',
+      attach: { attachments: [{ cid, name: 'evidence.bin' }] },
+    });
+    await attach.addTo(chain).signWith(signer);
+    archive.file(`attachments/${cid}`, attachment);
+  }
   archive.file('chain.json', JSON.stringify(chain.toJSON()));
-  archive.file('ownable_bg.wasm', buildE2ERuntimeWasm(owner.address));
+  archive.file('ownable_bg.wasm', wasm);
 
   return {
     archive: await archive.generateAsync({ type: 'uint8array' }),
     chain,
     owner,
+    signer,
   };
+}
+
+async function appendConsumption(source, target, attributes) {
+  const consume = new Event({
+    '@context': 'execute_msg.json',
+    consume: { consumer_id: target.chain.id },
+  });
+  await consume.addTo(source.chain).signWith(source.signer);
+  const snapshot = await createConsumptionSnapshot(source.chain, await JSZip.loadAsync(source.archive));
+  const ingest = new Event({
+    '@context': 'ingest_msg.json',
+    type: 'consume',
+    source: {
+      id: source.chain.id,
+      owner: source.owner.address,
+      issuer: source.owner.address,
+      event: consume.hash.hex,
+      cid: snapshot.cid,
+    },
+    target: { id: target.chain.id },
+    attributes,
+  });
+  await ingest.addTo(target.chain).signWith(target.signer);
+  return snapshot;
 }
 
 async function buildStory10ExactLimitArchive() {
@@ -684,7 +725,22 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   assert.ok(process.env.DATABASE_URL, 'DATABASE_URL is required for the compiled Hub E2E test');
 
   const { archive, moduleImports } = await buildUnsupportedUploadArchive();
-  const { archive: supportedArchive, chain, owner } = await buildSupportedUploadArchive();
+  const attachment = Buffer.from('Binary evidence\x00with exact bytes\xff', 'latin1');
+  const attachmentCid = await calculateAttachmentCid(attachment);
+  const target = await buildSupportedUploadArchive(attachment);
+  const attributes = { consumable_type: 'paint' };
+  const emitted = [{ type: 'consume', attributes: [{ key: 'consumable_type', value: 'paint' }] }];
+  const middle = await buildSupportedUploadArchive(undefined, emitted);
+  const first = await buildSupportedUploadArchive(undefined, emitted);
+  const firstProof = await appendConsumption(first, middle, attributes);
+  const middleProof = await appendConsumption(middle, target, attributes);
+  const rootZip = await JSZip.loadAsync(target.archive);
+  rootZip.file('chain.json', JSON.stringify(serializeOwnableChain(target.chain)));
+  for (const proof of [firstProof, middleProof]) {
+    rootZip.file(`attachments/${proof.cid}`, proof.bytes);
+  }
+  const supportedArchive = await rootZip.generateAsync({ type: 'uint8array' });
+  const { chain, owner } = target;
   assert.ok(moduleImports.length > 0, 'Expected unsupported fixture to require wasm imports');
   assert.ok(moduleImports.some(({ module }) => module === 'wbg'), 'Expected fixture imports from unsupported wbg module');
 
@@ -703,7 +759,8 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
     }
   });
 
-  for (const [index, anchor] of chain.anchorMap.entries()) {
+  const anchors = [first.chain, middle.chain, chain].flatMap((linkedChain) => linkedChain.anchorMap);
+  for (const [index, anchor] of anchors.entries()) {
     await database.query(
       `INSERT INTO indexed_anchor_events (
          slot_name, chain_id, anchor_contract_address, block_number, block_hash,
@@ -720,7 +777,7 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
         0,
         index,
         'Anchored',
-        owner.address,
+        anchor.signer,
         JSON.stringify({ key: anchor.key.hex, value: anchor.value.hex }),
       ],
     );
@@ -823,6 +880,13 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   assert.equal(supportedUploadResponse.status, 201, 'Expected the canonical upload to create an Ownable');
   const supportedUpload = await supportedUploadResponse.json();
   assert.equal(supportedUpload.ownableId, chain.id);
+  assert.equal(supportedUpload.cid, await calculateOwnablePackageCid([
+    {
+      path: 'package.json',
+      content: Buffer.from(JSON.stringify({ name: 'compiled-route-fixture', title: 'Compiled route fixture' })),
+    },
+    { path: 'ownable_bg.wasm', content: buildE2ERuntimeWasm(owner.address) },
+  ]));
   assert.equal(Object.hasOwn(supportedUpload, 'nftNetwork'), false);
   assert.equal(Object.hasOwn(supportedUpload, 'smartContractAddress'), false);
   assert.equal(Object.hasOwn(supportedUpload, 'NftId'), false);
@@ -834,7 +898,21 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   );
   assert.equal(verificationResponse.status, 200, 'Expected the canonical verification response');
   const verification = await verificationResponse.json();
+  assert.equal(verification.verified, true);
   assert.equal(Object.hasOwn(verification, 'nft'), false);
+
+  const bundleResponse = await fetch(
+    `http://127.0.0.1:${port}/ownables/${encodeURIComponent(chain.id)}/bundle`,
+    { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
+  );
+  assert.equal(bundleResponse.status, 200);
+  const bundle = await JSZip.loadAsync(await bundleResponse.arrayBuffer());
+  assert.deepEqual(await bundle.file(`attachments/${attachmentCid}`).async('nodebuffer'), attachment);
+  for (const proof of [firstProof, middleProof]) {
+    assert.deepEqual(await bundle.file(`attachments/${proof.cid}`).async('uint8array'), proof.bytes);
+  }
+  const chainJson = JSON.parse(await bundle.file('chain.json').async('string'));
+  assert.equal(chainJson.events.some((event) => Object.hasOwn(event, 'attachments')), false);
 
   const storedFilesBeforeInvalidUpload = (await listStoredFiles(storageRoot)).sort();
   assert.ok(storedFilesBeforeInvalidUpload.length > 0, 'Expected the successful upload to persist bundle files');
@@ -940,6 +1018,31 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
 
   const storedFiles = (await listStoredFiles(storageRoot)).sort();
   assert.deepEqual(storedFiles, storedFilesBeforeInvalidUpload, 'Invalid runtime uploads must not write archive files');
+
+  const terminalSourceAnchor = first.chain.anchorMap.at(-1);
+  await database.query(
+    `INSERT INTO indexed_anchor_events (
+       slot_name, chain_id, anchor_contract_address, block_number, block_hash,
+       transaction_hash, transaction_index, log_index, event_name, owner_address, payload_json
+     ) VALUES ($1, $2, LOWER($3), $4, LOWER($5), LOWER($6), 0, $7, 'Anchored', LOWER($8), $9::jsonb)`,
+    [
+      'testnet',
+      chainId,
+      E2E_ANCHOR_CONTRACT,
+      '8',
+      `0x${'8'.repeat(64)}`,
+      E2E_ANCHOR_TRANSACTION,
+      anchors.length,
+      terminalSourceAnchor.signer,
+      JSON.stringify({ key: terminalSourceAnchor.key.hex, value: `0x${'f'.repeat(64)}` }),
+    ],
+  );
+  const supersededResponse = await fetch(
+    `http://127.0.0.1:${port}/ownables/${encodeURIComponent(chain.id)}/bundle`,
+    { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
+  );
+  assert.equal(supersededResponse.status, 400);
+  assert.match(await supersededResponse.text(), /contradictory authoritative anchor evidence/);
 
   for (const path of [
     '/ownables/upload',

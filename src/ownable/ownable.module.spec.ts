@@ -1,3 +1,8 @@
+jest.mock('@ownables/core', () => ({
+  AnchorValidationService: class {},
+  PublicEventReplayService: class {},
+}));
+
 jest.mock('@ownables/core/utils', () => ({
   calculateOwnablePackageCid: (entries: Array<{ path: string }>) =>
     `cid-${entries.map((entry) => entry.path).sort().join('-')}`,
@@ -15,7 +20,7 @@ import { OwnableReplayService } from './ownable-replay.service';
 import { OwnableService } from './ownable.service';
 
 describe('OwnableModule', () => {
-  it('owns the real Nest-managed replay dependencies', async () => {
+  it('injects the Nest-managed replay dependencies', async () => {
     const module = await Test.createTestingModule({ imports: [OwnableModule] })
       .overrideProvider(ConfigService)
       .useValue({

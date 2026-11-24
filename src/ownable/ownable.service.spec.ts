@@ -5,11 +5,13 @@ import { Event, EventChain } from '../test-mocks/eqty-core';
 import { OwnableService } from './ownable.service';
 import {
   AnchorValidationService,
+  ConsumptionEvidencePendingError,
   PublicEventReplayService,
   OwnableService as CoreOwnableService,
 } from '@ownables/core';
 import { firstValueFrom, Subject } from 'rxjs';
 import { take, toArray } from 'rxjs/operators';
+import { calculateOwnablePackageCid } from '@ownables/core/utils';
 
 const PRIVATE_STATE_OWNER_WALLET = ethers.Wallet.createRandom();
 const REPLAY_OWNER_WALLET = ethers.Wallet.createRandom();
@@ -22,9 +24,34 @@ const ACTIVE_LIVE_IDENTITY = {
 let mockReplayInfo: Record<string, unknown>;
 let mockReplayFailure: Error | null;
 const mockClearRpc = jest.fn();
+const mockConsumptionReplay = jest.fn();
 
 jest.mock('eqty-core', () => require('../test-mocks/eqty-core.ts'));
 jest.mock('@ownables/core/utils', () => ({
+  OWNABLE_ATTACHMENT_PREFIX: 'attachments/',
+  splitOwnableArchiveEntries: (entries: Iterable<[string, Uint8Array]>) => {
+    const assets = new Map();
+    const attachments = new Map();
+    let chain: Uint8Array | undefined;
+    for (const [path, bytes] of entries) {
+      if (path === 'chain.json' || path === 'eventChain.json') chain = bytes;
+      else if (path.startsWith('attachments/')) attachments.set(path.slice('attachments/'.length), bytes);
+      else assets.set(path, bytes);
+    }
+    return { assets, chain, attachments };
+  },
+  collectOwnableAttachments: async (chain: EventChain, read: (cid: string) => Promise<Uint8Array | undefined>) => {
+    const attachments = new Map();
+    for (const event of chain.events) {
+      const cid = event.parsedData.source?.cid;
+      if (!cid) continue;
+      const bytes = await read(cid);
+      if (!bytes) throw new Error('Missing consumption attachment');
+      attachments.set(cid, bytes);
+    }
+    return attachments;
+  },
+  serializeOwnableChain: (chain: EventChain) => chain.toJSON(),
   calculateOwnablePackageCid: (entries: Array<{ path: string; content?: Uint8Array | Buffer }>) =>
     `cid-${entries
       .map((entry) => `${entry.path}:${Buffer.from(entry.content ?? []).toString('hex')}`)
@@ -95,6 +122,13 @@ jest.mock('@ownables/core', () => {
 
   class MockCoreOwnableService {
     private readonly rpcStore = new Map<string, any>();
+    static hasConsumptionClaims(chain: EventChain) {
+      return MockCoreOwnableService.hasBoundConsumptionClaims(chain)
+        || chain.events.some((event) => event.parsedData.eventType === 'consume');
+    }
+    static hasBoundConsumptionClaims(chain: EventChain) {
+      return chain.events.some((event) => event.parsedData.type === 'consume');
+    }
     constructor(..._args: any[]) {}
     async initWorker(id: string, _cid: string) {
       this.rpcStore.set(id, {
@@ -104,6 +138,9 @@ jest.mock('@ownables/core', () => {
     async apply(_chain: any, _state: any[]) {
       if (mockReplayFailure) throw mockReplayFailure;
       return [];
+    }
+    async replayConsumptionChain(chain: EventChain, options: unknown) {
+      return mockConsumptionReplay(chain, options);
     }
     async attemptReplayIndexedPublicEvents(_chainId: string, stateDump: any[], indexedPublicEvents: any[]) {
       const firstReject = indexedPublicEvents.find((event) => event.eventType === 'reject');
@@ -149,6 +186,7 @@ jest.mock('@ownables/core', () => {
   }
 
   return {
+    ConsumptionEvidencePendingError: class extends Error {},
     evaluateReplayFreshness: (events: any[], appliedReplayKeys: string[]) => {
       const keys = events.map((event) => `${event.transactionHash}:${event.logIndex}`);
       const missingReplayKeys = keys.filter((key) => !appliedReplayKeys.includes(key));
@@ -254,6 +292,7 @@ jest.mock('@ownables/platform-node', () => {
 describe('OwnableService', () => {
   beforeEach(() => {
     mockClearRpc.mockReset();
+    mockConsumptionReplay.mockReset();
     mockReplayFailure = null;
     mockReplayInfo = {
       owner: REPLAY_OWNER_WALLET.address.toLowerCase(),
@@ -277,9 +316,11 @@ describe('OwnableService', () => {
       storePackageArtifacts: jest.fn().mockResolvedValue(undefined),
       storeEventChain: jest.fn().mockResolvedValue(undefined),
       storeImmutableEventChain: jest.fn().mockResolvedValue('archives/chains/ownable/chain.json'),
+      storeEventChainAttachments: jest.fn().mockResolvedValue(undefined),
       hasEventChain: jest.fn().mockResolvedValue(true),
       hasPackage: jest.fn().mockResolvedValue(true),
       getEventChain: jest.fn(),
+      getEventChainAttachments: jest.fn().mockResolvedValue(undefined),
       getPackageZip: jest.fn(),
     };
     const hubState = {
@@ -372,10 +413,10 @@ describe('OwnableService', () => {
       {
         validateAnchors: (anchors: any[], records: any[]) =>
           new AnchorValidationService().validateAgainstIndexedRecords(anchors, records),
-        freshness: (events: any[], applied: string[], ignored: Set<string>) =>
+        freshness: (events: any[], applied: Iterable<string>, ignored: Set<string>) =>
           new PublicEventReplayService().evaluateFreshness(
             events.filter((event) => !ignored.has(`${event.transactionHash}:${event.logIndex}`)),
-            applied,
+            Array.from(applied),
           ),
         createRuntime: jest.fn((stateStore, anchorProvider) => ({
           eventChains: new (jest.requireMock('@ownables/core').EventChainService)(
@@ -622,6 +663,111 @@ describe('OwnableService', () => {
     expect(mockClearRpc).toHaveBeenCalledWith(chain.id);
   });
 
+  it('holds a consumer until its source anchor is indexed and distributes only that revision’s proof bytes', async () => {
+    const { service, storage, hubState, quarantine } = await buildService();
+    const chain = await createChain();
+    const sourceAnchor = { key: { hex: '0xsource' }, value: { hex: '0xconsume' } };
+    const sourceChain = await createChain(84532, [sourceAnchor]);
+    const cid = `b${'a'.repeat(58)}`;
+    const proof = Buffer.from([0x50, 0x4b, 0x00, 0xff]);
+    const signer = {
+      getAddress: async () => PRIVATE_STATE_OWNER_WALLET.address,
+      signTypedData: async () => `0x${'00'.repeat(65)}`,
+    };
+    chain.events[0].parsedData.package = await calculateOwnablePackageCid([
+      { path: 'package.json', content: Buffer.from(JSON.stringify({ name: 'test' })) },
+      { path: 'ownable_bg.wasm', content: Buffer.from([0x00]) },
+    ]);
+    await new Event({ '@context': 'ingest_msg.json', type: 'consume', source: { cid } }).addTo(chain).signWith(signer);
+    const archive = await JSZip.loadAsync(await createUploadBuffer(chain));
+    archive.file(`attachments/${cid}`, proof);
+
+    const indexed = (anchor, transactionHash, identity = ACTIVE_LIVE_IDENTITY) => ({
+      ...identity,
+      transactionHash,
+      blockNumber: '10',
+      transactionIndex: 0,
+      logIndex: 0,
+      ownerAddress: PRIVATE_STATE_OWNER_WALLET.address,
+      payloadJson: { key: anchor.key.hex, value: anchor.value.hex },
+    });
+    const wrongDeployment = { ...ACTIVE_LIVE_IDENTITY, anchorContractAddress: ethers.ZeroAddress };
+    const rootAnchor = indexed(DEFAULT_ANCHORS[0], '0xroot');
+    const ignoredSourceAnchor = indexed(sourceAnchor, '0xignored', wrongDeployment);
+    const acceptedSourceAnchor = indexed(sourceAnchor, '0xsource-transaction');
+    hubState.listIndexedAnchorEventsByAnchorKeys.mockImplementation(async (keys: string[]) =>
+      keys.includes(sourceAnchor.key.hex) ? [ignoredSourceAnchor] : [rootAnchor],
+    );
+    mockConsumptionReplay.mockImplementation(async (root, options) => {
+      expect(await options.getAttachment(cid)).toEqual(proof);
+      const [rootEvidence, sourceEvidence] = await Promise.all([
+        options.verifyAnchors(root),
+        options.verifyAnchors(sourceChain),
+      ]);
+      expect(rootEvidence.verified).toBe(true);
+      const transaction = sourceEvidence.anchors[sourceAnchor.key.hex];
+      expect(transaction).not.toBe('0xignored');
+      if (!sourceEvidence.verified) throw new ConsumptionEvidencePendingError('Missing public event checkpoint');
+      return { stateDump: [], verified: true, appliedPublicReplayKeys: [] };
+    });
+
+    const upload = await service.uploadOwnable(await archive.generateAsync({ type: 'uint8array' }));
+    expect(upload.status).toBe('pending');
+    expect(storage.storeEventChainAttachments).not.toHaveBeenCalled();
+    expect(hubState.publishQuarantinedUpload).not.toHaveBeenCalled();
+
+    quarantine.claimForPromotion.mockResolvedValue([await quarantine.claim()]);
+    await service.promoteQuarantinedUploads();
+    expect(quarantine.defer).toHaveBeenCalledWith('quarantine-1');
+    expect(quarantine.reject).not.toHaveBeenCalled();
+
+    hubState.listIndexedAnchorEventsByAnchorKeys.mockImplementation(async (keys: string[]) =>
+      keys.includes(sourceAnchor.key.hex) ? [ignoredSourceAnchor, acceptedSourceAnchor] : [rootAnchor],
+    );
+    await service.promoteQuarantinedUploads();
+
+    expect(hubState.publishQuarantinedUpload).toHaveBeenCalled();
+    const [staticCid, staticBytes, staticFiles] = storage.storePackageArtifacts.mock.calls[0];
+    expect(staticCid).toBe(chain.events[0].parsedData.package);
+    expect(staticFiles.has(`attachments/${cid}`)).toBe(false);
+    expect((await JSZip.loadAsync(staticBytes)).file(`attachments/${cid}`)).toBeNull();
+    const [key, sidecar] = storage.storeEventChainAttachments.mock.calls[0];
+    expect(await (await JSZip.loadAsync(sidecar)).file(`attachments/${cid}`).async('nodebuffer')).toEqual(proof);
+
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: chain.id, packageCid: staticCid, chainStorageKey: key });
+    storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON())));
+    storage.getPackageZip.mockResolvedValue(staticBytes);
+    storage.getEventChainAttachments.mockResolvedValue(sidecar);
+    const bundle = await service.downloadOwnable(chain.id);
+    const downloaded = await JSZip.loadAsync(await toBuffer(bundle.getStream() as Readable));
+    expect(await downloaded.file(`attachments/${cid}`).async('nodebuffer')).toEqual(proof);
+    expect(storage.getEventChainAttachments).toHaveBeenCalledWith(key);
+  });
+
+  it('serves available legacy consume history as unverified and rejects a fresh upload without proof', async () => {
+    const { service, storage, hubState, quarantine } = await buildService();
+    const chain = await createChain();
+    await new Event({ '@context': 'ingest_msg.json', eventType: 'consume', attributes: {} }).addTo(chain).signWith({
+      getAddress: async () => PRIVATE_STATE_OWNER_WALLET.address,
+      signTypedData: async () => `0x${'00'.repeat(65)}`,
+    });
+    const upload = await createUploadBuffer(chain);
+    await expect(service.uploadOwnable(upload)).rejects.toThrow('Historical consume event has no verification proof');
+    expect(quarantine.stage).not.toHaveBeenCalled();
+
+    const packageZip = new JSZip();
+    packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: chain.id, packageCid: 'cid-1' });
+    storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON())));
+    storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
+    const verification = await service.getOwnableVerification(chain.id);
+    expect(verification.verified).toBe(false);
+    expect(verification.anchorVerification.verified).toBe(true);
+    const bundle = await service.downloadOwnable(chain.id);
+    const downloaded = await JSZip.loadAsync(await toBuffer(bundle.getStream() as Readable));
+    expect(JSON.parse(await downloaded.file('chain.json').async('string')).events.at(-1).parsedData.eventType).toBe('consume');
+  });
+
   it('clears the archive-scoped RPC when replay fails after worker initialization', async () => {
     const { service } = await buildService();
     const chain = await createChain();
@@ -747,7 +893,7 @@ describe('OwnableService', () => {
     expect(aliasResult.cid).toEqual(dualResult.cid);
   });
 
-  it('produces distinct CIDs for repeated transfers when the event chain changes', async () => {
+  it('keeps the static CID and stores a different revision when the signed chain changes', async () => {
     const { service, storage } = await buildService();
     const firstChain = await createChain();
     const secondChain = await createChain();
@@ -775,7 +921,9 @@ describe('OwnableService', () => {
       false,
     );
 
-    expect(firstResult.cid).not.toEqual(secondResult.cid);
+    expect(firstResult.cid).toEqual(secondResult.cid);
+    const [firstWrite, secondWrite] = storage.storeImmutableEventChain.mock.calls;
+    expect(firstWrite[1]).not.toBe(secondWrite[1]);
   });
 
   it('rejects ambiguous archives when chain aliases differ', async () => {
