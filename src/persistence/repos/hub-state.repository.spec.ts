@@ -263,7 +263,7 @@ describe('HubStateRepository', () => {
       ],
     });
 
-    const rows = await repo.listIndexedAnchorEventsByAnchorKeys([`0x${'7'.repeat(64)}`]);
+    const rows = await repo.listIndexedAnchorEventsByAnchorKeys([`0x${'7'.repeat(64)}`], activeIdentity);
 
     expect(rows).toEqual([
       expect.objectContaining({
@@ -277,7 +277,7 @@ describe('HubStateRepository', () => {
     ]);
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining("LOWER(payload_json ->> 'key') = ANY($1::text[])"),
-      [[`0x${'7'.repeat(64)}`]],
+      [[`0x${'7'.repeat(64)}`], activeIdentity.slotName, activeIdentity.chainId, activeIdentity.anchorContractAddress],
     );
   });
 

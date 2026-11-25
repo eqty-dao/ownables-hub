@@ -1047,7 +1047,10 @@ export class HubStateRepository {
     return result.rows;
   }
 
-  async listIndexedAnchorEventsByAnchorKeys(anchorKeys: string[]): Promise<IndexedAnchorEvent[]> {
+  async listIndexedAnchorEventsByAnchorKeys(
+    anchorKeys: string[],
+    identity: IndexedEventIdentity,
+  ): Promise<IndexedAnchorEvent[]> {
     if (!anchorKeys.length) {
       return [];
     }
@@ -1072,8 +1075,11 @@ export class HubStateRepository {
          indexed_at::text AS "indexedAt"
        FROM indexed_anchor_events
        WHERE LOWER(payload_json ->> 'key') = ANY($1::text[])
+         AND slot_name = $2
+         AND chain_id = $3
+         AND LOWER(anchor_contract_address) = LOWER($4)
        ORDER BY block_number ASC, transaction_index ASC, log_index ASC`,
-      [normalizedAnchorKeys],
+      [normalizedAnchorKeys, identity.slotName, identity.chainId, identity.anchorContractAddress],
     );
 
     return result.rows;
