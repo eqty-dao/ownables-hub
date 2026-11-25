@@ -76,6 +76,7 @@ export class IndexerService {
     );
     const fromBlock = this.resolveFromBlock(slot, cursor);
     const provider = this.providerFactory(slot);
+    await this.assertProviderChainId(provider, slot);
     const head = await provider.getBlockNumber();
     const toBlock = BigInt(head);
     if (fromBlock > toBlock) {
@@ -104,6 +105,16 @@ export class IndexerService {
       );
     }
     await this.ownableService.promoteQuarantinedUploads();
+  }
+
+  private async assertProviderChainId(provider: ReturnType<EvmRpcProviderFactory>, slot: IndexerSlotConfig): Promise<void> {
+    const network = await provider.getNetwork();
+    const expectedChainId = BigInt(slot.chainId);
+    if (network.chainId !== expectedChainId) {
+      throw new Error(
+        `Indexer RPC chain ID mismatch for ${slot.slotName}: expected ${expectedChainId.toString()}, received ${network.chainId.toString()}`,
+      );
+    }
   }
 
   private async persistWindow(
