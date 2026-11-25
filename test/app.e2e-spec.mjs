@@ -1181,7 +1181,7 @@ test('story10 compiled Hub and indexer promote a durable pending upload across p
     TESTNET_RPC_URL: rpc.url,
     TESTNET_BASE_RPC_URL: rpc.url,
     TESTNET_ANCHOR_CONTRACT_ADDR: STORY10_LIFECYCLE_ANCHOR,
-    TESTNET_ANCHOR_START_BLOCK: '0',
+    TESTNET_ANCHOR_START_BLOCK: '7',
     OWNABLES_STORAGE: pathToFileURL(storageRoot).href,
     QUARANTINE_STORAGE: pathToFileURL(join(storageRoot, 'quarantine')).href,
     QUARANTINE_MAX_PENDING_OBJECTS: '4',

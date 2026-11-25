@@ -9,6 +9,8 @@ import pg from 'pg';
 const { Client } = pg;
 const INDEXER_TIMEOUT_MS = 30_000;
 const TESTNET_ANCHOR = '0x0000000000000000000000000000000000000044';
+const DUAL_SLOT_TESTNET_ANCHOR = '0x0000000000000000000000000000000000000066';
+const DUAL_SLOT_MAINNET_ANCHOR = '0x0000000000000000000000000000000000000077';
 const TEST_CURSOR_TRIGGER = 'story4_indexer_cursor_failure';
 const TEST_CURSOR_FUNCTION = 'story4_indexer_cursor_failure';
 const eventInterface = new Interface([
@@ -27,6 +29,13 @@ function rpcLog(eventName, args, blockNumber, transactionHash, transactionIndex,
     transactionHash,
     transactionIndex: `0x${transactionIndex.toString(16)}`,
     logIndex: `0x${logIndex.toString(16)}`,
+  };
+}
+
+function rpcLogForAnchor(anchor, eventName, args, blockNumber, transactionHash, transactionIndex, logIndex) {
+  return {
+    ...rpcLog(eventName, args, blockNumber, transactionHash, transactionIndex, logIndex),
+    address: anchor,
   };
 }
 
@@ -111,6 +120,51 @@ function startRpcServer() {
       const address = server.address();
       if (!address || typeof address === 'string') {
         reject(new Error('Expected an IPv4 JSON-RPC test server address'));
+        return;
+      }
+      resolve({ server, url: `http://127.0.0.1:${address.port}`, logRanges });
+    });
+  });
+}
+
+function startDualSlotRpcServer({ anchor, chainId, head, logs }) {
+  const logRanges = [];
+  const server = createServer(async (request, response) => {
+    const body = await new Promise((resolve, reject) => {
+      let raw = '';
+      request.setEncoding('utf8');
+      request.on('data', (chunk) => {
+        raw += chunk;
+      });
+      request.on('end', () => resolve(raw));
+      request.on('error', reject);
+    });
+    const parsed = JSON.parse(body);
+    const messages = Array.isArray(parsed) ? parsed : [parsed];
+    const replies = messages.map((message) => {
+      if (message.method === 'eth_getLogs') {
+        const filter = message.params?.[0];
+        logRanges.push({
+          fromBlock: Number(BigInt(filter.fromBlock)),
+          toBlock: Number(BigInt(filter.toBlock)),
+        });
+        return { jsonrpc: '2.0', id: message.id, result: logs };
+      }
+      let result = [];
+      if (message.method === 'eth_chainId') result = `0x${chainId.toString(16)}`;
+      if (message.method === 'eth_blockNumber') result = `0x${head.toString(16)}`;
+      return { jsonrpc: '2.0', id: message.id, result };
+    });
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(Array.isArray(parsed) ? replies : replies[0]));
+  });
+
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error(`Expected an IPv4 JSON-RPC fixture address for ${anchor}`));
         return;
       }
       resolve({ server, url: `http://127.0.0.1:${address.port}`, logRanges });
@@ -293,5 +347,170 @@ test('compiled Base Sepolia indexer commits one window before PostgreSQL failure
   assert.deepEqual(publicRowsAfterRestart.rows, [
     { event_name: 'PublicEvent', block_number: '102' },
     { event_name: 'PublicEvent', block_number: '2102' },
+  ]);
+});
+
+test('compiled indexer persists overlapping Base and Base Sepolia windows with distinct identities', { timeout: INDEXER_TIMEOUT_MS }, async (t) => {
+  assert.ok(process.env.DATABASE_URL, 'DATABASE_URL is required for the compiled indexer E2E test');
+
+  const database = new Client({ connectionString: process.env.DATABASE_URL });
+  await database.connect();
+  const slots = [
+    { slotName: 'testnet', chainId: '84532', anchor: DUAL_SLOT_TESTNET_ANCHOR },
+    { slotName: 'mainnet', chainId: '8453', anchor: DUAL_SLOT_MAINNET_ANCHOR },
+  ];
+  for (const slot of slots) {
+    await database.query(
+      'DELETE FROM indexed_anchor_events WHERE slot_name = $1 AND chain_id = $2 AND anchor_contract_address = LOWER($3)',
+      [slot.slotName, slot.chainId, slot.anchor],
+    );
+    await database.query(
+      'DELETE FROM indexed_public_events WHERE slot_name = $1 AND chain_id = $2 AND anchor_contract_address = LOWER($3)',
+      [slot.slotName, slot.chainId, slot.anchor],
+    );
+    await database.query(
+      "DELETE FROM indexer_cursors WHERE slot_name = $1 AND cursor_name = 'anchor-public-events' AND chain_id = $2 AND anchor_contract_address = LOWER($3)",
+      [slot.slotName, slot.chainId, slot.anchor],
+    );
+  }
+  t.after(async () => {
+    try {
+      for (const slot of slots) {
+        await database.query(
+          'DELETE FROM indexed_anchor_events WHERE slot_name = $1 AND chain_id = $2 AND anchor_contract_address = LOWER($3)',
+          [slot.slotName, slot.chainId, slot.anchor],
+        );
+        await database.query(
+          'DELETE FROM indexed_public_events WHERE slot_name = $1 AND chain_id = $2 AND anchor_contract_address = LOWER($3)',
+          [slot.slotName, slot.chainId, slot.anchor],
+        );
+        await database.query(
+          "DELETE FROM indexer_cursors WHERE slot_name = $1 AND cursor_name = 'anchor-public-events' AND chain_id = $2 AND anchor_contract_address = LOWER($3)",
+          [slot.slotName, slot.chainId, slot.anchor],
+        );
+      }
+    } finally {
+      await database.end();
+    }
+  });
+
+  const sepolia = await startDualSlotRpcServer({
+    anchor: DUAL_SLOT_TESTNET_ANCHOR,
+    chainId: 84532,
+    head: 500,
+    logs: [
+      rpcLogForAnchor(
+        DUAL_SLOT_TESTNET_ANCHOR,
+        'Anchored',
+        [`0x${'1'.repeat(64)}`, `0x${'2'.repeat(64)}`, '0x00000000000000000000000000000000000000aa', 500n],
+        500,
+        `0x${'1'.repeat(64)}`,
+        0,
+        0,
+      ),
+      rpcLogForAnchor(
+        DUAL_SLOT_TESTNET_ANCHOR,
+        'PublicEvent',
+        [`0x${'3'.repeat(64)}`, '0x00000000000000000000000000000000000000bb', 'base-sepolia-event', '0x1234', 500n],
+        500,
+        `0x${'2'.repeat(64)}`,
+        1,
+        0,
+      ),
+    ],
+  });
+  const mainnet = await startDualSlotRpcServer({
+    anchor: DUAL_SLOT_MAINNET_ANCHOR,
+    chainId: 8453,
+    head: 500,
+    logs: [
+      rpcLogForAnchor(
+        DUAL_SLOT_MAINNET_ANCHOR,
+        'Anchored',
+        [`0x${'4'.repeat(64)}`, `0x${'5'.repeat(64)}`, '0x00000000000000000000000000000000000000cc', 500n],
+        500,
+        `0x${'3'.repeat(64)}`,
+        0,
+        0,
+      ),
+      rpcLogForAnchor(
+        DUAL_SLOT_MAINNET_ANCHOR,
+        'PublicEvent',
+        [`0x${'6'.repeat(64)}`, '0x00000000000000000000000000000000000000dd', 'base-event', '0x5678', 500n],
+        500,
+        `0x${'4'.repeat(64)}`,
+        1,
+        0,
+      ),
+    ],
+  });
+  t.after(async () => {
+    await Promise.all([
+      new Promise((resolve, reject) => sepolia.server.close((error) => (error ? reject(error) : resolve()))),
+      new Promise((resolve, reject) => mainnet.server.close((error) => (error ? reject(error) : resolve()))),
+    ]);
+  });
+
+  const result = await runIndexer({
+    ...process.env,
+    NODE_ENV: 'test',
+    INDEXER_NETWORKS: 'base-sepolia,base',
+    TESTNET_RPC_URL: sepolia.url,
+    TESTNET_ANCHOR_CONTRACT_ADDR: DUAL_SLOT_TESTNET_ANCHOR,
+    TESTNET_ANCHOR_START_BLOCK: '500',
+    MAINNET_RPC_URL: mainnet.url,
+    MAINNET_ANCHOR_CONTRACT_ADDR: DUAL_SLOT_MAINNET_ANCHOR,
+    MAINNET_ANCHOR_START_BLOCK: '500',
+  });
+  assert.equal(result.code, 0, `Expected both indexer slots to complete\n${result.output}`);
+  assert.deepEqual(sepolia.logRanges, [{ fromBlock: 500, toBlock: 500 }]);
+  assert.deepEqual(mainnet.logRanges, [{ fromBlock: 500, toBlock: 500 }]);
+
+  const cursors = await database.query(
+    `SELECT slot_name, chain_id, anchor_contract_address, next_from_block, last_scanned_block
+       FROM indexer_cursors
+      WHERE anchor_contract_address IN (LOWER($1), LOWER($2))
+      ORDER BY chain_id::int`,
+    [DUAL_SLOT_MAINNET_ANCHOR, DUAL_SLOT_TESTNET_ANCHOR],
+  );
+  assert.deepEqual(cursors.rows, [
+    {
+      slot_name: 'mainnet',
+      chain_id: '8453',
+      anchor_contract_address: DUAL_SLOT_MAINNET_ANCHOR,
+      next_from_block: '501',
+      last_scanned_block: '500',
+    },
+    {
+      slot_name: 'testnet',
+      chain_id: '84532',
+      anchor_contract_address: DUAL_SLOT_TESTNET_ANCHOR,
+      next_from_block: '501',
+      last_scanned_block: '500',
+    },
+  ]);
+
+  const publicEvents = await database.query(
+    `SELECT slot_name, chain_id, anchor_contract_address, event_type, block_number
+       FROM indexed_public_events
+      WHERE anchor_contract_address IN (LOWER($1), LOWER($2))
+      ORDER BY chain_id::int`,
+    [DUAL_SLOT_MAINNET_ANCHOR, DUAL_SLOT_TESTNET_ANCHOR],
+  );
+  assert.deepEqual(publicEvents.rows, [
+    {
+      slot_name: 'mainnet',
+      chain_id: '8453',
+      anchor_contract_address: DUAL_SLOT_MAINNET_ANCHOR,
+      event_type: 'base-event',
+      block_number: '500',
+    },
+    {
+      slot_name: 'testnet',
+      chain_id: '84532',
+      anchor_contract_address: DUAL_SLOT_TESTNET_ANCHOR,
+      event_type: 'base-sepolia-event',
+      block_number: '500',
+    },
   ]);
 });
