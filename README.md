@@ -200,3 +200,17 @@ yarn test:e2e
 Releases are created by GitHub Actions using semantic-release.
 
 - See [RELEASING.md](./RELEASING.md) for the release flow and commit conventions.
+
+## VPS deployment
+
+The release workflow publishes a Hub image to GitHub Container Registry after testing on `main`. Docker Compose uses the same image digest for the API, indexer, and migration. PostgreSQL has its own volume and stays on the private Compose network.
+
+On the VPS, keep the production configuration under `~/ownables-hub` in the deploy user's home directory:
+
+- `deployment.env` holds `HUB_HOST` and a URL-safe `POSTGRES_PASSWORD`.
+- `deploy/hub.env` holds the Hub runtime configuration. Start with [the production example](deploy/hub.env.example). Set separate private S3-compatible storage locations for archives and quarantine, and configure the active network's RPC and Anchor contract.
+- The active network needs a positive Anchor start block. Choose a recent finalized block where the configured Anchor has deployed code. Keep the initial value across deployments. The indexer resumes from its PostgreSQL cursor, and the configured initial block determines how much earlier history the new index will include.
+
+To enable deployment, add repository variables `HUB_DEPLOY_HOST`, `HUB_DEPLOY_USER`, and `HUB_DEPLOY_URL`, and add `HUB_DEPLOY_SSH_KEY` and `HUB_DEPLOY_KNOWN_HOSTS` to the GitHub `production` environment secrets. The deploy user needs Docker access. The workflow uses its short-lived GitHub token to pull the image. Point `HUB_HOST` at the VPS and expose HTTP and HTTPS for Caddy. The deployment runs migrations before updating the API and indexer, then probes the public health endpoint.
+
+For file-backed storage, the API and indexer share the persistent `/var/lib/ownables-hub` volume. Use distinct paths, for example `file:///var/lib/ownables-hub/archives` and `file:///var/lib/ownables-hub/quarantine`. Move any stored data before switching an existing deployment to object storage.
