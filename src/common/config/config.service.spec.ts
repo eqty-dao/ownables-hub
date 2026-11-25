@@ -77,65 +77,9 @@ describe('ConfigService', () => {
     expect(() => new ConfigService()).toThrow('UPLOAD_INGRESS_CONCURRENCY is required and must be a positive integer');
   });
 
-  it('parses exactly two explicit indexer slots in deterministic order', () => {
-    const service = new ConfigService();
-
-    const [testnet, mainnet] = service.getIndexerSlots();
-    expect(testnet.slotName).toBe('testnet');
-    expect(mainnet.slotName).toBe('mainnet');
-    expect(testnet.chainId).toBe('84532');
-    expect(mainnet.chainId).toBe('8453');
-    expect(testnet.anchorStartBlock).toBe(100n);
-    expect(mainnet.anchorStartBlock).toBe(200n);
-  });
-
-  it('selects the active indexer slot with a normalized Anchor address', () => {
-    process.env.TESTNET_ANCHOR_CONTRACT_ADDR = '0xE518BB784B8cB17e6F16e445A9275A16d61700b5';
-    process.env.HUB_NETWORK_PROFILE = 'testnet';
-
-    expect(new ConfigService().getActiveIndexerSlot()).toEqual(
-      expect.objectContaining({
-        slotName: 'testnet',
-        chainId: '84532',
-        anchorContractAddress: '0xe518bb784b8cb17e6f16e445a9275a16d61700b5',
-      }),
-    );
-
-    process.env.HUB_NETWORK_PROFILE = 'mainnet';
-    expect(new ConfigService().getActiveIndexerSlot()).toEqual(
-      expect.objectContaining({
-        slotName: 'mainnet',
-        chainId: '8453',
-        anchorContractAddress: '0x2222222222222222222222222222222222222222',
-      }),
-    );
-  });
-
-  it('fails fast when required indexer envs are missing or invalid', () => {
-    delete process.env.MAINNET_RPC_URL;
-    const service = new ConfigService();
-    expect(() => service.getIndexerSlots()).toThrow('MAINNET_RPC_URL is required');
-
-    process.env.MAINNET_RPC_URL = 'https://mainnet-rpc';
-    process.env.TESTNET_ANCHOR_START_BLOCK = 'not-a-number';
-    const secondService = new ConfigService();
-    expect(() => secondService.getIndexerSlots()).toThrow('Invalid TESTNET_ANCHOR_START_BLOCK: not-a-number');
-  });
-
-  it('resolves the active indexer slot without configuring the inactive network', () => {
-    process.env.HUB_NETWORK_PROFILE = 'testnet';
-    delete process.env.MAINNET_CHAIN_ID;
-    delete process.env.MAINNET_RPC_URL;
-    delete process.env.MAINNET_ANCHOR_CONTRACT_ADDR;
-    delete process.env.MAINNET_ANCHOR_START_BLOCK;
-
-    const service = new ConfigService();
-    expect(service.getActiveIndexerSlot()).toMatchObject({ slotName: 'testnet', chainId: '84532' });
-    expect(() => service.getIndexerSlots()).toThrow('MAINNET_CHAIN_ID is required');
-  });
-
-  it('enables only configured indexer networks and permits an undeployed Mainnet Anchor', () => {
+  it('uses configured indexer networks and ignores the legacy profile selector', () => {
     process.env.INDEXER_NETWORKS = 'base-sepolia';
+    process.env.HUB_NETWORK_PROFILE = 'mainnet';
     delete process.env.MAINNET_CHAIN_ID;
     delete process.env.MAINNET_RPC_URL;
     delete process.env.MAINNET_ANCHOR_CONTRACT_ADDR;

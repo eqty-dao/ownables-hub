@@ -3,8 +3,6 @@ import path from 'path';
 import { UserError } from '../../interfaces/error';
 
 export type AppEnv = 'development' | 'test' | 'staging' | 'production';
-export type RuntimeNetworkProfile = 'testnet' | 'mainnet';
-export type EvmNetworkName = 'eip155:ethereum' | 'eip155:arbitrum' | 'eip155:polygon' | 'eip155:base';
 export type IndexerSlotName = 'testnet' | 'mainnet';
 export type HubNetwork = 'base' | 'base-sepolia';
 
@@ -36,23 +34,6 @@ export interface QuarantineConfig {
   orphanGraceSeconds: number;
 }
 
-interface ChainRpcUrls {
-  ethereum: string;
-  arbitrum: string;
-  polygon: string;
-  base: string;
-}
-
-interface RuntimeConfig {
-  networkProfile: RuntimeNetworkProfile;
-  authoritySignerMnemonic: string;
-  authoritySignerPrivateKey: string;
-  rpcUrls: {
-    testnet: ChainRpcUrls;
-    mainnet: ChainRpcUrls;
-  };
-}
-
 export interface IndexerSlotConfig {
   slotName: IndexerSlotName;
   chainId: string;
@@ -78,14 +59,6 @@ function readEnv(name: string, fallback = ''): string {
 function parseEnv(name: string): AppEnv {
   const raw = readEnv(name, 'development');
   if (raw === 'development' || raw === 'test' || raw === 'staging' || raw === 'production') {
-    return raw;
-  }
-  throw new Error(`Invalid ${name}: ${raw}`);
-}
-
-function parseRuntimeNetworkProfile(name: string): RuntimeNetworkProfile {
-  const raw = readEnv(name, 'testnet');
-  if (raw === 'testnet' || raw === 'mainnet') {
     return raw;
   }
   throw new Error(`Invalid ${name}: ${raw}`);
@@ -130,14 +103,6 @@ function parseQuarantineConfig(env: AppEnv): QuarantineConfig {
   };
 }
 
-function parseRequiredEnv(name: string): string {
-  const value = readEnv(name, '');
-  if (!value) {
-    throw new Error(`${name} is required`);
-  }
-  return value;
-}
-
 function parseOptionalBoolean(name: string): boolean {
   const raw = readEnv(name, '').toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
@@ -154,20 +119,6 @@ function parseCorsOrigins(env: AppEnv): string[] {
   }
 
   return ['http://127.0.0.1:5173', 'http://localhost:5173'];
-}
-
-function parseRequiredNonNegativeBigInt(name: string): bigint {
-  const raw = parseRequiredEnv(name);
-  if (!/^\d+$/.test(raw)) {
-    throw new Error(`Invalid ${name}: ${raw}`);
-  }
-
-  const value = BigInt(raw);
-  if (value < 0n) {
-    throw new Error(`Invalid ${name}: ${raw}`);
-  }
-
-  return value;
 }
 
 function parseOptionalAnchorAddress(name: string): string | undefined {
@@ -241,35 +192,19 @@ function buildConfig(): AppConfig {
 @Injectable()
 export class ConfigService {
   private readonly config: AppConfig = buildConfig();
-  private readonly runtimeConfig: RuntimeConfig = this.buildRuntimeConfig();
+  private readonly authoritySignerMnemonic = readEnv('SIGNER_MNEMONIC', '');
+  private readonly authoritySignerPrivateKey = readEnv('SIGNER_PRIVATE_KEY', readEnv('PRIVATE_KEY', ''));
 
   getAppConfig(): AppConfig {
     return this.config;
   }
 
-  getRuntimeNetworkProfile(): RuntimeNetworkProfile {
-    return this.runtimeConfig.networkProfile;
-  }
-
   getAuthoritySignerMnemonic(): string {
-    return this.runtimeConfig.authoritySignerMnemonic;
+    return this.authoritySignerMnemonic;
   }
 
   getAuthoritySignerPrivateKey(): string {
-    return this.runtimeConfig.authoritySignerPrivateKey;
-  }
-
-  getRpcUrl(profile: RuntimeNetworkProfile, network: EvmNetworkName): string {
-    switch (network) {
-      case 'eip155:ethereum':
-        return this.runtimeConfig.rpcUrls[profile].ethereum;
-      case 'eip155:arbitrum':
-        return this.runtimeConfig.rpcUrls[profile].arbitrum;
-      case 'eip155:polygon':
-        return this.runtimeConfig.rpcUrls[profile].polygon;
-      case 'eip155:base':
-        return this.runtimeConfig.rpcUrls[profile].base;
-    }
+    return this.authoritySignerPrivateKey;
   }
 
   resolveHubNetwork(network: string): HubNetworkContext {
@@ -277,10 +212,6 @@ export class ConfigService {
     if (slug === 'base') return this.createHubNetworkContext('base');
     if (slug === 'base-sepolia') return this.createHubNetworkContext('base-sepolia');
     throw new UserError(`Unsupported Hub network: ${network}`);
-  }
-
-  getIndexerSlots(): [IndexerSlotConfig, IndexerSlotConfig] {
-    return [this.parseIndexerSlot('TESTNET', 'testnet'), this.parseIndexerSlot('MAINNET', 'mainnet')];
   }
 
   getEnabledIndexerSlots(): IndexerSlotConfig[] {
@@ -315,27 +246,8 @@ export class ConfigService {
     return slots;
   }
 
-  getActiveIndexerSlot(): IndexerSlotConfig {
-    const profile = this.runtimeConfig.networkProfile;
-    const slot = this.parseIndexerSlot(profile === 'testnet' ? 'TESTNET' : 'MAINNET', profile);
-    return {
-      ...slot,
-      anchorContractAddress: slot.anchorContractAddress.toLowerCase(),
-    };
-  }
-
   isLocalDevRecipientDiscoveryEnabled(): boolean {
     return this.config.env !== 'production' && parseOptionalBoolean('LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED');
-  }
-
-  private parseIndexerSlot(prefix: 'TESTNET' | 'MAINNET', slotName: IndexerSlotName): IndexerSlotConfig {
-    return {
-      slotName,
-      chainId: parseRequiredEnv(`${prefix}_CHAIN_ID`),
-      rpcUrl: parseRequiredEnv(`${prefix}_RPC_URL`),
-      anchorContractAddress: parseRequiredEnv(`${prefix}_ANCHOR_CONTRACT_ADDR`),
-      anchorStartBlock: parseRequiredNonNegativeBigInt(`${prefix}_ANCHOR_START_BLOCK`),
-    };
   }
 
   private createHubNetworkContext(slug: HubNetwork): HubNetworkContext {
@@ -358,25 +270,4 @@ export class ConfigService {
     };
   }
 
-  private buildRuntimeConfig(): RuntimeConfig {
-    return {
-      networkProfile: parseRuntimeNetworkProfile('HUB_NETWORK_PROFILE'),
-      authoritySignerMnemonic: readEnv('SIGNER_MNEMONIC', ''),
-      authoritySignerPrivateKey: readEnv('SIGNER_PRIVATE_KEY', readEnv('PRIVATE_KEY', '')),
-      rpcUrls: {
-        testnet: {
-          ethereum: readEnv('TESTNET_ETHEREUM_RPC_URL', 'https://rpc.sepolia.org'),
-          arbitrum: readEnv('TESTNET_ARBITRUM_RPC_URL', 'https://sepolia-rollup.arbitrum.io/rpc'),
-          polygon: readEnv('TESTNET_POLYGON_RPC_URL', 'https://rpc-amoy.polygon.technology'),
-          base: readEnv('TESTNET_BASE_RPC_URL', 'https://sepolia.base.org'),
-        },
-        mainnet: {
-          ethereum: readEnv('MAINNET_ETHEREUM_RPC_URL', 'https://eth.llamarpc.com'),
-          arbitrum: readEnv('MAINNET_ARBITRUM_RPC_URL', 'https://arb1.arbitrum.io/rpc'),
-          polygon: readEnv('MAINNET_POLYGON_RPC_URL', 'https://polygon-rpc.com'),
-          base: readEnv('MAINNET_BASE_RPC_URL', 'https://mainnet.base.org'),
-        },
-      },
-    };
-  }
 }

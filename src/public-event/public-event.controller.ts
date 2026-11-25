@@ -1,5 +1,5 @@
 import { Controller, MessageEvent, Param, Query, Sse } from '@nestjs/common';
-import { ApiProduces, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiParam, ApiProduces, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Observable } from 'rxjs';
 import { throwHttpError } from '../common/http/http-error-response';
 import { OwnableService } from '../ownable/ownable.service';
