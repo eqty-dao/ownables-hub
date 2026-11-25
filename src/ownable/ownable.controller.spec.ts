@@ -4,7 +4,7 @@ import JSZip from 'jszip';
 import request from 'supertest';
 import { AppModule } from '../app.module';
 import { OwnableController } from './ownable.controller';
-import { UserError } from '../interfaces/error';
+import { NotFoundError, UserError } from '../interfaces/error';
 import { OwnableService } from './ownable.service';
 import { OwnableTransportService } from './ownable-transport.service';
 import { QuarantineService } from '../quarantine/quarantine.service';
@@ -211,6 +211,32 @@ describe('OwnableController', () => {
     await controller.download('base-sepolia', { params: { id: 'ownable-1' } } as any, res);
 
     expect(res.status).toHaveBeenCalledWith(409);
+  });
+
+  it('preserves the domain message for an unregistered Ownable bundle', async () => {
+    const ownableService = {
+      downloadOwnable: jest.fn().mockRejectedValue(new NotFoundError('Ownable bundle with id ownable-1 not available on this hub')),
+    } as any;
+    const controller = createController(ownableService);
+    const res = buildRes();
+
+    await controller.download('base-sepolia', { params: { id: 'ownable-1' } } as any, res);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.send).toHaveBeenCalledWith('Ownable bundle with id ownable-1 not available on this hub');
+  });
+
+  it('preserves the distinct domain message for an Ownable on another network', async () => {
+    const ownableService = {
+      getOwnableVerification: jest.fn().mockRejectedValue(new NotFoundError('Ownable is not available on this network')),
+    } as any;
+    const controller = createController(ownableService);
+    const res = buildRes();
+
+    await controller.verification('base', { params: { id: 'ownable-1' } } as any, res);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.send).toHaveBeenCalledWith('Ownable is not available on this network');
   });
 
   it('streams a non-empty zip body for GET /ownables/:id/bundle over HTTP', async () => {
