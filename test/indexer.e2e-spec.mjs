@@ -9,7 +9,6 @@ import pg from 'pg';
 const { Client } = pg;
 const INDEXER_TIMEOUT_MS = 30_000;
 const TESTNET_ANCHOR = '0x0000000000000000000000000000000000000044';
-const MAINNET_ANCHOR = '0x0000000000000000000000000000000000000055';
 const TEST_CURSOR_TRIGGER = 'story4_indexer_cursor_failure';
 const TEST_CURSOR_FUNCTION = 'story4_indexer_cursor_failure';
 const eventInterface = new Interface([
@@ -145,7 +144,7 @@ function runIndexer(env) {
   });
 }
 
-test('compiled indexer commits one window before PostgreSQL failure and restarts at the failed window', { timeout: INDEXER_TIMEOUT_MS * 2 }, async (t) => {
+test('compiled Base Sepolia indexer commits one window before PostgreSQL failure and restarts at the failed window', { timeout: INDEXER_TIMEOUT_MS * 2 }, async (t) => {
   assert.ok(process.env.DATABASE_URL, 'DATABASE_URL is required for the compiled indexer E2E test');
 
   const database = new Client({ connectionString: process.env.DATABASE_URL });
@@ -205,15 +204,10 @@ test('compiled indexer commits one window before PostgreSQL failure and restarts
   const baseEnv = {
     ...process.env,
     NODE_ENV: 'test',
-    HUB_NETWORK_PROFILE: 'testnet',
-    TESTNET_CHAIN_ID: '84532',
+    INDEXER_NETWORKS: 'base-sepolia',
     TESTNET_RPC_URL: url,
     TESTNET_ANCHOR_CONTRACT_ADDR: TESTNET_ANCHOR,
     TESTNET_ANCHOR_START_BLOCK: '99',
-    MAINNET_CHAIN_ID: '84532',
-    MAINNET_RPC_URL: url,
-    MAINNET_ANCHOR_CONTRACT_ADDR: MAINNET_ANCHOR,
-    MAINNET_ANCHOR_START_BLOCK: '4201',
   };
 
   await database.query(`
