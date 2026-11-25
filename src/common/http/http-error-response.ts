@@ -1,9 +1,10 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Response } from 'express';
-import { AuthError, CapacityError, ConflictError, UserError } from '../../interfaces/error';
+import { AuthError, CapacityError, ConflictError, NotFoundError, UserError } from '../../interfaces/error';
 
 export function writeHttpError(res: Response, error: unknown): Response {
   if (error instanceof AuthError) return res.status(403).json({ code: 'AUTH_ERROR', message: error.message });
+  if (error instanceof NotFoundError) return res.status(404).send('Not Found');
   if (error instanceof CapacityError) return res.status(error.status).json({ code: error.code, message: error.message });
   if (error instanceof ConflictError) return res.status(409).json({ code: error.code, message: error.message });
   if (error instanceof UserError && error.message === 'RECIPIENT_DISCOVERY_DISABLED') return res.status(404).send('Not Found');
@@ -18,6 +19,7 @@ export function writeHttpError(res: Response, error: unknown): Response {
 
 export function throwHttpError(error: unknown): never {
   if (error instanceof AuthError) throw new ForbiddenException({ code: 'AUTH_ERROR', message: error.message });
+  if (error instanceof NotFoundError) throw new NotFoundException();
   if (error instanceof CapacityError || error instanceof ConflictError) {
     throw new BadRequestException({ code: error.code, message: error.message });
   }

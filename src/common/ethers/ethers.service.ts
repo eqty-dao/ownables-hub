@@ -1,15 +1,12 @@
 import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ethers } from 'ethers';
-import { ConfigService, EvmNetworkName, RuntimeNetworkProfile } from '../config/config.service';
-import { resolveEvmNetwork } from '../config/evm-network.util';
+import { ConfigService, HubNetwork, HubNetworkContext } from '../config/config.service';
 import { ETHERS_RPC_PROVIDER_FACTORY, EthersRpcProviderFactory } from './ethers.tokens';
-import { UserError } from '../../interfaces/error';
 
 @Injectable()
 export class EthersService implements OnModuleInit, OnModuleDestroy {
   private signer: ethers.HDNodeWallet | ethers.Wallet;
-  private networkProfile: RuntimeNetworkProfile;
-  private readonly providers = new Map<EvmNetworkName, ethers.JsonRpcProvider>();
+  private readonly providers = new Map<HubNetwork, ethers.JsonRpcProvider>();
 
   constructor(
     private readonly config: ConfigService,
@@ -17,9 +14,7 @@ export class EthersService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit(): void {
-    this.networkProfile = this.config.getRuntimeNetworkProfile();
-    const provider = this.getProviderForNetwork('eip155:base');
-    this.signer = this.createSigner(provider);
+    this.signer = this.createSigner();
   }
 
   onModuleDestroy(): void {
@@ -31,80 +26,46 @@ export class EthersService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  public async getHubWallet(networkName: string): Promise<{
+  public async getHubWallet(network: HubNetworkContext): Promise<{
     address: string;
     networkId: string;
     balance: string;
     unit: 'ETH' | 'POL';
   }> {
-    const network = this.getNetwork(networkName);
-    const provider = this.getProviderForNetwork(networkName);
+    const provider = this.getProvider(network);
     return {
       address: this.signer.address,
-      networkId: `eip155:${network.chainId}`,
+      networkId: network.caip2,
       balance: ethers.formatUnits(await provider.getBalance(this.signer.address), 'ether'),
-      unit: network.name === 'eip155:polygon' ? 'POL' : 'ETH',
+      unit: 'ETH',
     };
   }
 
-  private getNetwork(networkName: string): {
-    name: EvmNetworkName;
-    rpcName: string;
-    chainId: number;
-    rpcUrl: string;
-  } {
-    const profile = this.networkProfile;
-    switch (networkName) {
-      case 'eip155:ethereum':
-        return this.getResolvedNetwork('eip155:ethereum', profile);
-      case 'eip155:arbitrum':
-        return this.getResolvedNetwork('eip155:arbitrum', profile);
-      case 'eip155:polygon':
-        return this.getResolvedNetwork('eip155:polygon', profile);
-      case 'eip155:base':
-        return this.getResolvedNetwork('eip155:base', profile);
-    }
-    throw new UserError(
-      `Incorrect network name. Supported network names: eip155:ethereum eip155:arbitrum eip155:polygon eip155:base`,
-    );
-  }
-
-  private getResolvedNetwork(networkName: EvmNetworkName, profile: RuntimeNetworkProfile) {
-    const resolved = resolveEvmNetwork(networkName, profile);
-    return {
-      name: networkName,
-      rpcName: resolved.rpcName,
-      chainId: resolved.chainId,
-      rpcUrl: this.config.getRpcUrl(profile, networkName),
-    };
-  }
-
-  private getProviderForNetwork(networkName: string): ethers.JsonRpcProvider {
-    const network = this.getNetwork(networkName);
-    const cachedProvider = this.providers.get(network.name);
+  private getProvider(network: HubNetworkContext): ethers.JsonRpcProvider {
+    const cachedProvider = this.providers.get(network.slug);
     if (cachedProvider) {
       return cachedProvider;
     }
 
     const provider = this.providerFactory(network.rpcUrl, {
-      name: network.rpcName,
-      chainId: network.chainId,
+      name: network.slug,
+      chainId: Number(network.chainId),
     });
-    this.providers.set(network.name, provider);
+    this.providers.set(network.slug, provider);
     return provider;
   }
 
-  private createSigner(provider: ethers.Provider): ethers.HDNodeWallet | ethers.Wallet {
+  private createSigner(): ethers.HDNodeWallet | ethers.Wallet {
     const privateKey = this.config.getAuthoritySignerPrivateKey();
     if (privateKey) {
-      return new ethers.Wallet(privateKey, provider);
+      return new ethers.Wallet(privateKey);
     }
 
     const mnemonic = this.config.getAuthoritySignerMnemonic();
     if (mnemonic) {
-      return ethers.Wallet.fromPhrase(mnemonic, provider);
+      return ethers.Wallet.fromPhrase(mnemonic);
     }
 
-    return new ethers.Wallet(ethers.id('ownables-hub-fallback-key'), provider);
+    return new ethers.Wallet(ethers.id('ownables-hub-fallback-key'));
   }
 }
