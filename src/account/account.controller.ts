@@ -4,30 +4,36 @@ import { Response } from 'express';
 import { Observable } from 'rxjs';
 import { throwHttpError, writeHttpError } from '../common/http/http-error-response';
 import { OwnableService } from '../ownable/ownable.service';
+import { ConfigService, HubNetwork } from '../common/config/config.service';
 
-@Controller('accounts')
+@Controller(':network')
 @ApiTags('accounts')
 export class AccountController {
-  constructor(private readonly ownableService: OwnableService) {}
+  constructor(
+    private readonly ownableService: OwnableService,
+    private readonly config: ConfigService,
+  ) {}
 
-  @Get(':account/available-ownables')
-  @ApiParam({ name: 'account', description: 'CAIP-10 account' })
+  @Get('inbox/:address')
+  @ApiParam({ name: 'network', enum: ['base', 'base-sepolia'] satisfies HubNetwork[] })
+  @ApiParam({ name: 'address', description: 'EVM address' })
   @ApiProduces('application/json')
   @ApiOkResponse({ description: 'Ownables available to the account' })
-  async available(@Param('account') account: string, @Res() res: Response): Promise<Response> {
+  async available(@Param('network') network: string, @Param('address') address: string, @Res() res: Response): Promise<Response> {
     try {
-      return res.status(200).json(await this.ownableService.getAvailableOwnables(account));
+      return res.status(200).json(await this.ownableService.getAvailableOwnables(address, this.config.resolveHubNetwork(network)));
     } catch (error) {
       return writeHttpError(res, error);
     }
   }
 
-  @Sse(':account/available-ownables/events')
-  @ApiParam({ name: 'account', description: 'CAIP-10 account' })
+  @Sse('streams/inbox/:address')
+  @ApiParam({ name: 'network', enum: ['base', 'base-sepolia'] satisfies HubNetwork[] })
+  @ApiParam({ name: 'address', description: 'EVM address' })
   @ApiProduces('text/event-stream')
-  availableEvents(@Param('account') account: string): Observable<MessageEvent> {
+  availableEvents(@Param('network') network: string, @Param('address') address: string): Observable<MessageEvent> {
     try {
-      return this.ownableService.streamAvailableOwnables(account);
+      return this.ownableService.streamAvailableOwnables(address, this.config.resolveHubNetwork(network));
     } catch (error) {
       return throwHttpError(error);
     }

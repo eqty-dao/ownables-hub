@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import path from 'path';
+import { UserError } from '../../interfaces/error';
 
 export type AppEnv = 'development' | 'test' | 'staging' | 'production';
 export type RuntimeNetworkProfile = 'testnet' | 'mainnet';
@@ -275,7 +276,7 @@ export class ConfigService {
     const slug = network.trim();
     if (slug === 'base') return this.createHubNetworkContext('base');
     if (slug === 'base-sepolia') return this.createHubNetworkContext('base-sepolia');
-    throw new Error(`Unsupported Hub network: ${network}`);
+    throw new UserError(`Unsupported Hub network: ${network}`);
   }
 
   getIndexerSlots(): [IndexerSlotConfig, IndexerSlotConfig] {
