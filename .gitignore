@@ -43,3 +43,5 @@ lerna-debug.log*
 # Runtime data
 /storage
 .env
+/deployment.env
+/deploy/hub.env
