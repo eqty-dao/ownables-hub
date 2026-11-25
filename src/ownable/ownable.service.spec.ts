@@ -857,11 +857,22 @@ describe('OwnableService', () => {
   it('rejects a mismatched upload network before retry lookup or quarantine staging', async () => {
     const { service, hubState, quarantine, storage } = await buildService();
     const chain = await createChain(8453);
+    const leaseEvents: string[] = [];
+    const prepareUpload = (service as any).prepareUpload.bind(service);
+    quarantine.acquireProcessing.mockImplementation(async () => {
+      leaseEvents.push('acquired');
+      return async () => leaseEvents.push('released');
+    });
+    jest.spyOn(service as any, 'prepareUpload').mockImplementation(async (...args: any[]) => {
+      expect(leaseEvents).toEqual(['acquired']);
+      return prepareUpload(...args);
+    });
 
     await expect(service.uploadOwnable(await createUploadBuffer(chain), BASE_SEPOLIA_NETWORK)).rejects.toThrow(
       'Ownable network eip155:8453 does not match route network base-sepolia',
     );
 
+    expect(leaseEvents).toEqual(['acquired', 'released']);
     expect(quarantine.findExactRetry).not.toHaveBeenCalled();
     expect(quarantine.stage).not.toHaveBeenCalled();
     expect(hubState.getOwnableBySubjectId).not.toHaveBeenCalled();
@@ -891,7 +902,28 @@ describe('OwnableService', () => {
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
 
     await expect(service.getOwnableVerification(chain.id, BASE_SEPOLIA_NETWORK)).rejects.toThrow(
+      'Invalid event chain: invalid network_id in first event',
+    );
+  });
+
+  it('returns not found for a stored Ownable whose canonical chain is missing', async () => {
+    const { service, storage, hubState } = await buildService();
+    const missing = Object.assign(new Error('missing'), { code: 'ENOENT' });
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1' });
+    storage.getEventChain.mockRejectedValue(missing);
+
+    await expect(service.getOwnableVerification(`0x${'11'.repeat(32)}`, BASE_SEPOLIA_NETWORK)).rejects.toThrow(
       'Ownable is not available on this network',
+    );
+  });
+
+  it('surfaces stored-chain backend failures', async () => {
+    const { service, storage, hubState } = await buildService();
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1' });
+    storage.getEventChain.mockRejectedValue(new Error('archive storage unavailable'));
+
+    await expect(service.getOwnableVerification(`0x${'11'.repeat(32)}`, BASE_SEPOLIA_NETWORK)).rejects.toThrow(
+      'archive storage unavailable',
     );
   });
 

@@ -411,18 +411,30 @@ export class OwnableService {
     record: { id: string; packageCid: string; chainStorageKey?: string | null },
     network: HubNetworkContext,
   ): Promise<void> {
+    let chainBuffer: Buffer;
     try {
-      const chain = EventChain.from(
-        JSON.parse((await this.storage.getEventChain(record.id, record.packageCid, record.chainStorageKey)).toString('utf8')),
-      );
-      this.validateEventChain(chain);
-      if (this.deriveOwnerNetwork(chain) !== network.caip2) {
+      chainBuffer = await this.storage.getEventChain(record.id, record.packageCid, record.chainStorageKey);
+    } catch (error) {
+      if (this.isMissingStoredChain(error)) {
         throw new NotFoundError('Ownable is not available on this network');
       }
-    } catch (error) {
-      if (error instanceof NotFoundError) throw error;
+      throw error;
+    }
+    const chain = EventChain.from(JSON.parse(chainBuffer.toString('utf8')));
+    this.validateEventChain(chain);
+    if (this.deriveOwnerNetwork(chain) !== network.caip2) {
       throw new NotFoundError('Ownable is not available on this network');
     }
+  }
+
+  private isMissingStoredChain(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const storageError = error as Error & { code?: string; status?: number; statusCode?: number };
+    return storageError.code === 'ENOENT'
+      || storageError.code === 'NoSuchKey'
+      || storageError.code === 'NotFound'
+      || storageError.status === 404
+      || storageError.statusCode === 404;
   }
 
   private deriveAvailableOwnableTitle(name: string): string {
@@ -1233,29 +1245,29 @@ export class OwnableService {
       throw new CapacityError(413, 'UPLOAD_TOO_LARGE', 'Upload exceeds the 268435456 byte limit');
     }
     const processingStartedAt = Date.now();
-    const prepared = await this.prepareUpload(buffer, signer, verbose);
-    if (prepared.ownerNetwork !== network.caip2) {
-      throw new UserError(`Ownable network ${prepared.ownerNetwork} does not match route network ${network.slug}`);
-    }
-    const exact = await this.quarantine.findExactRetry(prepared.uploadDigest);
-    if (exact.pending) {
-      if (exact.pending.ownableId !== prepared.ownableId) {
-        throw new ConflictError('OWNABLE_UPLOAD_CONFLICT', 'A conflicting upload already exists for this Ownable');
-      }
-      return { status: 'pending', ownableId: exact.pending.ownableId, expiresAt: exact.pending.expiresAt } satisfies PendingUploadResult;
-    }
-    if (exact.available) {
-      if (exact.available.ownableId !== prepared.ownableId) {
-        throw new ConflictError('OWNABLE_UPLOAD_CONFLICT', 'A conflicting upload already exists for this Ownable');
-      }
-      const stored = await this.getOwnableRecordByOwnableId(exact.available.ownableId);
-      if (!stored) throw new NotFoundError('Ownable is not available on this network');
-      await this.assertStoredOwnableNetwork(stored, network);
-      return { status: 'available', created: false, ownableId: exact.available.ownableId, cid: exact.available.cid } satisfies AvailableUploadResult;
-    }
     const release = await this.quarantine.acquireProcessing();
     let staged: QuarantinedOwnableUpload;
     try {
+      const prepared = await this.prepareUpload(buffer, signer, verbose);
+      if (prepared.ownerNetwork !== network.caip2) {
+        throw new UserError(`Ownable network ${prepared.ownerNetwork} does not match route network ${network.slug}`);
+      }
+      const exact = await this.quarantine.findExactRetry(prepared.uploadDigest);
+      if (exact.pending) {
+        if (exact.pending.ownableId !== prepared.ownableId) {
+          throw new ConflictError('OWNABLE_UPLOAD_CONFLICT', 'A conflicting upload already exists for this Ownable');
+        }
+        return { status: 'pending', ownableId: exact.pending.ownableId, expiresAt: exact.pending.expiresAt } satisfies PendingUploadResult;
+      }
+      if (exact.available) {
+        if (exact.available.ownableId !== prepared.ownableId) {
+          throw new ConflictError('OWNABLE_UPLOAD_CONFLICT', 'A conflicting upload already exists for this Ownable');
+        }
+        const stored = await this.getOwnableRecordByOwnableId(exact.available.ownableId);
+        if (!stored) throw new NotFoundError('Ownable is not available on this network');
+        await this.assertStoredOwnableNetwork(stored, network);
+        return { status: 'available', created: false, ownableId: exact.available.ownableId, cid: exact.available.cid } satisfies AvailableUploadResult;
+      }
       const existing = await this.hubState.getOwnableBySubjectId(prepared.subjectId);
       if (existing && !(await this.isStrictSuccessor(existing, prepared.eventChainBuffer))) {
         throw new ConflictError('OWNABLE_UPLOAD_CONFLICT', 'A conflicting upload already exists for this Ownable');
