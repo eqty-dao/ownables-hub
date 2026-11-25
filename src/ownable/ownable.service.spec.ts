@@ -318,10 +318,6 @@ describe('OwnableService', () => {
   });
 
   const buildConfig = () => ({
-    getRuntimeNetworkProfile: () => 'testnet',
-    getActiveIndexerSlot: () => ({
-      ...ACTIVE_LIVE_IDENTITY,
-    }),
     getAuthoritySignerPrivateKey: () => '',
     getAuthoritySignerMnemonic: () => PRIVATE_STATE_OWNER_WALLET.mnemonic?.phrase || '',
     getAppConfig: () => ({ publicBaseUrl: 'http://127.0.0.1:8000' }),
