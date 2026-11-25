@@ -122,6 +122,18 @@ describe('ConfigService', () => {
     expect(() => secondService.getIndexerSlots()).toThrow('Invalid TESTNET_ANCHOR_START_BLOCK: not-a-number');
   });
 
+  it('resolves the active indexer slot without configuring the inactive network', () => {
+    process.env.HUB_NETWORK_PROFILE = 'testnet';
+    delete process.env.MAINNET_CHAIN_ID;
+    delete process.env.MAINNET_RPC_URL;
+    delete process.env.MAINNET_ANCHOR_CONTRACT_ADDR;
+    delete process.env.MAINNET_ANCHOR_START_BLOCK;
+
+    const service = new ConfigService();
+    expect(service.getActiveIndexerSlot()).toMatchObject({ slotName: 'testnet', chainId: '84532' });
+    expect(() => service.getIndexerSlots()).toThrow('MAINNET_CHAIN_ID is required');
+  });
+
   it('enables recipient discovery only outside production when the env flag is truthy', () => {
     process.env.LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED = 'true';
 
