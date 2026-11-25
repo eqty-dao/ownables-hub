@@ -5,6 +5,7 @@ export type AppEnv = 'development' | 'test' | 'staging' | 'production';
 export type RuntimeNetworkProfile = 'testnet' | 'mainnet';
 export type EvmNetworkName = 'eip155:ethereum' | 'eip155:arbitrum' | 'eip155:polygon' | 'eip155:base';
 export type IndexerSlotName = 'testnet' | 'mainnet';
+export type HubNetwork = 'base' | 'base-sepolia';
 
 export interface AppConfig {
   env: AppEnv;
@@ -57,6 +58,16 @@ export interface IndexerSlotConfig {
   rpcUrl: string;
   anchorContractAddress: string;
   anchorStartBlock: bigint;
+}
+
+export interface HubNetworkContext {
+  slug: HubNetwork;
+  caip2: `eip155:${string}`;
+  chainId: string;
+  slotName: IndexerSlotName;
+  rpcUrl: string;
+  anchorContractAddress?: string;
+  anchorStartBlock?: bigint;
 }
 
 function readEnv(name: string, fallback = ''): string {
@@ -158,6 +169,24 @@ function parseRequiredNonNegativeBigInt(name: string): bigint {
   return value;
 }
 
+function parseOptionalAnchorAddress(name: string): string | undefined {
+  const value = readEnv(name);
+  if (!value || /^0x0{40}$/i.test(value)) return undefined;
+  if (!/^0x[0-9a-f]{40}$/i.test(value)) {
+    throw new Error(`Invalid ${name}: ${value}`);
+  }
+  return value.toLowerCase();
+}
+
+function parseOptionalPositiveBigInt(name: string): bigint | undefined {
+  const value = readEnv(name);
+  if (!value || value === '0') return undefined;
+  if (!/^\d+$/.test(value) || BigInt(value) <= 0n) {
+    throw new Error(`Invalid ${name}: ${value}`);
+  }
+  return BigInt(value);
+}
+
 export function resolveStorageRoot(ownablesStorage: string): string {
   const value = ownablesStorage.trim();
   if (!value) {
@@ -242,6 +271,13 @@ export class ConfigService {
     }
   }
 
+  resolveHubNetwork(network: string): HubNetworkContext {
+    const slug = network.trim();
+    if (slug === 'base') return this.createHubNetworkContext('base');
+    if (slug === 'base-sepolia') return this.createHubNetworkContext('base-sepolia');
+    throw new Error(`Unsupported Hub network: ${network}`);
+  }
+
   getIndexerSlots(): [IndexerSlotConfig, IndexerSlotConfig] {
     return [this.parseIndexerSlot('TESTNET', 'testnet'), this.parseIndexerSlot('MAINNET', 'mainnet')];
   }
@@ -266,6 +302,26 @@ export class ConfigService {
       rpcUrl: parseRequiredEnv(`${prefix}_RPC_URL`),
       anchorContractAddress: parseRequiredEnv(`${prefix}_ANCHOR_CONTRACT_ADDR`),
       anchorStartBlock: parseRequiredNonNegativeBigInt(`${prefix}_ANCHOR_START_BLOCK`),
+    };
+  }
+
+  private createHubNetworkContext(slug: HubNetwork): HubNetworkContext {
+    const isMainnet = slug === 'base';
+    const prefix = isMainnet ? 'MAINNET' : 'TESTNET';
+    const rpcUrl = readEnv(
+      `${prefix}_RPC_URL`,
+      readEnv(`${prefix}_BASE_RPC_URL`, isMainnet ? 'https://mainnet.base.org' : 'https://sepolia.base.org'),
+    );
+    const chainId = isMainnet ? '8453' : '84532';
+
+    return {
+      slug,
+      caip2: `eip155:${chainId}`,
+      chainId,
+      slotName: isMainnet ? 'mainnet' : 'testnet',
+      rpcUrl,
+      anchorContractAddress: parseOptionalAnchorAddress(`${prefix}_ANCHOR_CONTRACT_ADDR`),
+      anchorStartBlock: parseOptionalPositiveBigInt(`${prefix}_ANCHOR_START_BLOCK`),
     };
   }
 

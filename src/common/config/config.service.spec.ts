@@ -134,6 +134,34 @@ describe('ConfigService', () => {
     expect(() => service.getIndexerSlots()).toThrow('MAINNET_CHAIN_ID is required');
   });
 
+  it('resolves both Base request networks while allowing an undeployed Mainnet Anchor', () => {
+    delete process.env.MAINNET_CHAIN_ID;
+    delete process.env.MAINNET_RPC_URL;
+    delete process.env.MAINNET_ANCHOR_CONTRACT_ADDR;
+    delete process.env.MAINNET_ANCHOR_START_BLOCK;
+
+    const service = new ConfigService();
+
+    expect(service.resolveHubNetwork('base')).toEqual({
+      slug: 'base',
+      caip2: 'eip155:8453',
+      chainId: '8453',
+      slotName: 'mainnet',
+      rpcUrl: 'https://mainnet.base.org',
+      anchorContractAddress: undefined,
+      anchorStartBlock: undefined,
+    });
+    expect(service.resolveHubNetwork('base-sepolia')).toEqual(
+      expect.objectContaining({
+        slug: 'base-sepolia',
+        caip2: 'eip155:84532',
+        chainId: '84532',
+        slotName: 'testnet',
+      }),
+    );
+    expect(() => service.resolveHubNetwork('ethereum')).toThrow('Unsupported Hub network: ethereum');
+  });
+
   it('enables recipient discovery only outside production when the env flag is truthy', () => {
     process.env.LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED = 'true';
 
