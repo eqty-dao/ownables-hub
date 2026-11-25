@@ -247,8 +247,8 @@ export class ConfigService {
   }
 
   getActiveIndexerSlot(): IndexerSlotConfig {
-    const [testnet, mainnet] = this.getIndexerSlots();
-    const slot = this.runtimeConfig.networkProfile === 'testnet' ? testnet : mainnet;
+    const profile = this.runtimeConfig.networkProfile;
+    const slot = this.parseIndexerSlot(profile === 'testnet' ? 'TESTNET' : 'MAINNET', profile);
     return {
       ...slot,
       anchorContractAddress: slot.anchorContractAddress.toLowerCase(),

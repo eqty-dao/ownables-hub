@@ -7,6 +7,10 @@ on:
       - master
   workflow_dispatch:
 
+concurrency:
+  group: hub-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   test:
     uses: ./.github/workflows/test.yml
@@ -42,3 +46,74 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: yarn release
+
+  image:
+    if: github.ref == 'refs/heads/main'
+    needs: [test, release]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      reference: ${{ steps.publish.outputs.reference }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Publish the tested Hub image
+        id: publish
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}"
+          image="$repository:$GITHUB_SHA"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build --pull --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$image" .
+          docker push "$image"
+          reference=$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')
+          echo "reference=$reference" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && vars.HUB_DEPLOY_HOST != ''
+    needs: image
+    runs-on: ubuntu-24.04
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Deploy and verify the Hub
+        env:
+          HUB_IMAGE: ${{ needs.image.outputs.reference }}
+          HUB_DEPLOY_HOST: ${{ vars.HUB_DEPLOY_HOST }}
+          HUB_DEPLOY_USER: ${{ vars.HUB_DEPLOY_USER }}
+          HUB_DEPLOY_URL: ${{ vars.HUB_DEPLOY_URL }}
+          HUB_DEPLOY_SSH_KEY: ${{ secrets.HUB_DEPLOY_SSH_KEY }}
+          HUB_DEPLOY_KNOWN_HOSTS: ${{ secrets.HUB_DEPLOY_KNOWN_HOSTS }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${HUB_IMAGE:?Missing image digest}" "${HUB_DEPLOY_USER:?Missing deploy user}" "${HUB_DEPLOY_URL:?Missing Hub URL}"
+          : "${HUB_DEPLOY_SSH_KEY:?Missing SSH key}" "${HUB_DEPLOY_KNOWN_HOSTS:?Missing known hosts}"
+          [[ "$HUB_IMAGE" =~ ^ghcr\.io/[a-z0-9_./-]+@sha256:[a-f0-9]{64}$ ]]
+          [[ "$GITHUB_ACTOR" =~ ^[a-zA-Z0-9_-]+(\[bot\])?$ ]]
+          umask 077
+          printf '%s\n' "$HUB_DEPLOY_SSH_KEY" > "$RUNNER_TEMP/hub-key"
+          printf '%s\n' "$HUB_DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/hub-known-hosts"
+          ssh_options=(-i "$RUNNER_TEMP/hub-key" -l "$HUB_DEPLOY_USER" -o BatchMode=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$RUNNER_TEMP/hub-known-hosts")
+          archive="$RUNNER_TEMP/hub-compose.tar"
+          tar -cf "$archive" compose.production.yml deploy/Caddyfile
+          ssh "${ssh_options[@]}" -- "$HUB_DEPLOY_HOST" 'mkdir -p "$HOME/ownables-hub" && tar -xf - -C "$HOME/ownables-hub"' < "$archive"
+          printf '%s' "$GHCR_TOKEN" | ssh "${ssh_options[@]}" -- "$HUB_DEPLOY_HOST" "umask 077; export DOCKER_CONFIG=\"\$HOME/ownables-hub/.docker-deploy\"; docker login ghcr.io -u '$GITHUB_ACTOR' --password-stdin"
+          ssh "${ssh_options[@]}" -- "$HUB_DEPLOY_HOST" bash -s -- "$HUB_IMAGE" <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/ownables-hub"
+          export HUB_IMAGE="$1"
+          export DOCKER_CONFIG="$PWD/.docker-deploy"
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          compose=(docker compose --env-file deployment.env -f compose.production.yml)
+          "${compose[@]}" pull hub indexer migrate
+          "${compose[@]}" up -d --wait db
+          "${compose[@]}" run --rm --no-deps -T migrate < /dev/null
+          "${compose[@]}" up -d --no-deps --wait hub indexer proxy
+          REMOTE
+          curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 3 "${HUB_DEPLOY_URL%/}/health"

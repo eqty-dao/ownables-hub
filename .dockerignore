@@ -1,0 +1,13 @@
+.git
+.github
+**/.env
+**/.env.*
+deploy/*.env
+deployment.env
+node_modules
+dist
+storage
+quarantine-storage
+coverage
+.yarn
+*.log
