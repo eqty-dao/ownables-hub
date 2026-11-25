@@ -18,9 +18,8 @@ import {
   splitOwnableArchiveEntries,
 } from '@ownables/core/utils';
 import { NodePackageAssetIO } from '@ownables/platform-node';
-import { ConfigService } from '../common/config/config.service';
-import { resolveCaip2Reference } from '../common/config/evm-network.util';
-import { CapacityError, ConflictError, UserError } from '../interfaces/error';
+import { ConfigService, type HubNetworkContext } from '../common/config/config.service';
+import { CapacityError, ConflictError, NotFoundError, UserError } from '../interfaces/error';
 import JSZip from 'jszip';
 import { EventChain } from 'eqty-core';
 import { ethers } from 'ethers';
@@ -119,6 +118,7 @@ interface PreparedUpload {
   packageFiles: Map<string, Uint8Array>;
   attachments: Map<string, Uint8Array>;
   previousOwnerAddress: string;
+  ownerNetwork: string;
   expandedBytes: number;
 }
 
@@ -373,29 +373,68 @@ export class OwnableService {
   }
 
   private deriveOwnerAccount(ownerAddress: string, ownerNetwork: string): string | null {
-    const reference = resolveCaip2Reference(ownerNetwork, this.config.getRuntimeNetworkProfile());
-    if (!reference) {
-      return null;
-    }
-
     try {
-      return normalizeCaip10Account(`eip155:${reference}:${ownerAddress}`);
+      return normalizeCaip10Account(`${ownerNetwork}:${ownerAddress}`);
     } catch {
       return null;
     }
   }
 
-  private normalizeOwnerAccount(ownerAccount: string): string {
-    const trimmedOwner = ownerAccount.trim();
-    if (!trimmedOwner) {
-      throw new UserError('owner is required');
-    }
-
+  private ownerAccountForAddress(ownerAddress: string, network: HubNetworkContext): string {
     try {
-      return normalizeCaip10Account(trimmedOwner);
+      return normalizeCaip10Account(`${network.caip2}:${normalizeEvmAddress(ownerAddress, 'owner must be a valid EVM address')}`);
     } catch {
-      throw new UserError('owner must be a valid CAIP-10 account');
+      throw new UserError('owner must be a valid EVM address');
     }
+  }
+
+  private assertChainMatchesNetwork(chain: EventChain, network: HubNetworkContext): string {
+    const ownerNetwork = this.deriveOwnerNetwork(chain);
+    if (ownerNetwork !== network.caip2) {
+      throw new UserError(`Ownable network ${ownerNetwork} does not match route network ${network.slug}`);
+    }
+    return ownerNetwork;
+  }
+
+  private indexedIdentity(network: HubNetworkContext): IndexedEventIdentity {
+    if (!network.anchorContractAddress) {
+      throw new UserError(`Hub network ${network.slug} has no deployed Anchor contract`);
+    }
+    return {
+      slotName: network.slotName,
+      chainId: network.chainId,
+      anchorContractAddress: network.anchorContractAddress,
+    };
+  }
+
+  private async assertStoredOwnableNetwork(
+    record: { id: string; packageCid: string; chainStorageKey?: string | null },
+    network: HubNetworkContext,
+  ): Promise<void> {
+    let chainBuffer: Buffer;
+    try {
+      chainBuffer = await this.storage.getEventChain(record.id, record.packageCid, record.chainStorageKey);
+    } catch (error) {
+      if (this.isMissingStoredChain(error)) {
+        throw new NotFoundError('Ownable is not available on this network');
+      }
+      throw error;
+    }
+    const chain = EventChain.from(JSON.parse(chainBuffer.toString('utf8')));
+    this.validateEventChain(chain);
+    if (this.deriveOwnerNetwork(chain) !== network.caip2) {
+      throw new NotFoundError('Ownable is not available on this network');
+    }
+  }
+
+  private isMissingStoredChain(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const storageError = error as Error & { code?: string; status?: number; statusCode?: number };
+    return storageError.code === 'ENOENT'
+      || storageError.code === 'NoSuchKey'
+      || storageError.code === 'NotFound'
+      || storageError.status === 404
+      || storageError.statusCode === 404;
   }
 
   private deriveAvailableOwnableTitle(name: string): string {
@@ -530,14 +569,18 @@ export class OwnableService {
       .filter((record): record is IndexedAnchorRecord => Boolean(record));
   }
 
-  private async verifyConsumptionAnchors(chain: EventChain): Promise<AnchorValidationResult> {
-    const identity = this.activePublicEventIdentity();
-    if (this.deriveOwnerNetwork(chain) !== `eip155:${identity.chainId}`) {
-      throw new UserError('Consumption proof uses a network outside this Hub indexing deployment');
-    }
+  private async verifyConsumptionAnchors(
+    chain: EventChain,
+    network: HubNetworkContext,
+  ): Promise<AnchorValidationResult> {
+    this.assertChainMatchesNetwork(chain, network);
+    const identity = this.indexedIdentity(network);
     const expected = chain.anchorMap;
     const signers = new Map(expected.map(({ key, signer }) => [key.hex.toLowerCase(), signer.toLowerCase()]));
-    const rows = await this.hubState.listIndexedAnchorEventsByAnchorKeys(expected.map(({ key }) => key.hex));
+    const rows = await this.hubState.listIndexedAnchorEventsByAnchorKeys(
+      expected.map(({ key }) => key.hex),
+      identity,
+    );
     const records: IndexedAnchorRecord[] = [];
     for (const row of rows) {
       if (
@@ -625,10 +668,13 @@ export class OwnableService {
     eventChainBuffer: Buffer,
     files: ReadonlyMap<string, Uint8Array>,
     attachments: ReadonlyMap<string, Uint8Array>,
+    network: HubNetworkContext,
     allowHistoricalConsumption = false,
   ): Promise<ReplayDerivedState> {
     const chain = EventChain.from(JSON.parse(eventChainBuffer.toString('utf8')));
     this.validateEventChain(chain);
+    const ownerNetwork = this.assertChainMatchesNetwork(chain, network);
+    const identity = this.indexedIdentity(network);
     const hasConsumptionClaims = CoreOwnableService.hasConsumptionClaims(chain);
     const historicalConsumption = hasConsumptionClaims && !CoreOwnableService.hasBoundConsumptionClaims(chain);
     if (historicalConsumption && !allowHistoricalConsumption) {
@@ -649,17 +695,20 @@ export class OwnableService {
     const anchorPairs = chain.anchorMap.map(({ key, value }) => ({ key, value }));
     const indexedAnchorEvents = verifyConsumption
       ? []
-      : await this.hubState.listIndexedAnchorEventsByAnchorKeys(anchorPairs.map(({ key }) => key.hex));
+      : await this.hubState.listIndexedAnchorEventsByAnchorKeys(
+          anchorPairs.map(({ key }) => key.hex),
+          identity,
+        );
     const indexedAnchorRecords = this.buildIndexedAnchorRecords(
       indexedAnchorEvents,
       chain.events.at(-1)?.signerAddress?.toLowerCase(),
     );
     // The indexer commits anchors and public events together. Read anchors first
     // so the public-event query includes the full window through each checkpoint.
-    const consumptionAnchors = verifyConsumption ? await this.verifyConsumptionAnchors(chain) : undefined;
+    const consumptionAnchors = verifyConsumption ? await this.verifyConsumptionAnchors(chain, network) : undefined;
     const indexedPublicRows = await this.hubState.listIndexedPublicEventsBySubjectId(
       this.publicEventSubjectId(chain.id),
-      this.activePublicEventIdentity(),
+      identity,
     );
 
     const stateStore = new InMemoryStateStore();
@@ -722,9 +771,9 @@ export class OwnableService {
             verifySignature: async (address, domain, types, value, signature) =>
               ethers.verifyTypedData(domain, types, value, signature).toLowerCase() === address.toLowerCase(),
             verifyAnchors: async (proofChain) =>
-              proofChain === chain ? anchorVerification : this.verifyConsumptionAnchors(proofChain),
+              proofChain === chain ? anchorVerification : this.verifyConsumptionAnchors(proofChain, network),
             getPublicEvents: async (proofChain) =>
-              proofChain === chain ? indexedEvents : this.listIndexedPublicEventsForOwnable(proofChain.id),
+              proofChain === chain ? indexedEvents : this.listIndexedPublicEventsForOwnable(proofChain.id, network),
             maxSnapshotBytes: snapshotBudget,
           }, files.get(OWNABLE_RUNTIME_FILENAME)).catch(invalidBundle)
         : undefined;
@@ -745,8 +794,6 @@ export class OwnableService {
       const latestAppliedPublicEventId = indexedEventsWithRowId
         .filter(({ event }) => appliedReplayKeys.has(replayKey(event))).at(-1)?.rowId ?? null;
 
-      const ownerNetwork = this.deriveOwnerNetwork(chain);
-
       return {
         anchorVerification,
         freshness,
@@ -764,9 +811,14 @@ export class OwnableService {
     }
   }
 
-  private async replayStoredOwnable(ownableId: string, packageCid: string, chainStorageKey?: string | null): Promise<ReplayDerivedState> {
+  private async replayStoredOwnable(
+    ownableId: string,
+    packageCid: string,
+    network: HubNetworkContext,
+    chainStorageKey?: string | null,
+  ): Promise<ReplayDerivedState> {
     const { eventChainBuffer, files, attachments } = await this.readStoredArchive(ownableId, packageCid, chainStorageKey);
-    return this.replayOwnable(packageCid, eventChainBuffer, files, attachments, true).catch(requireStoredEvidence);
+    return this.replayOwnable(packageCid, eventChainBuffer, files, attachments, network, true).catch(requireStoredEvidence);
   }
 
   private async readStoredArchive(ownableId: string, packageCid: string, chainStorageKey?: string | null) {
@@ -836,17 +888,18 @@ export class OwnableService {
     };
   }
 
-  async getOwnableVerification(ownableId: string): Promise<OwnableVerificationResponse> {
+  async getOwnableVerification(ownableId: string, network: HubNetworkContext): Promise<OwnableVerificationResponse> {
     const record = await this.getOwnableRecordByOwnableId(ownableId);
-    if (!record) throw new UserError(`Ownable with id ${ownableId} not available on this hub`);
+    if (!record) throw new NotFoundError(`Ownable with id ${ownableId} not available on this hub`);
+    await this.assertStoredOwnableNetwork(record, network);
     if (!(await this.existsOwnableChain(record.id, record.packageCid, record.chainStorageKey))) {
-      throw new UserError(`Ownable chain with id ${ownableId} not available on this hub`);
+      throw new NotFoundError(`Ownable chain with id ${ownableId} not available on this hub`);
     }
     if (!(await this.existsPkg(record.packageCid))) {
-      throw new UserError(`Ownable package with id ${ownableId} not available on this hub`);
+      throw new NotFoundError(`Ownable package with id ${ownableId} not available on this hub`);
     }
 
-    const replayState = await this.replayStoredOwnable(record.id, record.packageCid, record.chainStorageKey);
+    const replayState = await this.replayStoredOwnable(record.id, record.packageCid, network, record.chainStorageKey);
 
     return {
       ownableId,
@@ -863,16 +916,21 @@ export class OwnableService {
     };
   }
 
-  async getOwnablePublicEvents(ownableId: string): Promise<OwnablePublicEventsResponse> {
+  async getOwnablePublicEvents(ownableId: string, network: HubNetworkContext): Promise<OwnablePublicEventsResponse> {
+    const record = await this.getOwnableRecordByOwnableId(ownableId);
+    if (record) {
+      await this.assertStoredOwnableNetwork(record, network);
+    }
     return {
       ownableId,
-      publicEvents: await this.listIndexedPublicEventsForOwnable(ownableId),
+      publicEvents: await this.listIndexedPublicEventsForOwnable(ownableId, network),
     };
   }
 
   async streamOwnablePublicEvents(
     ownableIdsInput: string[] | string | undefined,
     fromBlockInput: string | string[] | undefined,
+    network: HubNetworkContext,
   ): Promise<Observable<MessageEvent>> {
     const ownableIds = this.normalizeOwnableIds(ownableIdsInput);
     const fromBlock = this.normalizeFromBlock(fromBlockInput);
@@ -880,7 +938,7 @@ export class OwnableService {
       ownableIds.map((ownableId) => [this.publicEventSubjectId(ownableId), ownableId]),
     );
     const watchedSubjectIds = Array.from(subjectToOwnableId.keys());
-    const activeIdentity = this.activePublicEventIdentity();
+    const activeIdentity = this.indexedIdentity(network);
 
     return new Observable<MessageEvent>((subscriber) => {
       const seenEventKeys = new Set<string>();
@@ -964,12 +1022,12 @@ export class OwnableService {
     });
   }
 
-  streamAvailableOwnables(ownerAccountInput: string): Observable<MessageEvent> {
+  streamAvailableOwnables(ownerAddress: string, network: HubNetworkContext): Observable<MessageEvent> {
     if (!this.config.isLocalDevRecipientDiscoveryEnabled()) {
       throw new UserError('RECIPIENT_DISCOVERY_DISABLED');
     }
 
-    const owner = this.normalizeOwnerAccount(ownerAccountInput);
+    const owner = this.ownerAccountForAddress(ownerAddress, network);
     return this.ownableTransport.watchAvailableOwnables().pipe(
       filter((message) => message.owner === owner),
       map(
@@ -991,6 +1049,7 @@ export class OwnableService {
     const eventChainJson = JSON.parse(eventChainBuffer.toString());
     const chain = EventChain.from(eventChainJson);
     this.validateEventChain(chain);
+    const ownerNetwork = this.deriveOwnerNetwork(chain);
     const { assets: packageFiles, attachments } = partitionArchive(files);
     this.assertSupportedOwnableRuntime(packageFiles);
 
@@ -1010,8 +1069,15 @@ export class OwnableService {
       packageFiles,
       attachments,
       previousOwnerAddress: ownerFromPrivateState || '0x0000000000000000000000000000000000000000',
+      ownerNetwork,
       expandedBytes: expandedSize(files),
     };
+  }
+
+  private networkForPreparedUpload(prepared: PreparedUpload): HubNetworkContext {
+    if (prepared.ownerNetwork === 'eip155:8453') return this.config.resolveHubNetwork('base');
+    if (prepared.ownerNetwork === 'eip155:84532') return this.config.resolveHubNetwork('base-sepolia');
+    throw new UserError(`Unsupported Ownable network: ${prepared.ownerNetwork}`);
   }
 
   private hasOnlyMissingAnchorEvidence(replayState: ReplayDerivedState): boolean {
@@ -1106,7 +1172,15 @@ export class OwnableService {
         await this.quarantine.cleanupPrivateObject(upload);
         return null;
       }
-      return await this.verifyAndPublishQuarantinedUpload(upload, prepared);
+      let network: HubNetworkContext;
+      try {
+        network = this.networkForPreparedUpload(prepared);
+      } catch (error) {
+        await this.quarantine.reject(upload.id, 'STAGED_UPLOAD_INVALID', error instanceof Error ? error.message : String(error));
+        await this.quarantine.cleanupPrivateObject(upload);
+        return null;
+      }
+      return await this.verifyAndPublishQuarantinedUpload(upload, prepared, network);
     } finally {
       await release();
     }
@@ -1115,6 +1189,7 @@ export class OwnableService {
   private async verifyAndPublishQuarantinedUpload(
     upload: QuarantinedOwnableUpload,
     prepared: PreparedUpload,
+    network: HubNetworkContext,
   ): Promise<AvailableUploadResult | PendingUploadResult | null> {
     if (
       prepared.ownableId !== upload.ownableId ||
@@ -1127,7 +1202,13 @@ export class OwnableService {
       return null;
     }
     try {
-      const replayState = await this.replayOwnable(prepared.cid, prepared.eventChainBuffer, prepared.packageFiles, prepared.attachments);
+      const replayState = await this.replayOwnable(
+        prepared.cid,
+        prepared.eventChainBuffer,
+        prepared.packageFiles,
+        prepared.attachments,
+        network,
+      );
       if (this.hasOnlyMissingAnchorEvidence(replayState)) {
         await this.quarantine.defer(upload.id);
         return { status: 'pending', ownableId: upload.ownableId, expiresAt: upload.expiresAt };
@@ -1154,30 +1235,52 @@ export class OwnableService {
     }
   }
 
-  async uploadOwnable(buffer: Uint8Array, signer?: SignerIdentity, verbose = false): Promise<any> {
+  async uploadOwnable(
+    buffer: Uint8Array,
+    network: HubNetworkContext,
+    signer?: SignerIdentity,
+    verbose = false,
+  ): Promise<any> {
     if (buffer.byteLength > 268435456) {
       throw new CapacityError(413, 'UPLOAD_TOO_LARGE', 'Upload exceeds the 268435456 byte limit');
     }
     const processingStartedAt = Date.now();
-    const uploadDigest = this.quarantine.digest(buffer);
-    const exact = await this.quarantine.findExactRetry(uploadDigest);
-    if (exact.pending) {
-      return { status: 'pending', ownableId: exact.pending.ownableId, expiresAt: exact.pending.expiresAt } satisfies PendingUploadResult;
-    }
-    if (exact.available) {
-      return { status: 'available', created: false, ownableId: exact.available.ownableId, cid: exact.available.cid } satisfies AvailableUploadResult;
-    }
     const release = await this.quarantine.acquireProcessing();
     let staged: QuarantinedOwnableUpload;
     try {
       const prepared = await this.prepareUpload(buffer, signer, verbose);
+      if (prepared.ownerNetwork !== network.caip2) {
+        throw new UserError(`Ownable network ${prepared.ownerNetwork} does not match route network ${network.slug}`);
+      }
+      const exact = await this.quarantine.findExactRetry(prepared.uploadDigest);
+      if (exact.pending) {
+        if (exact.pending.ownableId !== prepared.ownableId) {
+          throw new ConflictError('OWNABLE_UPLOAD_CONFLICT', 'A conflicting upload already exists for this Ownable');
+        }
+        return { status: 'pending', ownableId: exact.pending.ownableId, expiresAt: exact.pending.expiresAt } satisfies PendingUploadResult;
+      }
+      if (exact.available) {
+        if (exact.available.ownableId !== prepared.ownableId) {
+          throw new ConflictError('OWNABLE_UPLOAD_CONFLICT', 'A conflicting upload already exists for this Ownable');
+        }
+        const stored = await this.getOwnableRecordByOwnableId(exact.available.ownableId);
+        if (!stored) throw new NotFoundError('Ownable is not available on this network');
+        await this.assertStoredOwnableNetwork(stored, network);
+        return { status: 'available', created: false, ownableId: exact.available.ownableId, cid: exact.available.cid } satisfies AvailableUploadResult;
+      }
       const existing = await this.hubState.getOwnableBySubjectId(prepared.subjectId);
       if (existing && !(await this.isStrictSuccessor(existing, prepared.eventChainBuffer))) {
         throw new ConflictError('OWNABLE_UPLOAD_CONFLICT', 'A conflicting upload already exists for this Ownable');
       }
       let pending: boolean;
       try {
-        const replayState = await this.replayOwnable(prepared.cid, prepared.eventChainBuffer, prepared.packageFiles, prepared.attachments);
+        const replayState = await this.replayOwnable(
+          prepared.cid,
+          prepared.eventChainBuffer,
+          prepared.packageFiles,
+          prepared.attachments,
+          network,
+        );
         pending = this.hasOnlyMissingAnchorEvidence(replayState);
         if (!pending) this.assertReplayVerification(replayState);
       } catch (error) {
@@ -1212,19 +1315,20 @@ export class OwnableService {
     return result;
   }
 
-  async downloadOwnable(ownableId: string): Promise<StreamableFile> {
+  async downloadOwnable(ownableId: string, network: HubNetworkContext): Promise<StreamableFile> {
     const record = await this.getOwnableRecordByOwnableId(ownableId);
-    if (!record) throw new UserError(`Ownable bundle with id ${ownableId} not available on this hub`);
+    if (!record) throw new NotFoundError(`Ownable bundle with id ${ownableId} not available on this hub`);
+    await this.assertStoredOwnableNetwork(record, network);
     if (!(await this.existsOwnableChain(record.id, record.packageCid, record.chainStorageKey))) {
-      throw new UserError(`Ownable bundle with id ${ownableId} not available on this hub`);
+      throw new NotFoundError(`Ownable bundle with id ${ownableId} not available on this hub`);
     }
     if (!(await this.existsPkg(record.packageCid))) {
-      throw new UserError(`Ownable package with id ${ownableId} not available on this hub`);
+      throw new NotFoundError(`Ownable package with id ${ownableId} not available on this hub`);
     }
 
     const { eventChainBuffer, files, attachments } = await this.readStoredArchive(record.id, record.packageCid, record.chainStorageKey);
     const replayState = await this.replayOwnable(
-      record.packageCid, eventChainBuffer, files, attachments, true,
+      record.packageCid, eventChainBuffer, files, attachments, network, true,
     ).catch(requireStoredEvidence);
     this.assertReplayVerification(replayState);
 
@@ -1245,7 +1349,7 @@ export class OwnableService {
     return await this.storage.getEventChain(record.id, record.packageCid, record.chainStorageKey);
   }
 
-  async getAvailableOwnables(ownerAccount: string): Promise<{
+  async getAvailableOwnables(ownerAddress: string, network: HubNetworkContext): Promise<{
     owner: string;
     entries: AvailableOwnableEntry[];
   }> {
@@ -1253,7 +1357,7 @@ export class OwnableService {
       throw new UserError('RECIPIENT_DISCOVERY_DISABLED');
     }
 
-    const normalizedOwnerAccount = this.normalizeOwnerAccount(ownerAccount);
+    const normalizedOwnerAccount = this.ownerAccountForAddress(ownerAddress, network);
     const rows = await this.hubState.listAvailableOwnablesByOwnerAccount(normalizedOwnerAccount);
     const entries = await Promise.all(
       rows.map(async (row): Promise<AvailableOwnableEntry> => {
@@ -1311,24 +1415,18 @@ export class OwnableService {
     ].join(':');
   }
 
-  private async listIndexedPublicEventsForOwnable(ownableId: string): Promise<IndexedPublicEvent[]> {
+  private async listIndexedPublicEventsForOwnable(
+    ownableId: string,
+    network: HubNetworkContext,
+  ): Promise<IndexedPublicEvent[]> {
     return (
       await this.hubState.listIndexedPublicEventsBySubjectId(
         this.publicEventSubjectId(ownableId),
-        this.activePublicEventIdentity(),
+        this.indexedIdentity(network),
       )
     )
       .map((row) => this.toIndexedPublicEvent(row))
       .filter((event): event is IndexedPublicEvent => Boolean(event));
-  }
-
-  private activePublicEventIdentity(): IndexedEventIdentity {
-    const slot = this.config.getActiveIndexerSlot();
-    return {
-      slotName: slot.slotName,
-      chainId: slot.chainId,
-      anchorContractAddress: slot.anchorContractAddress.toLowerCase(),
-    };
   }
 
   private matchesPublicEventIdentity(message: LiveIndexedPublicEvent, identity: IndexedEventIdentity): boolean {

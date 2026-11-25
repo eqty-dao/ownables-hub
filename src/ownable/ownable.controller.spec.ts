@@ -4,12 +4,13 @@ import JSZip from 'jszip';
 import request from 'supertest';
 import { AppModule } from '../app.module';
 import { OwnableController } from './ownable.controller';
-import { UserError } from '../interfaces/error';
+import { NotFoundError, UserError } from '../interfaces/error';
 import { OwnableService } from './ownable.service';
 import { OwnableTransportService } from './ownable-transport.service';
 import { QuarantineService } from '../quarantine/quarantine.service';
 import { of } from 'rxjs';
 import { configureApp } from '../app.bootstrap';
+import { ConfigService } from '../common/config/config.service';
 
 jest.mock('eqty-core', () => require('../test-mocks/eqty-core.ts'));
 jest.mock('@ownables/core', () => ({
@@ -28,6 +29,16 @@ jest.mock('@ownables/platform-node', () => ({
 }));
 
 describe('OwnableController', () => {
+  const baseSepolia = {
+    slug: 'base-sepolia',
+    caip2: 'eip155:84532',
+    chainId: '84532',
+    slotName: 'testnet',
+    rpcUrl: 'https://base-sepolia.example.test',
+  } as const;
+  const createController = (ownableService: any) =>
+    new OwnableController(ownableService, { resolveHubNetwork: jest.fn(() => baseSepolia) } as any);
+
   const binaryParser = (res: any, callback: (err: Error | null, body: Buffer) => void) => {
     const chunks: Buffer[] = [];
     res.on('data', (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
@@ -48,15 +59,15 @@ describe('OwnableController', () => {
     const ownableService = {
       uploadOwnable: jest.fn().mockResolvedValue({ ownableId: 'ownable/id', cid: 'cid-1' }),
     } as any;
-    const controller = new OwnableController(ownableService);
+    const controller = createController(ownableService);
 
     const req: any = { file: { buffer: Buffer.from('zip') } };
     const res = buildRes();
 
-    await controller.uploadOwnable(req, res, undefined);
+    await controller.uploadOwnable('base-sepolia', req, res, undefined);
 
-    expect(ownableService.uploadOwnable).toHaveBeenCalledWith(req.file.buffer, undefined, true);
-    expect(res.location).toHaveBeenCalledWith('/ownables/ownable%2Fid');
+    expect(ownableService.uploadOwnable).toHaveBeenCalledWith(req.file.buffer, baseSepolia, undefined, true);
+    expect(res.location).toHaveBeenCalledWith('/base-sepolia/ownables/ownable%2Fid');
     expect(res.status).toHaveBeenCalledWith(201);
   });
 
@@ -64,10 +75,10 @@ describe('OwnableController', () => {
     const ownableService = {
       uploadOwnable: jest.fn().mockResolvedValue({ status: 'pending', ownableId: 'ownable-1', expiresAt: '2026-11-03T00:00:00.000Z' }),
     } as any;
-    const controller = new OwnableController(ownableService);
+    const controller = createController(ownableService);
     const res = buildRes();
 
-    await controller.uploadOwnable({ file: { buffer: Buffer.from('zip') } } as any, res, undefined);
+    await controller.uploadOwnable('base-sepolia', { file: { buffer: Buffer.from('zip') } } as any, res, undefined);
 
     expect(res.status).toHaveBeenCalledWith(202);
     expect(res.location).not.toHaveBeenCalled();
@@ -78,10 +89,10 @@ describe('OwnableController', () => {
     const ownableService = {
       uploadOwnable: jest.fn().mockResolvedValue({ status: 'available', created: false, ownableId: 'ownable-1', cid: 'cid-1' }),
     } as any;
-    const controller = new OwnableController(ownableService);
+    const controller = createController(ownableService);
     const res = buildRes();
 
-    await controller.uploadOwnable({ file: { buffer: Buffer.from('zip') } } as any, res, undefined);
+    await controller.uploadOwnable('base-sepolia', { file: { buffer: Buffer.from('zip') } } as any, res, undefined);
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.location).not.toHaveBeenCalled();
@@ -93,22 +104,22 @@ describe('OwnableController', () => {
         .fn()
         .mockRejectedValue(new UserError("Invalid package: 'chain.json' and 'eventChain.json' differ")),
     } as any;
-    const controller = new OwnableController(ownableService);
+    const controller = createController(ownableService);
 
     const req: any = { file: { buffer: Buffer.from('zip') } };
     const res = buildRes();
 
-    await controller.uploadOwnable(req, res, undefined);
+    await controller.uploadOwnable('base-sepolia', req, res, undefined);
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.send).toHaveBeenCalledWith("Invalid package: 'chain.json' and 'eventChain.json' differ");
   });
 
   it('rejects a missing multipart file with the existing 400 response', async () => {
-    const controller = new OwnableController({ uploadOwnable: jest.fn() } as any);
+    const controller = createController({ uploadOwnable: jest.fn() } as any);
     const res = buildRes();
 
-    await controller.uploadOwnable({} as any, res, undefined);
+    await controller.uploadOwnable('base-sepolia', {} as any, res, undefined);
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.send).toHaveBeenCalledWith('Failed to read data from HTTP request');
@@ -124,12 +135,12 @@ describe('OwnableController', () => {
           ),
         ),
     } as any;
-    const controller = new OwnableController(ownableService);
+    const controller = createController(ownableService);
 
     const req: any = { file: { buffer: Buffer.from('zip') } };
     const res = buildRes();
 
-    await controller.uploadOwnable(req, res, undefined);
+    await controller.uploadOwnable('base-sepolia', req, res, undefined);
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.send).toHaveBeenCalledWith(
@@ -151,12 +162,12 @@ describe('OwnableController', () => {
     const ownableService = {
       getOwnableVerification: jest.fn().mockResolvedValue(verification),
     } as any;
-    const controller = new OwnableController(ownableService);
+    const controller = createController(ownableService);
     const res = buildRes();
 
-    await controller.verification({ params: { id: 'ownable-1' } } as any, res);
+    await controller.verification('base-sepolia', { params: { id: 'ownable-1' } } as any, res);
 
-    expect(ownableService.getOwnableVerification).toHaveBeenCalledWith('ownable-1');
+    expect(ownableService.getOwnableVerification).toHaveBeenCalledWith('ownable-1', baseSepolia);
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(verification);
   });
@@ -180,12 +191,12 @@ describe('OwnableController', () => {
     const ownableService = {
       getOwnablePublicEvents: jest.fn().mockResolvedValue(publicEvents),
     } as any;
-    const controller = new OwnableController(ownableService);
+    const controller = createController(ownableService);
     const res = buildRes();
 
-    await controller.publicEvents({ params: { id: 'ownable-1' } } as any, res);
+    await controller.publicEvents('base-sepolia', { params: { id: 'ownable-1' } } as any, res);
 
-    expect(ownableService.getOwnablePublicEvents).toHaveBeenCalledWith('ownable-1');
+    expect(ownableService.getOwnablePublicEvents).toHaveBeenCalledWith('ownable-1', baseSepolia);
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(publicEvents);
   });
@@ -194,12 +205,38 @@ describe('OwnableController', () => {
     const ownableService = {
       downloadOwnable: jest.fn().mockRejectedValue(new UserError('STALE_OWNABLE missingReplayKeys=0xaaa:1')),
     } as any;
-    const controller = new OwnableController(ownableService);
+    const controller = createController(ownableService);
     const res = buildRes();
 
-    await controller.download({ params: { id: 'ownable-1' } } as any, res);
+    await controller.download('base-sepolia', { params: { id: 'ownable-1' } } as any, res);
 
     expect(res.status).toHaveBeenCalledWith(409);
+  });
+
+  it('preserves the domain message for an unregistered Ownable bundle', async () => {
+    const ownableService = {
+      downloadOwnable: jest.fn().mockRejectedValue(new NotFoundError('Ownable bundle with id ownable-1 not available on this hub')),
+    } as any;
+    const controller = createController(ownableService);
+    const res = buildRes();
+
+    await controller.download('base-sepolia', { params: { id: 'ownable-1' } } as any, res);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.send).toHaveBeenCalledWith('Ownable bundle with id ownable-1 not available on this hub');
+  });
+
+  it('preserves the distinct domain message for an Ownable on another network', async () => {
+    const ownableService = {
+      getOwnableVerification: jest.fn().mockRejectedValue(new NotFoundError('Ownable is not available on this network')),
+    } as any;
+    const controller = createController(ownableService);
+    const res = buildRes();
+
+    await controller.verification('base', { params: { id: 'ownable-1' } } as any, res);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.send).toHaveBeenCalledWith('Ownable is not available on this network');
   });
 
   it('streams a non-empty zip body for GET /ownables/:id/bundle over HTTP', async () => {
@@ -214,6 +251,7 @@ describe('OwnableController', () => {
       controllers: [OwnableController],
       providers: [
         { provide: OwnableService, useValue: ownableService },
+        { provide: ConfigService, useValue: { resolveHubNetwork: jest.fn(() => baseSepolia) } },
         { provide: QuarantineService, useValue: { acquireIngress: jest.fn(async () => async () => undefined) } },
       ],
     }).compile();
@@ -225,13 +263,13 @@ describe('OwnableController', () => {
       await app.init();
 
       const response = await request(app.getHttpServer())
-        .get('/ownables/ownable-1/bundle')
+        .get('/base-sepolia/ownables/ownable-1/bundle')
         .buffer(true)
         .parse(binaryParser)
         .expect(200)
         .expect('Content-Type', /application\/zip/);
 
-      expect(ownableService.downloadOwnable).toHaveBeenCalledWith('ownable-1');
+      expect(ownableService.downloadOwnable).toHaveBeenCalledWith('ownable-1', baseSepolia);
       expect(response.body).toBeInstanceOf(Buffer);
       expect(response.body.length).toBeGreaterThan(0);
 
@@ -244,7 +282,7 @@ describe('OwnableController', () => {
   });
 });
 
-describe('Story #9 resource route behavior', () => {
+describe('Story #21 network resource route behavior', () => {
   const ownableService = {
     getAvailableOwnables: jest.fn(),
     streamOwnablePublicEvents: jest.fn(),
@@ -316,7 +354,7 @@ describe('Story #9 resource route behavior', () => {
     });
 
     await request(app.getHttpServer())
-      .get(`/accounts/${encodeURIComponent('eip155:84532:0xabc')}/available-ownables`)
+      .get('/base-sepolia/inbox/0xabc')
       .expect(200)
       .expect(({ body }) => {
         expect(body).toEqual({
@@ -342,20 +380,28 @@ describe('Story #9 resource route behavior', () => {
         expect(body.entries[0]).not.toHaveProperty('ownerStateVersion');
       });
 
-    expect(ownableService.getAvailableOwnables).toHaveBeenCalledWith('eip155:84532:0xabc');
+    expect(ownableService.getAvailableOwnables).toHaveBeenCalledWith(
+      '0xabc',
+      expect.objectContaining({ slug: 'base-sepolia', caip2: 'eip155:84532' }),
+    );
   });
 
   it('returns 404 when recipient discovery is disabled', async () => {
     ownableService.getAvailableOwnables.mockRejectedValue(new UserError('RECIPIENT_DISCOVERY_DISABLED'));
 
     await request(app.getHttpServer())
-      .get(`/accounts/${encodeURIComponent('eip155:84532:0xabc')}/available-ownables`)
+      .get('/base-sepolia/inbox/0xabc')
       .expect(404);
   });
 
   it('returns 400 when owner is missing or malformed', async () => {
     ownableService.getAvailableOwnables.mockRejectedValueOnce(new UserError('owner must be a valid CAIP-10 account'));
-    await request(app.getHttpServer()).get('/accounts/not-caip10/available-ownables').expect(400);
+    await request(app.getHttpServer()).get('/base-sepolia/inbox/not-an-address').expect(400);
+  });
+
+  it('rejects an unsupported route network before invoking the service', async () => {
+    await request(app.getHttpServer()).get('/unsupported/inbox/0xabc').expect(400);
+    expect(ownableService.getAvailableOwnables).not.toHaveBeenCalled();
   });
 
   it('streams public events over SSE with repeated ownableId params and one named event', async () => {
@@ -397,7 +443,7 @@ describe('Story #9 resource route behavior', () => {
     );
 
     const response = await request(app.getHttpServer())
-      .get('/public-events')
+      .get('/base-sepolia/streams/public-events')
       .query({ ownableId: ['ownable-1', 'ownable-2'], fromBlock: '11' })
       .buffer(true)
       .parse((res, callback) => {
@@ -410,7 +456,11 @@ describe('Story #9 resource route behavior', () => {
       .expect(200)
       .expect('Content-Type', /text\/event-stream/);
 
-    expect(ownableService.streamOwnablePublicEvents).toHaveBeenCalledWith(['ownable-1', 'ownable-2'], '11');
+    expect(ownableService.streamOwnablePublicEvents).toHaveBeenCalledWith(
+      ['ownable-1', 'ownable-2'],
+      '11',
+      expect.objectContaining({ slug: 'base-sepolia', caip2: 'eip155:84532' }),
+    );
     expect(response.body).toContain('event: public-event');
     expect(response.body).toContain('"ownableId":"ownable-1"');
     expect(response.body).toContain('"ownableId":"ownable-2"');
@@ -418,10 +468,10 @@ describe('Story #9 resource route behavior', () => {
 
   it('rejects an unfiltered or malformed public-event request before opening a stream', async () => {
     ownableService.streamOwnablePublicEvents.mockRejectedValueOnce(new UserError('ownableId is required'));
-    await request(app.getHttpServer()).get('/public-events').expect(400);
+    await request(app.getHttpServer()).get('/base-sepolia/streams/public-events').expect(400);
 
     ownableService.streamOwnablePublicEvents.mockRejectedValueOnce(new UserError('fromBlock must be a non-negative integer'));
-    await request(app.getHttpServer()).get('/public-events').query({ ownableId: 'ownable-1', fromBlock: '-1' }).expect(400);
+    await request(app.getHttpServer()).get('/base-sepolia/streams/public-events').query({ ownableId: 'ownable-1', fromBlock: '-1' }).expect(400);
   });
 
   it('passes an omitted fromBlock through to the service default', async () => {
@@ -444,12 +494,16 @@ describe('Story #9 resource route behavior', () => {
     );
 
     await request(app.getHttpServer())
-      .get('/public-events')
+      .get('/base-sepolia/streams/public-events')
       .query({ ownableId: 'ownable-1' })
       .expect(200)
       .expect('Content-Type', /text\/event-stream/);
 
-    expect(ownableService.streamOwnablePublicEvents).toHaveBeenCalledWith('ownable-1', undefined);
+    expect(ownableService.streamOwnablePublicEvents).toHaveBeenCalledWith(
+      'ownable-1',
+      undefined,
+      expect.objectContaining({ slug: 'base-sepolia', caip2: 'eip155:84532' }),
+    );
   });
 
   it('streams discovery updates over a separate live-only SSE route', async () => {
@@ -472,7 +526,7 @@ describe('Story #9 resource route behavior', () => {
     );
 
     const response = await request(app.getHttpServer())
-      .get(`/accounts/${encodeURIComponent('eip155:84532:0xabc')}/available-ownables/events`)
+      .get('/base-sepolia/streams/inbox/0xabc')
       .buffer(true)
       .parse((res, callback) => {
         let body = '';
@@ -484,7 +538,10 @@ describe('Story #9 resource route behavior', () => {
       .expect(200)
       .expect('Content-Type', /text\/event-stream/);
 
-    expect(ownableService.streamAvailableOwnables).toHaveBeenCalledWith('eip155:84532:0xabc');
+    expect(ownableService.streamAvailableOwnables).toHaveBeenCalledWith(
+      '0xabc',
+      expect.objectContaining({ slug: 'base-sepolia', caip2: 'eip155:84532' }),
+    );
     expect(response.body).toContain('event: available-ownable');
     expect(response.body).toContain('"owner":"eip155:84532:0xabc"');
     expect(response.body).toContain('"id":"0x11"');
@@ -496,7 +553,7 @@ describe('Story #9 resource route behavior', () => {
     await request(app.getHttpServer()).get('/ownables/available/stream').expect(404);
     await request(app.getHttpServer()).get('/ownables/public-events/stream').expect(404);
     await request(app.getHttpServer()).get('/ownables/serverinfo').expect(404);
-    await request(app.getHttpServer()).get('/ownables/ownable-1/chain').expect(404);
+    await request(app.getHttpServer()).get('/base-sepolia/ownables/ownable-1/chain').expect(404);
     await request(app.getHttpServer()).post('/packages').expect(404);
     await request(app.getHttpServer()).get('/packages/cid-1/download').expect(404);
     await request(app.getHttpServer())
@@ -511,12 +568,12 @@ describe('Story #9 resource route behavior', () => {
       .query({ network: 'eip155:84532', address: '0xabc', id: '1' })
       .expect(404);
 
-    await request(app.getHttpServer()).get('/ownables/cid-1/events').expect(404);
+    await request(app.getHttpServer()).get('/base-sepolia/ownables/cid-1/events').expect(404);
   });
 
   it('keeps optional bearer parsing on migrated public routes', async () => {
     await request(app.getHttpServer())
-      .get(`/accounts/${encodeURIComponent('eip155:84532:0xabc')}/available-ownables`)
+      .get('/base-sepolia/inbox/0xabc')
       .set('Authorization', 'invalid')
       .expect(401);
   });
@@ -529,16 +586,16 @@ describe('Story #9 resource route behavior', () => {
       '/',
       '/info',
       '/health',
-      '/api/v1/auth/nonce',
-      '/api/v1/auth/verify',
-      '/ownables',
-      '/ownables/{id}/bundle',
-      '/ownables/{id}/verification',
-      '/ownables/{id}/public-events',
-      '/accounts/{account}/available-ownables',
-      '/accounts/{account}/available-ownables/events',
-      '/public-events',
-      '/hub/wallet/{network}',
+      '/auth/nonce',
+      '/auth/verify',
+      '/{network}/ownables',
+      '/{network}/ownables/{id}/bundle',
+      '/{network}/ownables/{id}/verification',
+      '/{network}/ownables/{id}/public-events',
+      '/{network}/inbox/{address}',
+      '/{network}/streams/inbox/{address}',
+      '/{network}/streams/public-events',
+      '/{network}/hub/wallet',
     ]) {
       expect(paths[path]).toBeDefined();
     }
@@ -556,10 +613,6 @@ describe('Story #9 resource route behavior', () => {
       expect(paths[path]).toBeUndefined();
     }
 
-    expect(Object.keys(paths).filter((path) => path.startsWith('/ownables/')).sort()).toEqual([
-      '/ownables/{id}/bundle',
-      '/ownables/{id}/public-events',
-      '/ownables/{id}/verification',
-    ]);
+    expect(Object.keys(paths).some((path) => path.startsWith('/ownables/'))).toBe(false);
   });
 });

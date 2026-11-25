@@ -29,6 +29,7 @@ const MAX_OUTPUT_LENGTH = 20_000;
 const E2E_ANCHOR_CONTRACT = '0x0000000000000000000000000000000000000099';
 const E2E_ANCHOR_TRANSACTION = `0x${'9'.repeat(64)}`;
 const E2E_PUBLIC_EVENT_TRANSACTION = `0x${'8'.repeat(64)}`;
+const E2E_UNKNOWN_PUBLIC_EVENT_TRANSACTION = `0x${'7'.repeat(64)}`;
 const STORY10_EXACT_UPLOAD_BYTES = 268435456;
 const STORY10_TIMEOUT_MS = 180_000;
 const STORY10_LIFECYCLE_ANCHOR = '0x0000000000000000000000000000000000000077';
@@ -642,7 +643,7 @@ async function postMultipartStream(port, fileName, fileChunks, fileBytes, timeou
         host: '127.0.0.1',
         port,
         method: 'POST',
-        path: '/ownables',
+        path: '/base-sepolia/ownables',
         headers: {
           'content-type': `multipart/form-data; boundary=${boundary}`,
           'content-length': String(prefix.length + fileBytes + suffix.length),
@@ -751,7 +752,10 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   const ownerAccount = `eip155:${chainId}:${owner.address.toLowerCase()}`;
   t.after(async () => {
     try {
-      await database.query(`DELETE FROM indexed_public_events WHERE transaction_hash = LOWER($1)`, [E2E_PUBLIC_EVENT_TRANSACTION]);
+      await database.query(`DELETE FROM indexed_public_events WHERE transaction_hash IN (LOWER($1), LOWER($2))`, [
+        E2E_PUBLIC_EVENT_TRANSACTION,
+        E2E_UNKNOWN_PUBLIC_EVENT_TRANSACTION,
+      ]);
       await database.query(`DELETE FROM indexed_anchor_events WHERE transaction_hash = LOWER($1)`, [E2E_ANCHOR_TRANSACTION]);
       await database.query(`DELETE FROM ownable_records WHERE subject_id = LOWER($1)`, [subjectId]);
     } finally {
@@ -790,16 +794,11 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   const storageRoot = await mkdtemp(join(tmpdir(), 'ownables-hub-e2e-'));
   const hub = startHub(port, storageRoot, {
     LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED: 'true',
-    HUB_NETWORK_PROFILE: 'testnet',
-    TESTNET_CHAIN_ID: chainId,
+    INDEXER_NETWORKS: 'base-sepolia',
     TESTNET_RPC_URL: rpc.url,
     TESTNET_BASE_RPC_URL: rpc.url,
     TESTNET_ANCHOR_CONTRACT_ADDR: E2E_ANCHOR_CONTRACT,
     TESTNET_ANCHOR_START_BLOCK: '0',
-    MAINNET_CHAIN_ID: '8453',
-    MAINNET_RPC_URL: rpc.url,
-    MAINNET_ANCHOR_CONTRACT_ADDR: '0x0000000000000000000000000000000000000098',
-    MAINNET_ANCHOR_START_BLOCK: '0',
   });
   t.after(async () => {
     try {
@@ -832,6 +831,22 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
     '/',
     '/info',
     '/health',
+    '/auth/nonce',
+    '/auth/verify',
+    '/{network}/ownables',
+    '/{network}/ownables/{id}/bundle',
+    '/{network}/ownables/{id}/verification',
+    '/{network}/ownables/{id}/public-events',
+    '/{network}/inbox/{address}',
+    '/{network}/streams/inbox/{address}',
+    '/{network}/streams/public-events',
+    '/{network}/hub/wallet',
+  ]) {
+    assert.ok(openApi.paths[path], `Expected canonical OpenAPI path ${path}`);
+  }
+  for (const path of [
+    '/packages',
+    '/packages/{cid}/download',
     '/api/v1/auth/nonce',
     '/api/v1/auth/verify',
     '/ownables',
@@ -842,12 +857,6 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
     '/accounts/{account}/available-ownables/events',
     '/public-events',
     '/hub/wallet/{network}',
-  ]) {
-    assert.ok(openApi.paths[path], `Expected canonical OpenAPI path ${path}`);
-  }
-  for (const path of [
-    '/packages',
-    '/packages/{cid}/download',
     '/ownables/upload',
     '/ownables/{id}/chain',
     '/ownables/available',
@@ -865,14 +874,14 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
 
   const accountEventController = new AbortController();
   const accountEventResponse = fetch(
-    `http://127.0.0.1:${port}/accounts/${encodeURIComponent(ownerAccount)}/available-ownables/events`,
+    `http://127.0.0.1:${port}/base-sepolia/streams/inbox/${owner.address}`,
     { signal: accountEventController.signal },
   );
   await delay(POLL_INTERVAL_MS);
 
   const supportedForm = new FormData();
   supportedForm.set('file', new Blob([supportedArchive], { type: 'application/zip' }), 'supported-ownable.zip');
-  const supportedUploadResponse = await fetch(`http://127.0.0.1:${port}/ownables`, {
+  const supportedUploadResponse = await fetch(`http://127.0.0.1:${port}/base-sepolia/ownables`, {
     method: 'POST',
     body: supportedForm,
     signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
@@ -890,10 +899,10 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   assert.equal(Object.hasOwn(supportedUpload, 'nftNetwork'), false);
   assert.equal(Object.hasOwn(supportedUpload, 'smartContractAddress'), false);
   assert.equal(Object.hasOwn(supportedUpload, 'NftId'), false);
-  assert.equal(supportedUploadResponse.headers.get('location'), `/ownables/${encodeURIComponent(chain.id)}`);
+  assert.equal(supportedUploadResponse.headers.get('location'), `/base-sepolia/ownables/${encodeURIComponent(chain.id)}`);
 
   const verificationResponse = await fetch(
-    `http://127.0.0.1:${port}/ownables/${encodeURIComponent(chain.id)}/verification`,
+    `http://127.0.0.1:${port}/base-sepolia/ownables/${encodeURIComponent(chain.id)}/verification`,
     { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
   );
   assert.equal(verificationResponse.status, 200, 'Expected the canonical verification response');
@@ -902,7 +911,7 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   assert.equal(Object.hasOwn(verification, 'nft'), false);
 
   const bundleResponse = await fetch(
-    `http://127.0.0.1:${port}/ownables/${encodeURIComponent(chain.id)}/bundle`,
+    `http://127.0.0.1:${port}/base-sepolia/ownables/${encodeURIComponent(chain.id)}/bundle`,
     { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
   );
   assert.equal(bundleResponse.status, 200);
@@ -917,6 +926,24 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   const storedFilesBeforeInvalidUpload = (await listStoredFiles(storageRoot)).sort();
   assert.ok(storedFilesBeforeInvalidUpload.length > 0, 'Expected the successful upload to persist bundle files');
 
+  for (const suffix of ['bundle', 'verification', 'public-events']) {
+    const wrongNetworkResponse = await fetch(
+      `http://127.0.0.1:${port}/base/ownables/${encodeURIComponent(chain.id)}/${suffix}`,
+      { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
+    );
+    assert.equal(wrongNetworkResponse.status, 404, `Expected ${suffix} to reject a stored Base Sepolia Ownable on Base`);
+  }
+
+  const wrongNetworkForm = new FormData();
+  wrongNetworkForm.set('file', new Blob([supportedArchive], { type: 'application/zip' }), 'wrong-network-ownable.zip');
+  const wrongNetworkUpload = await fetch(`http://127.0.0.1:${port}/base/ownables`, {
+    method: 'POST',
+    body: wrongNetworkForm,
+    signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
+  });
+  assert.equal(wrongNetworkUpload.status, 400, 'Expected a Base Sepolia archive to be rejected at the Base upload route');
+  assert.deepEqual((await listStoredFiles(storageRoot)).sort(), storedFilesBeforeInvalidUpload, 'Wrong-network uploads must not write archive files');
+
   const accountEvent = await accountEventResponse;
   const accountEventChunk = await readSseEvent(accountEvent, 'available-ownable');
   accountEventController.abort();
@@ -925,7 +952,7 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   assert.match(accountEventChunk, new RegExp(`"id":"${chain.id}"`));
 
   const accountResponse = await fetch(
-    `http://127.0.0.1:${port}/accounts/${encodeURIComponent(ownerAccount)}/available-ownables`,
+    `http://127.0.0.1:${port}/base-sepolia/inbox/${owner.address}`,
     { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
   );
   assert.equal(accountResponse.status, 200);
@@ -963,8 +990,44 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
     ],
   );
 
+  const unknownOwnableId = `0x${'a'.repeat(64)}`;
+  await database.query(
+    `INSERT INTO indexed_public_events (
+       slot_name, chain_id, anchor_contract_address, block_number, block_hash,
+       transaction_hash, transaction_index, log_index, event_name, ownable_id,
+       package_cid, subject_id, source_address, event_type, data_hex, event_timestamp, payload_json
+     ) VALUES (
+       $1, $2, LOWER($3), $4, LOWER($5), LOWER($6), $7, $8, $9,
+       NULL, NULL, LOWER($10), LOWER($11), $12, LOWER($13), $14, $15::jsonb
+     )`,
+    [
+      'testnet',
+      chainId,
+      E2E_ANCHOR_CONTRACT,
+      '8',
+      `0x${'5'.repeat(64)}`,
+      E2E_UNKNOWN_PUBLIC_EVENT_TRANSACTION,
+      0,
+      0,
+      'PublicEvent',
+      ethers.keccak256(ethers.getBytes(unknownOwnableId)),
+      '0x00000000000000000000000000000000000000bb',
+      'unknown-ownable-event',
+      '0x5678',
+      '8',
+      JSON.stringify({ source: 'compiled-e2e-unknown-ownable' }),
+    ],
+  );
+
+  const unknownSnapshotResponse = await fetch(
+    `http://127.0.0.1:${port}/base-sepolia/ownables/${encodeURIComponent(unknownOwnableId)}/public-events`,
+    { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
+  );
+  assert.equal(unknownSnapshotResponse.status, 200, 'Indexed public events must be readable before the Ownable is stored');
+  assert.deepEqual((await unknownSnapshotResponse.json()).publicEvents.map((event) => event.eventType), ['unknown-ownable-event']);
+
   const defaultPublicEvents = await fetch(
-    `http://127.0.0.1:${port}/public-events?ownableId=${encodeURIComponent(chain.id)}&ownableId=${encodeURIComponent(chain.id)}`,
+    `http://127.0.0.1:${port}/base-sepolia/streams/public-events?ownableId=${encodeURIComponent(chain.id)}&ownableId=${encodeURIComponent(chain.id)}`,
     { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
   );
   assert.equal(defaultPublicEvents.status, 200);
@@ -974,21 +1037,24 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   assert.match(defaultPublicEventChunk, new RegExp(`"ownableId":"${chain.id}"`));
 
   const explicitPublicEvents = await fetch(
-    `http://127.0.0.1:${port}/public-events?ownableId=${encodeURIComponent(chain.id)}&fromBlock=7`,
+    `http://127.0.0.1:${port}/base-sepolia/streams/public-events?ownableId=${encodeURIComponent(chain.id)}&fromBlock=7`,
     { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
   );
   assert.equal(explicitPublicEvents.status, 200);
   const explicitPublicEventChunk = await readSseEvent(explicitPublicEvents, 'public-event');
   assert.match(explicitPublicEventChunk, /"eventType":"compiled-route-event"/);
 
-  for (const path of ['/public-events', `/public-events?ownableId=${encodeURIComponent(chain.id)}&fromBlock=-1`]) {
+  for (const path of [
+    '/base-sepolia/streams/public-events',
+    `/base-sepolia/streams/public-events?ownableId=${encodeURIComponent(chain.id)}&fromBlock=-1`,
+  ]) {
     const invalidPublicEvents = await fetch(`http://127.0.0.1:${port}${path}`, {
       signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
     });
     assert.equal(invalidPublicEvents.status, 400, `Expected ${path} to reject before subscribing`);
   }
 
-  const walletResponse = await fetch(`http://127.0.0.1:${port}/hub/wallet/eip155:base`, {
+  const walletResponse = await fetch(`http://127.0.0.1:${port}/base-sepolia/hub/wallet`, {
     signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
   });
   assert.equal(walletResponse.status, 200);
@@ -1000,14 +1066,14 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
     unit: 'ETH',
   });
   assert.equal(Object.hasOwn(wallet, 'privateKey'), false);
-  const unsupportedWalletResponse = await fetch(`http://127.0.0.1:${port}/hub/wallet/eip155:unknown`, {
+  const unsupportedWalletResponse = await fetch(`http://127.0.0.1:${port}/ethereum/hub/wallet`, {
     signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
   });
   assert.equal(unsupportedWalletResponse.status, 400);
 
   const form = new FormData();
   form.set('file', new Blob([archive], { type: 'application/zip' }), 'unsupported-runtime-ownable.zip');
-  const uploadResponse = await fetch(`http://127.0.0.1:${port}/ownables`, {
+  const uploadResponse = await fetch(`http://127.0.0.1:${port}/base-sepolia/ownables`, {
     method: 'POST',
     body: form,
     signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
@@ -1038,13 +1104,18 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
     ],
   );
   const supersededResponse = await fetch(
-    `http://127.0.0.1:${port}/ownables/${encodeURIComponent(chain.id)}/bundle`,
+    `http://127.0.0.1:${port}/base-sepolia/ownables/${encodeURIComponent(chain.id)}/bundle`,
     { signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) },
   );
   assert.equal(supersededResponse.status, 400);
   assert.match(await supersededResponse.text(), /contradictory authoritative anchor evidence/);
 
   for (const path of [
+    '/ownables',
+    `/ownables/${encodeURIComponent(chain.id)}/bundle`,
+    `/accounts/${encodeURIComponent(ownerAccount)}/available-ownables`,
+    '/public-events',
+    '/hub/wallet/eip155:base',
     '/ownables/upload',
     '/ownables/available',
     '/ownables/available/stream',
@@ -1106,16 +1177,11 @@ test('story10 compiled Hub and indexer promote a durable pending upload across p
   t.after(() => rm(storageRoot, { recursive: true, force: true }));
   const env = {
     LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED: 'true',
-    HUB_NETWORK_PROFILE: 'testnet',
-    TESTNET_CHAIN_ID: '84532',
+    INDEXER_NETWORKS: 'base-sepolia',
     TESTNET_RPC_URL: rpc.url,
     TESTNET_BASE_RPC_URL: rpc.url,
     TESTNET_ANCHOR_CONTRACT_ADDR: STORY10_LIFECYCLE_ANCHOR,
-    TESTNET_ANCHOR_START_BLOCK: '0',
-    MAINNET_CHAIN_ID: '8453',
-    MAINNET_RPC_URL: rpc.url,
-    MAINNET_ANCHOR_CONTRACT_ADDR: '0x0000000000000000000000000000000000000098',
-    MAINNET_ANCHOR_START_BLOCK: '0',
+    TESTNET_ANCHOR_START_BLOCK: '7',
     OWNABLES_STORAGE: pathToFileURL(storageRoot).href,
     QUARANTINE_STORAGE: pathToFileURL(join(storageRoot, 'quarantine')).href,
     QUARANTINE_MAX_PENDING_OBJECTS: '4',
@@ -1132,14 +1198,14 @@ test('story10 compiled Hub and indexer promote a durable pending upload across p
   async function upload(bytes = archive) {
     const form = new FormData();
     form.set('file', new Blob([bytes], { type: 'application/zip' }), 'pending-ownable.zip');
-    return fetch(`${baseUrl}/ownables`, { method: 'POST', body: form, signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) });
+    return fetch(`${baseUrl}/base-sepolia/ownables`, { method: 'POST', body: form, signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS) });
   }
   async function assertHidden() {
-    const discovery = await fetch(`${baseUrl}/accounts/${encodeURIComponent(account)}/available-ownables`);
+    const discovery = await fetch(`${baseUrl}/base-sepolia/inbox/${owner.address}`);
     assert.equal(discovery.status, 200);
     assert.deepEqual((await discovery.json()).entries, []);
     for (const suffix of ['bundle', 'verification']) {
-      const response = await fetch(`${baseUrl}/ownables/${encodeURIComponent(chain.id)}/${suffix}`);
+      const response = await fetch(`${baseUrl}/base-sepolia/ownables/${encodeURIComponent(chain.id)}/${suffix}`);
       assert.notEqual(response.status, 200, `Pending Ownable ${suffix} must remain private`);
     }
     const records = await database.query('SELECT COUNT(*)::int AS count FROM ownable_records WHERE subject_id = LOWER($1)', [subjectId]);
@@ -1166,7 +1232,7 @@ test('story10 compiled Hub and indexer promote a durable pending upload across p
 
   const subscriber = new AbortController();
   t.after(() => subscriber.abort());
-  const eventResponse = await fetch(`${baseUrl}/accounts/${encodeURIComponent(account)}/available-ownables/events`, {
+  const eventResponse = await fetch(`${baseUrl}/base-sepolia/streams/inbox/${owner.address}`, {
     signal: subscriber.signal,
   });
   assert.equal(eventResponse.status, 200);
@@ -1178,9 +1244,9 @@ test('story10 compiled Hub and indexer promote a durable pending upload across p
   assert.match(event, new RegExp(`"id":"${chain.id}"`));
   assert.match(event, new RegExp(`"owner":"${account}"`));
 
-  const discovery = await fetch(`${baseUrl}/accounts/${encodeURIComponent(account)}/available-ownables`);
+  const discovery = await fetch(`${baseUrl}/base-sepolia/inbox/${owner.address}`);
   assert.deepEqual((await discovery.json()).entries.map((entry) => entry.id), [chain.id]);
-  const bundle = await fetch(`${baseUrl}/ownables/${encodeURIComponent(chain.id)}/bundle`);
+  const bundle = await fetch(`${baseUrl}/base-sepolia/ownables/${encodeURIComponent(chain.id)}/bundle`);
   assert.equal(bundle.status, 200, 'Promoted Ownable must be downloadable');
   const zip = await JSZip.loadAsync(await bundle.arrayBuffer());
   assert.ok(zip.file('chain.json'));
@@ -1207,7 +1273,7 @@ test('story10 compiled Hub and indexer promote a durable pending upload across p
   );
   assert.deepEqual(expired.rows, [{ status: 'expired', deleted: true }], 'Expired private upload must be deleted');
   assert.equal((await database.query('SELECT COUNT(*)::int AS count FROM ownable_records WHERE subject_id = LOWER($1)', [expiringSubject])).rows[0].count, 0);
-  const expiredBundle = await fetch(`${baseUrl}/ownables/${encodeURIComponent(expiring.chain.id)}/bundle`);
+  const expiredBundle = await fetch(`${baseUrl}/base-sepolia/ownables/${encodeURIComponent(expiring.chain.id)}/bundle`);
   assert.notEqual(expiredBundle.status, 200);
 });
 
@@ -1233,16 +1299,11 @@ test('story10-256mib quarantines the exact ingress limit and rejects one byte mo
     STORY10_RESOURCE_PROFILE: 'story10-256mib',
     UPLOAD_RATE_LIMIT_MAX_REQUESTS: '1000',
     NODE_OPTIONS: '--max-old-space-size=2048',
-    HUB_NETWORK_PROFILE: 'testnet',
-    TESTNET_CHAIN_ID: '84532',
+    INDEXER_NETWORKS: 'base-sepolia',
     TESTNET_RPC_URL: 'http://127.0.0.1:1',
     TESTNET_BASE_RPC_URL: 'http://127.0.0.1:1',
     TESTNET_ANCHOR_CONTRACT_ADDR: E2E_ANCHOR_CONTRACT,
     TESTNET_ANCHOR_START_BLOCK: '0',
-    MAINNET_CHAIN_ID: '8453',
-    MAINNET_RPC_URL: 'http://127.0.0.1:1',
-    MAINNET_ANCHOR_CONTRACT_ADDR: '0x0000000000000000000000000000000000000098',
-    MAINNET_ANCHOR_START_BLOCK: '0',
   });
   t.after(async () => {
     try {

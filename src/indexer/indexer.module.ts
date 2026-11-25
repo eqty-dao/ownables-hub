@@ -10,7 +10,11 @@ import { OwnableModule } from '../ownable/ownable.module';
 @Module({
   imports: [ConfigModule, PersistenceModule, OwnableTransportModule, OwnableModule],
   providers: [
-    { provide: EVM_RPC_PROVIDER_FACTORY, useValue: (slot: { rpcUrl: string }) => new JsonRpcProvider(slot.rpcUrl) },
+    {
+      provide: EVM_RPC_PROVIDER_FACTORY,
+      useValue: (slot: { rpcUrl: string; chainId: string }) =>
+        new JsonRpcProvider(slot.rpcUrl, { name: `eip155:${slot.chainId}`, chainId: Number(slot.chainId) }),
+    },
     IndexerService,
   ],
   exports: [IndexerService],

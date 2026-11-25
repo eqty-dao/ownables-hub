@@ -1,13 +1,9 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
-import { readActiveBaseConfig } from './base-config.mjs';
+import { readEnabledBaseConfigs } from './base-config.mjs';
 
-const { startBlockVariable } = readActiveBaseConfig();
-const startBlock = process.env[startBlockVariable];
-if (!/^\d+$/.test(startBlock ?? '') || BigInt(startBlock) === 0n) {
-  throw new Error(`${startBlockVariable} must be a positive initialized Base block`);
-}
+readEnabledBaseConfigs();
 
 const interval = Number(process.env.INDEXER_INTERVAL_SECONDS ?? 15);
 if (!Number.isInteger(interval) || interval < 1 || interval > 86400) {
@@ -24,11 +20,13 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 }
 
 while (!stop.signal.aborted) {
-  child = spawn(process.execPath, ['dist/indexer/main.js', '--active-slot'], { stdio: 'inherit' });
+  child = spawn(process.execPath, ['dist/indexer/main.js'], { stdio: 'inherit' });
   const [code, signal] = await once(child, 'exit');
   child = undefined;
   if (stop.signal.aborted) break;
-  if (code !== 0) throw new Error(`Indexer exited with ${signal ?? code}`);
+  if (code !== 0) {
+    console.error(`Indexer cycle exited with ${signal ?? code}; retrying enabled networks after the configured interval`);
+  }
 
   try {
     await delay(interval * 1000, undefined, { signal: stop.signal });

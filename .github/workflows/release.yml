@@ -115,5 +115,6 @@ jobs:
           "${compose[@]}" up -d --wait db
           "${compose[@]}" run --rm --no-deps -T migrate < /dev/null
           "${compose[@]}" up -d --no-deps --wait hub indexer proxy
+          "${compose[@]}" exec -T proxy caddy reload --config - --adapter caddyfile < deploy/Caddyfile
           REMOTE
           curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 3 "${HUB_DEPLOY_URL%/}/health"

@@ -21,6 +21,24 @@ const ACTIVE_LIVE_IDENTITY = {
   chainId: '84532',
   anchorContractAddress: '0x0000000000000000000000000000000000000001',
 };
+const BASE_SEPOLIA_NETWORK = {
+  slug: 'base-sepolia',
+  caip2: 'eip155:84532',
+  chainId: '84532',
+  slotName: 'testnet',
+  rpcUrl: 'https://sepolia.base.org',
+  anchorContractAddress: ACTIVE_LIVE_IDENTITY.anchorContractAddress,
+  anchorStartBlock: 1n,
+} as const;
+const BASE_NETWORK = {
+  slug: 'base',
+  caip2: 'eip155:8453',
+  chainId: '8453',
+  slotName: 'mainnet',
+  rpcUrl: 'https://mainnet.base.org',
+  anchorContractAddress: '0x0000000000000000000000000000000000000002',
+  anchorStartBlock: 1n,
+} as const;
 let mockReplayInfo: Record<string, unknown>;
 let mockReplayFailure: Error | null;
 const mockClearRpc = jest.fn();
@@ -300,14 +318,15 @@ describe('OwnableService', () => {
   });
 
   const buildConfig = () => ({
-    getRuntimeNetworkProfile: () => 'testnet',
-    getActiveIndexerSlot: () => ({
-      ...ACTIVE_LIVE_IDENTITY,
-    }),
     getAuthoritySignerPrivateKey: () => '',
     getAuthoritySignerMnemonic: () => PRIVATE_STATE_OWNER_WALLET.mnemonic?.phrase || '',
     getAppConfig: () => ({ publicBaseUrl: 'http://127.0.0.1:8000' }),
     isLocalDevRecipientDiscoveryEnabled: () => true,
+    resolveHubNetwork: (network: string) => {
+      if (network === 'base-sepolia') return BASE_SEPOLIA_NETWORK;
+      if (network === 'base') return BASE_NETWORK;
+      throw new Error(`Unsupported Hub network: ${network}`);
+    },
   });
 
   const buildService = async () => {
@@ -641,7 +660,7 @@ describe('OwnableService', () => {
     storage.getEventChain.mockResolvedValue(chainBuffer);
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
 
-    const result = await service.uploadOwnable(buffer, undefined, false);
+    const result = await service.uploadOwnable(buffer, BASE_SEPOLIA_NETWORK, undefined, false);
 
     expect(result.cid).toEqual(expect.any(String));
     expect(result.ownerAccount).toEqual(`eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`);
@@ -711,7 +730,7 @@ describe('OwnableService', () => {
       return { stateDump: [], verified: true, appliedPublicReplayKeys: [] };
     });
 
-    const upload = await service.uploadOwnable(await archive.generateAsync({ type: 'uint8array' }));
+    const upload = await service.uploadOwnable(await archive.generateAsync({ type: 'uint8array' }), BASE_SEPOLIA_NETWORK);
     expect(upload.status).toBe('pending');
     expect(storage.storeEventChainAttachments).not.toHaveBeenCalled();
     expect(hubState.publishQuarantinedUpload).not.toHaveBeenCalled();
@@ -738,7 +757,7 @@ describe('OwnableService', () => {
     storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON())));
     storage.getPackageZip.mockResolvedValue(staticBytes);
     storage.getEventChainAttachments.mockResolvedValue(sidecar);
-    const bundle = await service.downloadOwnable(chain.id);
+    const bundle = await service.downloadOwnable(chain.id, BASE_SEPOLIA_NETWORK);
     const downloaded = await JSZip.loadAsync(await toBuffer(bundle.getStream() as Readable));
     expect(await downloaded.file(`attachments/${cid}`).async('nodebuffer')).toEqual(proof);
     expect(storage.getEventChainAttachments).toHaveBeenCalledWith(key);
@@ -752,7 +771,7 @@ describe('OwnableService', () => {
       signTypedData: async () => `0x${'00'.repeat(65)}`,
     });
     const upload = await createUploadBuffer(chain);
-    await expect(service.uploadOwnable(upload)).rejects.toThrow('Historical consume event has no verification proof');
+    await expect(service.uploadOwnable(upload, BASE_SEPOLIA_NETWORK)).rejects.toThrow('Historical consume event has no verification proof');
     expect(quarantine.stage).not.toHaveBeenCalled();
 
     const packageZip = new JSZip();
@@ -760,10 +779,10 @@ describe('OwnableService', () => {
     hubState.getOwnableBySubjectId.mockResolvedValue({ id: chain.id, packageCid: 'cid-1' });
     storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON())));
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
-    const verification = await service.getOwnableVerification(chain.id);
+    const verification = await service.getOwnableVerification(chain.id, BASE_SEPOLIA_NETWORK);
     expect(verification.verified).toBe(false);
     expect(verification.anchorVerification.verified).toBe(true);
-    const bundle = await service.downloadOwnable(chain.id);
+    const bundle = await service.downloadOwnable(chain.id, BASE_SEPOLIA_NETWORK);
     const downloaded = await JSZip.loadAsync(await toBuffer(bundle.getStream() as Readable));
     expect(JSON.parse(await downloaded.file('chain.json').async('string')).events.at(-1).parsedData.eventType).toBe('consume');
   });
@@ -774,7 +793,7 @@ describe('OwnableService', () => {
     const buffer = await createUploadBuffer(chain);
     mockReplayFailure = new Error('replay failed');
 
-    await expect(service.uploadOwnable(buffer, undefined, false)).rejects.toThrow('replay failed');
+    await expect(service.uploadOwnable(buffer, BASE_SEPOLIA_NETWORK, undefined, false)).rejects.toThrow('replay failed');
 
     expect(mockClearRpc).toHaveBeenCalledWith(chain.id);
   });
@@ -791,7 +810,7 @@ describe('OwnableService', () => {
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
     mockReplayInfo = { owner: REPLAY_OWNER_WALLET.address.toLowerCase() };
 
-    const result = await service.uploadOwnable(buffer, undefined, false);
+    const result = await service.uploadOwnable(buffer, BASE_SEPOLIA_NETWORK, undefined, false);
 
     expect(result.owner).toEqual(REPLAY_OWNER_WALLET.address.toLowerCase());
     expect(result.ownerAccount).toEqual(`eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`);
@@ -810,7 +829,7 @@ describe('OwnableService', () => {
       const chain = await createChain();
       chain.events[0].parsedData.network_id = networkId;
 
-      await expect(service.uploadOwnable(await createUploadBuffer(chain), undefined, false)).rejects.toThrow(
+      await expect(service.uploadOwnable(await createUploadBuffer(chain), BASE_SEPOLIA_NETWORK, undefined, false)).rejects.toThrow(
         'Invalid event chain: invalid network_id in first event',
       );
 
@@ -824,14 +843,51 @@ describe('OwnableService', () => {
     const { service } = await buildService();
     const chain = await createChain(networkId);
 
-    await expect(service.uploadOwnable(await createUploadBuffer(chain), undefined, false)).resolves.toEqual(
+    await expect(service.uploadOwnable(await createUploadBuffer(chain), BASE_SEPOLIA_NETWORK, undefined, false)).resolves.toEqual(
       expect.objectContaining({
         ownerAccount: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
       }),
     );
   });
 
-  it('rejects stored verification when the first event has no network_id', async () => {
+  it('rejects a mismatched upload network before retry lookup or quarantine staging', async () => {
+    const { service, hubState, quarantine, storage } = await buildService();
+    const chain = await createChain(8453);
+    const leaseEvents: string[] = [];
+    const prepareUpload = (service as any).prepareUpload.bind(service);
+    quarantine.acquireProcessing.mockImplementation(async () => {
+      leaseEvents.push('acquired');
+      return async () => leaseEvents.push('released');
+    });
+    jest.spyOn(service as any, 'prepareUpload').mockImplementation(async (...args: any[]) => {
+      expect(leaseEvents).toEqual(['acquired']);
+      return prepareUpload(...args);
+    });
+
+    await expect(service.uploadOwnable(await createUploadBuffer(chain), BASE_SEPOLIA_NETWORK)).rejects.toThrow(
+      'Ownable network eip155:8453 does not match route network base-sepolia',
+    );
+
+    expect(leaseEvents).toEqual(['acquired', 'released']);
+    expect(quarantine.findExactRetry).not.toHaveBeenCalled();
+    expect(quarantine.stage).not.toHaveBeenCalled();
+    expect(hubState.getOwnableBySubjectId).not.toHaveBeenCalled();
+    expect(storage.storePackageArtifacts).not.toHaveBeenCalled();
+    expect(storage.storeImmutableEventChain).not.toHaveBeenCalled();
+  });
+
+  it('hides stored Ownables from a different Base route', async () => {
+    const { service, hubState, storage } = await buildService();
+    const chain = await createChain(84532);
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1' });
+    storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
+
+    await expect(service.downloadOwnable(chain.id, BASE_NETWORK)).rejects.toThrow('Ownable is not available on this network');
+    await expect(service.getOwnableVerification(chain.id, BASE_NETWORK)).rejects.toThrow('Ownable is not available on this network');
+    await expect(service.getOwnablePublicEvents(chain.id, BASE_NETWORK)).rejects.toThrow('Ownable is not available on this network');
+  });
+
+  it('does not disclose a stored Ownable when its signed network cannot be resolved', async () => {
     const { service, storage, hubState } = await buildService();
     const chain = await createChain();
     delete chain.events[0].parsedData.network_id;
@@ -841,8 +897,29 @@ describe('OwnableService', () => {
     packageZip.file('ownable_bg.wasm', Buffer.from([0x00]));
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
 
-    await expect(service.getOwnableVerification(chain.id)).rejects.toThrow(
+    await expect(service.getOwnableVerification(chain.id, BASE_SEPOLIA_NETWORK)).rejects.toThrow(
       'Invalid event chain: invalid network_id in first event',
+    );
+  });
+
+  it('returns not found for a stored Ownable whose canonical chain is missing', async () => {
+    const { service, storage, hubState } = await buildService();
+    const missing = Object.assign(new Error('missing'), { code: 'ENOENT' });
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1' });
+    storage.getEventChain.mockRejectedValue(missing);
+
+    await expect(service.getOwnableVerification(`0x${'11'.repeat(32)}`, BASE_SEPOLIA_NETWORK)).rejects.toThrow(
+      'Ownable is not available on this network',
+    );
+  });
+
+  it('surfaces stored-chain backend failures', async () => {
+    const { service, storage, hubState } = await buildService();
+    hubState.getOwnableBySubjectId.mockResolvedValue({ id: 'id-1', packageCid: 'cid-1' });
+    storage.getEventChain.mockRejectedValue(new Error('archive storage unavailable'));
+
+    await expect(service.getOwnableVerification(`0x${'11'.repeat(32)}`, BASE_SEPOLIA_NETWORK)).rejects.toThrow(
+      'archive storage unavailable',
     );
   });
 
@@ -857,7 +934,7 @@ describe('OwnableService', () => {
     storage.getEventChain.mockResolvedValue(chainBuffer);
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
 
-    const result = await service.uploadOwnable(buffer, undefined, false);
+    const result = await service.uploadOwnable(buffer, BASE_SEPOLIA_NETWORK, undefined, false);
 
     expect(result.cid).toEqual(expect.any(String));
     expect(storage.storeImmutableEventChain).toHaveBeenCalledWith(chain.id, expect.any(String), expect.any(Buffer));
@@ -875,16 +952,19 @@ describe('OwnableService', () => {
 
     const canonicalResult = await service.uploadOwnable(
       await createUploadBuffer(chain, ['chain.json']),
+      BASE_SEPOLIA_NETWORK,
       undefined,
       false,
     );
     const aliasResult = await service.uploadOwnable(
       await createUploadBuffer(chain, ['eventChain.json']),
+      BASE_SEPOLIA_NETWORK,
       undefined,
       false,
     );
     const dualResult = await service.uploadOwnable(
       await createUploadBuffer(chain, ['chain.json', 'eventChain.json']),
+      BASE_SEPOLIA_NETWORK,
       undefined,
       false,
     );
@@ -906,6 +986,7 @@ describe('OwnableService', () => {
     storage.getPackageZip.mockResolvedValue(await firstPackageZip.generateAsync({ type: 'nodebuffer' }));
     const firstResult = await service.uploadOwnable(
       await createUploadBuffer(firstChain, ['chain.json']),
+      BASE_SEPOLIA_NETWORK,
       undefined,
       false,
     );
@@ -917,6 +998,7 @@ describe('OwnableService', () => {
     storage.getPackageZip.mockResolvedValue(await secondPackageZip.generateAsync({ type: 'nodebuffer' }));
     const secondResult = await service.uploadOwnable(
       await createUploadBuffer(secondChain, ['chain.json']),
+      BASE_SEPOLIA_NETWORK,
       undefined,
       false,
     );
@@ -933,7 +1015,7 @@ describe('OwnableService', () => {
       'eventChain.json': JSON.stringify({ ...chain.toJSON(), id: `0x${'22'.repeat(32)}` }),
     });
 
-    await expect(service.uploadOwnable(buffer, undefined, false)).rejects.toThrow(
+    await expect(service.uploadOwnable(buffer, BASE_SEPOLIA_NETWORK, undefined, false)).rejects.toThrow(
       "Invalid package: 'chain.json' and 'eventChain.json' differ",
     );
   });
@@ -944,7 +1026,7 @@ describe('OwnableService', () => {
     const buffer = await createUploadBuffer(chain, ['chain.json'], {}, buildWasmBindgenRuntimeWasm());
     runtimeValidatorSpy.mockRestore();
 
-    await expect(service.uploadOwnable(buffer, undefined, false)).rejects.toThrow(
+    await expect(service.uploadOwnable(buffer, BASE_SEPOLIA_NETWORK, undefined, false)).rejects.toThrow(
       "Invalid package: unsupported Ownable runtime in 'ownable_bg.wasm'",
     );
     expect(storage.storePackageArtifacts).not.toHaveBeenCalled();
@@ -958,7 +1040,7 @@ describe('OwnableService', () => {
     const buffer = await createUploadBuffer(chain, ['chain.json'], {}, buildWrongKindRuntimeWasm());
     runtimeValidatorSpy.mockRestore();
 
-    await expect(service.uploadOwnable(buffer, undefined, false)).rejects.toThrow(
+    await expect(service.uploadOwnable(buffer, BASE_SEPOLIA_NETWORK, undefined, false)).rejects.toThrow(
       "Invalid package: unsupported Ownable runtime in 'ownable_bg.wasm'. Expected raw-ABI exports with no wasm imports; wrong raw-ABI export kinds: memory (expected memory, found global)",
     );
     expect(storage.storePackageArtifacts).not.toHaveBeenCalled();
@@ -1006,12 +1088,13 @@ describe('OwnableService', () => {
     ]);
 
     const replaySpy = jest.spyOn(CoreOwnableService.prototype, 'attemptReplayIndexedPublicEvents');
-    await service.downloadOwnable(chain.id);
+    await service.downloadOwnable(chain.id, BASE_SEPOLIA_NETWORK);
 
     expect(replaySpy).toHaveBeenCalled();
     expect(hubState.getOwnableBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id));
     expect(hubState.listIndexedAnchorEventsByAnchorKeys).toHaveBeenCalledWith(
       chain.anchorMap.map(({ key }) => key.hex),
+      ACTIVE_LIVE_IDENTITY,
     );
     expect(hubState.listIndexedPublicEventsBySubjectId).toHaveBeenCalledWith(expectedSubjectId(chain.id), {
       slotName: 'testnet',
@@ -1036,7 +1119,7 @@ describe('OwnableService', () => {
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
     hubState.listIndexedPublicEventsBySubjectId.mockResolvedValue([]);
 
-    await service.downloadOwnable(chain.id);
+    await service.downloadOwnable(chain.id, BASE_SEPOLIA_NETWORK);
 
     expect(hubState.getOwnerStateByCid).not.toHaveBeenCalled();
   });
@@ -1079,8 +1162,8 @@ describe('OwnableService', () => {
       },
     ]);
 
-    await expect(service.downloadOwnable(chain.id)).resolves.toBeDefined();
-    const verification = await service.getOwnableVerification(chain.id);
+    await expect(service.downloadOwnable(chain.id, BASE_SEPOLIA_NETWORK)).resolves.toBeDefined();
+    const verification = await service.getOwnableVerification(chain.id, BASE_SEPOLIA_NETWORK);
     expect(verification).toEqual(
       expect.objectContaining({
         ownableId: chain.id,
@@ -1127,7 +1210,7 @@ describe('OwnableService', () => {
       },
     ]);
 
-    await expect(service.getOwnablePublicEvents(chain.id)).resolves.toEqual({
+    await expect(service.getOwnablePublicEvents(chain.id, BASE_SEPOLIA_NETWORK)).resolves.toEqual({
       ownableId: chain.id,
       publicEvents: [
         {
@@ -1203,7 +1286,7 @@ describe('OwnableService', () => {
       },
     ]);
 
-    const stream = await service.streamOwnablePublicEvents([ownableA.id, ownableB.id], '11');
+    const stream = await service.streamOwnablePublicEvents([ownableA.id, ownableB.id], '11', BASE_SEPOLIA_NETWORK);
     const collectedPromise = firstValueFrom(stream.pipe(take(3), toArray()));
     liveSubject.next({
       subjectId: expectedSubjectId(ownableIgnored.id),
@@ -1359,7 +1442,7 @@ describe('OwnableService', () => {
         }),
     );
 
-    const stream = await service.streamOwnablePublicEvents([ownable.id], '11');
+    const stream = await service.streamOwnablePublicEvents([ownable.id], '11', BASE_SEPOLIA_NETWORK);
     const collectedPromise = firstValueFrom(stream.pipe(take(2), toArray()));
 
     liveSubject.next({
@@ -1458,7 +1541,7 @@ describe('OwnableService', () => {
     const liveSubject = new Subject<any>();
     ownableTransport.watchAvailableOwnables.mockReturnValue(liveSubject);
 
-    const stream = service.streamAvailableOwnables(`eip155:84532:${REPLAY_OWNER_WALLET.address}`);
+    const stream = service.streamAvailableOwnables(REPLAY_OWNER_WALLET.address, BASE_SEPOLIA_NETWORK);
     const collectedPromise = firstValueFrom(stream.pipe(take(1), toArray()));
     liveSubject.next({
       owner: 'eip155:84532:0xsomeoneelse',
@@ -1523,7 +1606,7 @@ describe('OwnableService', () => {
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
     hubState.listIndexedPublicEventsBySubjectId.mockResolvedValue([]);
 
-    await expect(service.getOwnableVerification(chain.id)).resolves.toEqual(
+    await expect(service.getOwnableVerification(chain.id, BASE_SEPOLIA_NETWORK)).resolves.toEqual(
       expect.objectContaining({
         verified: false,
         anchorVerification: expect.objectContaining({
@@ -1567,7 +1650,7 @@ describe('OwnableService', () => {
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
     hubState.listIndexedPublicEventsBySubjectId.mockResolvedValue([]);
 
-    await expect(service.getOwnableVerification(chain.id)).resolves.toEqual(
+    await expect(service.getOwnableVerification(chain.id, BASE_SEPOLIA_NETWORK)).resolves.toEqual(
       expect.objectContaining({
         verified: false,
         anchorVerification: expect.objectContaining({
@@ -1629,7 +1712,7 @@ describe('OwnableService', () => {
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
     hubState.listIndexedPublicEventsBySubjectId.mockResolvedValue([]);
 
-    await expect(service.getOwnableVerification(chain.id)).resolves.toEqual(
+    await expect(service.getOwnableVerification(chain.id, BASE_SEPOLIA_NETWORK)).resolves.toEqual(
       expect.objectContaining({
         verified: true,
         anchorVerification: expect.objectContaining({
@@ -1666,7 +1749,7 @@ describe('OwnableService', () => {
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
     hubState.listIndexedPublicEventsBySubjectId.mockResolvedValue([]);
 
-    const file = await service.downloadOwnable(chain.id);
+    const file = await service.downloadOwnable(chain.id, BASE_SEPOLIA_NETWORK);
     const buffer = await toBuffer(file.getStream() as Readable);
     const outputZip = await new JSZip().loadAsync(buffer);
 
@@ -1701,7 +1784,7 @@ describe('OwnableService', () => {
     storage.getPackageZip.mockResolvedValue(await packageZip.generateAsync({ type: 'nodebuffer' }));
     storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
 
-    await expect(service.getAvailableOwnables(`eip155:84532:${REPLAY_OWNER_WALLET.address}`)).resolves.toEqual({
+    await expect(service.getAvailableOwnables(REPLAY_OWNER_WALLET.address, BASE_SEPOLIA_NETWORK)).resolves.toEqual({
       owner: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
       entries: [
         {
@@ -1717,7 +1800,7 @@ describe('OwnableService', () => {
         },
       ],
     });
-    const result = await service.getAvailableOwnables(`eip155:84532:${REPLAY_OWNER_WALLET.address}`);
+    const result = await service.getAvailableOwnables(REPLAY_OWNER_WALLET.address, BASE_SEPOLIA_NETWORK);
     expect(result).not.toHaveProperty('ownerAccount');
     expect(result.entries[0]).not.toHaveProperty('import');
     expect(result.entries[0]).not.toHaveProperty('availabilityKey');
@@ -1757,7 +1840,7 @@ describe('OwnableService', () => {
       },
     ]);
 
-    await service.uploadOwnable(buffer, undefined, false);
+    await service.uploadOwnable(buffer, BASE_SEPOLIA_NETWORK, undefined, false);
 
     expect(hubState.publishQuarantinedUpload).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1796,7 +1879,7 @@ describe('OwnableService', () => {
     storage.getPackageZip.mockRejectedValue(new Error('missing package zip'));
     storage.getEventChain.mockResolvedValue(Buffer.from(JSON.stringify(chain.toJSON()), 'utf8'));
 
-    await expect(service.getAvailableOwnables(`eip155:84532:${REPLAY_OWNER_WALLET.address}`)).resolves.toEqual({
+    await expect(service.getAvailableOwnables(REPLAY_OWNER_WALLET.address, BASE_SEPOLIA_NETWORK)).resolves.toEqual({
       owner: `eip155:84532:${REPLAY_OWNER_WALLET.address.toLowerCase()}`,
       entries: [
         {
@@ -1816,7 +1899,7 @@ describe('OwnableService', () => {
   it('rejects recipient discovery when owner input is missing or malformed', async () => {
     const { service } = await buildService();
 
-    await expect(service.getAvailableOwnables('')).rejects.toThrow('owner is required');
-    await expect(service.getAvailableOwnables('not-caip10')).rejects.toThrow('owner must be a valid CAIP-10 account');
+    await expect(service.getAvailableOwnables('', BASE_SEPOLIA_NETWORK)).rejects.toThrow('owner must be a valid EVM address');
+    await expect(service.getAvailableOwnables('not-an-address', BASE_SEPOLIA_NETWORK)).rejects.toThrow('owner must be a valid EVM address');
   });
 });

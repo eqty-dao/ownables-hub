@@ -170,8 +170,8 @@ Set these env vars for local runtime:
 Additional runtime configuration (feature-dependent):
 
 - `SIGNER_PRIVATE_KEY` or `SIGNER_MNEMONIC`
-- `HUB_NETWORK_PROFILE` (`testnet` default, or `mainnet`)
-- `TESTNET_*_RPC_URL` / `MAINNET_*_RPC_URL` overrides
+- `INDEXER_NETWORKS` comma-separated enabled Anchor networks. The initial production value is `base-sepolia`. Add `base` only after its Anchor address and start block are initialized.
+- `TESTNET_*` and `MAINNET_*` define the matching Base Sepolia and Base Mainnet slots. Disabled networks do not require a deployed Anchor configuration.
 - `SIWE_DOMAIN`
 - `PUBLIC_BASE_URL` for absolute package and chain URLs in Hub responses
 - `LOCAL_DEV_RECIPIENT_DISCOVERY_ENABLED=true` to expose `GET /accounts/:account/available-ownables` outside production for localhost receive/import testing

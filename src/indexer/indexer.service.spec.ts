@@ -7,6 +7,7 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { EVM_RPC_PROVIDER_FACTORY } from './indexer.tokens';
 
 const providerState = {
+  chainIdOverride: undefined as string | undefined,
   head: 0,
   logs: [] as any[],
   getLogs: undefined as ((fromBlock: number, toBlock: number) => any[]) | undefined,
@@ -16,7 +17,8 @@ jest.mock('ethers', () => {
   const actual = jest.requireActual('ethers');
   return {
     ...actual,
-    JsonRpcProvider: jest.fn().mockImplementation(() => ({
+    JsonRpcProvider: jest.fn().mockImplementation((_url: string, network: { chainId: number }) => ({
+      getNetwork: jest.fn(async () => ({ chainId: BigInt(providerState.chainIdOverride ?? network.chainId) })),
       getBlockNumber: jest.fn(async () => providerState.head),
       getLogs: jest.fn(async ({ fromBlock, toBlock }: { fromBlock: number; toBlock: number }) =>
         providerState.getLogs ? providerState.getLogs(fromBlock, toBlock) : providerState.logs,
@@ -33,7 +35,7 @@ import { OwnableService } from '../ownable/ownable.service';
 
 describe('IndexerService', () => {
   const configService = {
-    getIndexerSlots: jest.fn(),
+    getEnabledIndexerSlots: jest.fn(),
   } as unknown as ConfigService;
 
   const hubStateRepository = {
@@ -51,13 +53,16 @@ describe('IndexerService', () => {
 
   let service: IndexerService;
   let module: TestingModule;
-  const providerFactory = jest.fn(() => new JsonRpcProvider());
+  const providerFactory = jest.fn((slot: { rpcUrl: string; chainId: string }) =>
+    new JsonRpcProvider(slot.rpcUrl, { name: `eip155:${slot.chainId}`, chainId: Number(slot.chainId) }),
+  );
 
   beforeEach(async () => {
+    providerState.chainIdOverride = undefined;
     providerState.head = 0;
     providerState.logs = [];
     providerState.getLogs = undefined;
-    (configService.getIndexerSlots as jest.Mock).mockReset();
+    (configService.getEnabledIndexerSlots as jest.Mock).mockReset();
     (hubStateRepository.getIndexerCursor as jest.Mock).mockReset();
     (hubStateRepository.withIndexerPersistenceTransaction as jest.Mock).mockReset();
     (ownableTransport.publishPublicEvent as jest.Mock).mockReset();
@@ -78,9 +83,9 @@ describe('IndexerService', () => {
 
   afterEach(async () => module.close());
 
-  it('runs both slots in deterministic order', async () => {
+  it('runs enabled slots in deterministic order', async () => {
     const runSlotSpy = jest.spyOn(service, 'runSlot').mockResolvedValue();
-    (configService.getIndexerSlots as jest.Mock).mockReturnValue([
+    (configService.getEnabledIndexerSlots as jest.Mock).mockReturnValue([
       {
         slotName: 'testnet',
         chainId: '84532',
@@ -101,6 +106,58 @@ describe('IndexerService', () => {
 
     expect(runSlotSpy).toHaveBeenNthCalledWith(1, expect.objectContaining({ slotName: 'testnet' }));
     expect(runSlotSpy).toHaveBeenNthCalledWith(2, expect.objectContaining({ slotName: 'mainnet' }));
+  });
+
+  it('attempts every configured slot and permits a failed slot to recover on the next cycle', async () => {
+    const testnet = {
+      slotName: 'testnet' as const,
+      chainId: '84532',
+      rpcUrl: 'https://testnet-rpc',
+      anchorContractAddress: '0x1111111111111111111111111111111111111111',
+      anchorStartBlock: 10n,
+    };
+    const mainnet = {
+      slotName: 'mainnet' as const,
+      chainId: '8453',
+      rpcUrl: 'https://mainnet-rpc',
+      anchorContractAddress: '0x2222222222222222222222222222222222222222',
+      anchorStartBlock: 20n,
+    };
+    (configService.getEnabledIndexerSlots as jest.Mock).mockReturnValue([testnet, mainnet]);
+    const runSlotSpy = jest
+      .spyOn(service, 'runSlot')
+      .mockRejectedValueOnce(new Error('testnet RPC unavailable'))
+      .mockResolvedValue(undefined);
+
+    await expect(service.runAllSlots()).rejects.toThrow('1 configured indexer slot(s) failed');
+    expect(runSlotSpy).toHaveBeenNthCalledWith(1, testnet);
+    expect(runSlotSpy).toHaveBeenNthCalledWith(2, mainnet);
+
+    await expect(service.runAllSlots()).resolves.toBeUndefined();
+    expect(runSlotSpy).toHaveBeenNthCalledWith(3, testnet);
+    expect(runSlotSpy).toHaveBeenNthCalledWith(4, mainnet);
+  });
+
+  it('rejects an RPC on the wrong chain before it reads logs or persists a cursor', async () => {
+    providerState.chainIdOverride = '8453';
+    const slot = {
+      slotName: 'testnet' as const,
+      chainId: '84532',
+      rpcUrl: 'https://testnet-rpc',
+      anchorContractAddress: '0x1111111111111111111111111111111111111111',
+      anchorStartBlock: 100n,
+    };
+    (hubStateRepository.getIndexerCursor as jest.Mock).mockResolvedValue(null);
+
+    await expect(service.runSlot(slot)).rejects.toThrow(
+      'Indexer RPC chain ID mismatch for testnet: expected 84532, received 8453',
+    );
+
+    const provider = (jest.requireMock('ethers').JsonRpcProvider as jest.Mock).mock.results.at(-1)?.value;
+    expect(provider.getNetwork).toHaveBeenCalledTimes(1);
+    expect(provider.getBlockNumber).not.toHaveBeenCalled();
+    expect(provider.getLogs).not.toHaveBeenCalled();
+    expect(hubStateRepository.withIndexerPersistenceTransaction).not.toHaveBeenCalled();
   });
 
   it('persists anchor/public events and advances cursor from start block when no cursor exists', async () => {

@@ -49,9 +49,20 @@ export class IndexerService {
   ) {}
 
   async runAllSlots(): Promise<void> {
-    const slots = this.configService.getIndexerSlots();
+    const slots = this.configService.getEnabledIndexerSlots();
+    const failures: unknown[] = [];
     for (const slot of slots) {
-      await this.runSlot(slot);
+      try {
+        await this.runSlot(slot);
+      } catch (error) {
+        failures.push(error);
+        const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+        this.logger.error(`Slot ${slot.slotName} failed: ${detail}`);
+      }
+    }
+
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `${failures.length} configured indexer slot(s) failed`);
     }
   }
 
@@ -65,6 +76,7 @@ export class IndexerService {
     );
     const fromBlock = this.resolveFromBlock(slot, cursor);
     const provider = this.providerFactory(slot);
+    await this.assertProviderChainId(provider, slot);
     const head = await provider.getBlockNumber();
     const toBlock = BigInt(head);
     if (fromBlock > toBlock) {
@@ -93,6 +105,16 @@ export class IndexerService {
       );
     }
     await this.ownableService.promoteQuarantinedUploads();
+  }
+
+  private async assertProviderChainId(provider: ReturnType<EvmRpcProviderFactory>, slot: IndexerSlotConfig): Promise<void> {
+    const network = await provider.getNetwork();
+    const expectedChainId = BigInt(slot.chainId);
+    if (network.chainId !== expectedChainId) {
+      throw new Error(
+        `Indexer RPC chain ID mismatch for ${slot.slotName}: expected ${expectedChainId.toString()}, received ${network.chainId.toString()}`,
+      );
+    }
   }
 
   private async persistWindow(

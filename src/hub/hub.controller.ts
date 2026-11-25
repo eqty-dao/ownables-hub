@@ -3,17 +3,21 @@ import { ApiOkResponse, ApiParam, ApiProduces, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
 import { writeHttpError } from '../common/http/http-error-response';
 import { EthersService } from '../common/ethers/ethers.service';
+import { ConfigService, HubNetwork } from '../common/config/config.service';
 
-@Controller('hub')
+@Controller(':network/hub')
 @ApiTags('hub')
 export class HubController {
-  constructor(private readonly ethers: EthersService) {}
+  constructor(
+    private readonly ethers: EthersService,
+    private readonly config: ConfigService,
+  ) {}
 
-  @Get('wallet/:network')
+  @Get('wallet')
   @ApiProduces('application/json')
   @ApiParam({
     name: 'network',
-    enum: ['eip155:ethereum', 'eip155:arbitrum', 'eip155:polygon', 'eip155:base'],
+    enum: ['base', 'base-sepolia'] satisfies HubNetwork[],
   })
   @ApiOkResponse({
     schema: {
@@ -29,7 +33,7 @@ export class HubController {
   })
   async wallet(@Param('network') network: string, @Res() res: Response): Promise<Response> {
     try {
-      return res.status(200).json(await this.ethers.getHubWallet(network));
+      return res.status(200).json(await this.ethers.getHubWallet(this.config.resolveHubNetwork(network)));
     } catch (error) {
       return writeHttpError(res, error);
     }

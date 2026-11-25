@@ -357,7 +357,11 @@ describeWithDatabase('HubStateRepository recipient discovery postgres integratio
         payloadJson: { public: true },
       });
 
-      const anchorRows = await repo.listIndexedAnchorEventsByAnchorKeys([`0x${'7'.repeat(64)}`]);
+      const anchorRows = await repo.listIndexedAnchorEventsByAnchorKeys([`0x${'7'.repeat(64)}`], {
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x00000000000000000000000000000000000000aa',
+      });
       const publicRows = await repo.listIndexedPublicEventsBySubjectId(subjectId, {
         slotName: 'testnet',
         chainId: '84532',
