@@ -1,4 +1,4 @@
-import { readActiveBaseConfig } from './base-config.mjs';
+import { readBaseConfigForStartBlock } from './base-config.mjs';
 
 async function rpc(url, method, params = []) {
   let result;
@@ -19,7 +19,7 @@ async function rpc(url, method, params = []) {
 }
 
 try {
-  const { chainId, rpcUrl, anchor, startBlockVariable } = readActiveBaseConfig();
+  const { chainId, rpcUrl, anchor, startBlockVariable } = readBaseConfigForStartBlock(process.argv[2]);
   const rpcChainId = await rpc(rpcUrl, 'eth_chainId');
   if (BigInt(rpcChainId) !== BigInt(chainId)) {
     throw new Error(`Configured RPC does not serve Base chain ${chainId}`);

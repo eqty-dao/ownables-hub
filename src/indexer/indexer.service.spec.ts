@@ -33,7 +33,7 @@ import { OwnableService } from '../ownable/ownable.service';
 
 describe('IndexerService', () => {
   const configService = {
-    getIndexerSlots: jest.fn(),
+    getEnabledIndexerSlots: jest.fn(),
   } as unknown as ConfigService;
 
   const hubStateRepository = {
@@ -57,7 +57,7 @@ describe('IndexerService', () => {
     providerState.head = 0;
     providerState.logs = [];
     providerState.getLogs = undefined;
-    (configService.getIndexerSlots as jest.Mock).mockReset();
+    (configService.getEnabledIndexerSlots as jest.Mock).mockReset();
     (hubStateRepository.getIndexerCursor as jest.Mock).mockReset();
     (hubStateRepository.withIndexerPersistenceTransaction as jest.Mock).mockReset();
     (ownableTransport.publishPublicEvent as jest.Mock).mockReset();
@@ -78,9 +78,9 @@ describe('IndexerService', () => {
 
   afterEach(async () => module.close());
 
-  it('runs both slots in deterministic order', async () => {
+  it('runs enabled slots in deterministic order', async () => {
     const runSlotSpy = jest.spyOn(service, 'runSlot').mockResolvedValue();
-    (configService.getIndexerSlots as jest.Mock).mockReturnValue([
+    (configService.getEnabledIndexerSlots as jest.Mock).mockReturnValue([
       {
         slotName: 'testnet',
         chainId: '84532',
@@ -101,6 +101,36 @@ describe('IndexerService', () => {
 
     expect(runSlotSpy).toHaveBeenNthCalledWith(1, expect.objectContaining({ slotName: 'testnet' }));
     expect(runSlotSpy).toHaveBeenNthCalledWith(2, expect.objectContaining({ slotName: 'mainnet' }));
+  });
+
+  it('attempts every configured slot and permits a failed slot to recover on the next cycle', async () => {
+    const testnet = {
+      slotName: 'testnet' as const,
+      chainId: '84532',
+      rpcUrl: 'https://testnet-rpc',
+      anchorContractAddress: '0x1111111111111111111111111111111111111111',
+      anchorStartBlock: 10n,
+    };
+    const mainnet = {
+      slotName: 'mainnet' as const,
+      chainId: '8453',
+      rpcUrl: 'https://mainnet-rpc',
+      anchorContractAddress: '0x2222222222222222222222222222222222222222',
+      anchorStartBlock: 20n,
+    };
+    (configService.getEnabledIndexerSlots as jest.Mock).mockReturnValue([testnet, mainnet]);
+    const runSlotSpy = jest
+      .spyOn(service, 'runSlot')
+      .mockRejectedValueOnce(new Error('testnet RPC unavailable'))
+      .mockResolvedValue(undefined);
+
+    await expect(service.runAllSlots()).rejects.toThrow('1 configured indexer slot(s) failed');
+    expect(runSlotSpy).toHaveBeenNthCalledWith(1, testnet);
+    expect(runSlotSpy).toHaveBeenNthCalledWith(2, mainnet);
+
+    await expect(service.runAllSlots()).resolves.toBeUndefined();
+    expect(runSlotSpy).toHaveBeenNthCalledWith(3, testnet);
+    expect(runSlotSpy).toHaveBeenNthCalledWith(4, mainnet);
   });
 
   it('persists anchor/public events and advances cursor from start block when no cursor exists', async () => {

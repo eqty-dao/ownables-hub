@@ -134,6 +134,41 @@ describe('ConfigService', () => {
     expect(() => service.getIndexerSlots()).toThrow('MAINNET_CHAIN_ID is required');
   });
 
+  it('enables only configured indexer networks and permits an undeployed Mainnet Anchor', () => {
+    process.env.INDEXER_NETWORKS = 'base-sepolia';
+    delete process.env.MAINNET_CHAIN_ID;
+    delete process.env.MAINNET_RPC_URL;
+    delete process.env.MAINNET_ANCHOR_CONTRACT_ADDR;
+    delete process.env.MAINNET_ANCHOR_START_BLOCK;
+
+    expect(new ConfigService().getEnabledIndexerSlots()).toEqual([
+      expect.objectContaining({
+        slotName: 'testnet',
+        chainId: '84532',
+        anchorContractAddress: '0x1111111111111111111111111111111111111111',
+        anchorStartBlock: 100n,
+      }),
+    ]);
+  });
+
+  it('requires a complete deployed Anchor configuration for every enabled indexer network', () => {
+    process.env.INDEXER_NETWORKS = 'base';
+    delete process.env.MAINNET_ANCHOR_CONTRACT_ADDR;
+    delete process.env.MAINNET_ANCHOR_START_BLOCK;
+
+    expect(() => new ConfigService().getEnabledIndexerSlots()).toThrow(
+      'Indexer network base requires an Anchor address and start block',
+    );
+  });
+
+  it('rejects duplicate and unsupported enabled indexer networks', () => {
+    process.env.INDEXER_NETWORKS = 'base-sepolia,base-sepolia';
+    expect(() => new ConfigService().getEnabledIndexerSlots()).toThrow('INDEXER_NETWORKS must not contain duplicate networks');
+
+    process.env.INDEXER_NETWORKS = 'arbitrum';
+    expect(() => new ConfigService().getEnabledIndexerSlots()).toThrow('Unsupported Hub network: arbitrum');
+  });
+
   it('resolves both Base request networks while allowing an undeployed Mainnet Anchor', () => {
     delete process.env.MAINNET_CHAIN_ID;
     delete process.env.MAINNET_RPC_URL;

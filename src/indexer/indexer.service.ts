@@ -49,9 +49,20 @@ export class IndexerService {
   ) {}
 
   async runAllSlots(): Promise<void> {
-    const slots = this.configService.getIndexerSlots();
+    const slots = this.configService.getEnabledIndexerSlots();
+    const failures: unknown[] = [];
     for (const slot of slots) {
-      await this.runSlot(slot);
+      try {
+        await this.runSlot(slot);
+      } catch (error) {
+        failures.push(error);
+        const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+        this.logger.error(`Slot ${slot.slotName} failed: ${detail}`);
+      }
+    }
+
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `${failures.length} configured indexer slot(s) failed`);
     }
   }
 

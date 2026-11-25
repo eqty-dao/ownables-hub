@@ -282,6 +282,38 @@ export class ConfigService {
     return [this.parseIndexerSlot('TESTNET', 'testnet'), this.parseIndexerSlot('MAINNET', 'mainnet')];
   }
 
+  getEnabledIndexerSlots(): IndexerSlotConfig[] {
+    const rawNetworks = readEnv('INDEXER_NETWORKS', 'base-sepolia');
+    const networks = rawNetworks.split(',').map((network) => network.trim());
+    if (networks.length === 0 || networks.some((network) => !network)) {
+      throw new Error('INDEXER_NETWORKS must contain at least one Base network');
+    }
+
+    const slots = networks.map((network) => {
+      const context = this.resolveHubNetwork(network);
+      if (!context.anchorContractAddress || context.anchorStartBlock === undefined) {
+        throw new Error(`Indexer network ${context.slug} requires an Anchor address and start block`);
+      }
+      if (!URL.canParse(context.rpcUrl) || !['http:', 'https:'].includes(new URL(context.rpcUrl).protocol)) {
+        throw new Error(`Indexer network ${context.slug} requires an HTTP(S) RPC URL`);
+      }
+
+      return {
+        slotName: context.slotName,
+        chainId: context.chainId,
+        rpcUrl: context.rpcUrl,
+        anchorContractAddress: context.anchorContractAddress,
+        anchorStartBlock: context.anchorStartBlock,
+      };
+    });
+
+    if (new Set(slots.map((slot) => slot.slotName)).size !== slots.length) {
+      throw new Error('INDEXER_NETWORKS must not contain duplicate networks');
+    }
+
+    return slots;
+  }
+
   getActiveIndexerSlot(): IndexerSlotConfig {
     const profile = this.runtimeConfig.networkProfile;
     const slot = this.parseIndexerSlot(profile === 'testnet' ? 'TESTNET' : 'MAINNET', profile);
