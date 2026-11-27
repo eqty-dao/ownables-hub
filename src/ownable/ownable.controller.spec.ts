@@ -596,6 +596,7 @@ describe('Story #21 network resource route behavior', () => {
       '/{network}/streams/inbox/{address}',
       '/{network}/streams/public-events',
       '/{network}/hub/wallet',
+    '/{network}/anchors/evidence',
     ]) {
       expect(paths[path]).toBeDefined();
     }

@@ -1047,6 +1047,39 @@ export class HubStateRepository {
     return result.rows;
   }
 
+  async findLatestAnchorEvidence(
+    pairs: Array<{ key: string; signer: string }>,
+    identity: IndexedEventIdentity,
+  ) {
+    const result = await this.db.query<{
+      key: string;
+      value: string;
+      signer: string;
+      transactionHash: string;
+      blockNumber: string;
+      transactionIndex: number;
+      logIndex: number;
+    }>(
+      `SELECT requested.key, requested.signer, indexed.*
+       FROM unnest($1::text[], $2::text[]) AS requested(key, signer)
+       CROSS JOIN LATERAL (
+         SELECT LOWER(payload_json ->> 'value') AS value,
+                transaction_hash AS "transactionHash",
+                block_number::text AS "blockNumber",
+                transaction_index AS "transactionIndex",
+                log_index AS "logIndex"
+         FROM indexed_anchor_events
+         WHERE slot_name = $3 AND chain_id = $4 AND LOWER(anchor_contract_address) = $5
+           AND LOWER(payload_json ->> 'key') = requested.key
+           AND LOWER(owner_address) = requested.signer
+         ORDER BY block_number DESC, transaction_index DESC, log_index DESC
+         LIMIT 1
+       ) AS indexed`,
+      [pairs.map(({ key }) => key), pairs.map(({ signer }) => signer), identity.slotName, identity.chainId, identity.anchorContractAddress],
+    );
+    return result.rows;
+  }
+
   async listIndexedAnchorEventsByAnchorKeys(
     anchorKeys: string[],
     identity: IndexedEventIdentity,
