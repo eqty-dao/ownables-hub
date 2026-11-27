@@ -799,6 +799,7 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
     TESTNET_BASE_RPC_URL: rpc.url,
     TESTNET_ANCHOR_CONTRACT_ADDR: E2E_ANCHOR_CONTRACT,
     TESTNET_ANCHOR_START_BLOCK: '0',
+    MAINNET_ANCHOR_CONTRACT_ADDR: E2E_ANCHOR_CONTRACT,
   });
   t.after(async () => {
     try {
@@ -822,6 +823,62 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
   const health = await healthResponse.json();
   assert.equal(health.status, 'ok');
 
+  const [firstAnchor] = anchors;
+  const requested = { key: firstAnchor.key.hex, signer: firstAnchor.signer };
+  const requestEvidence = (network, anchors) =>
+    fetch(`http://127.0.0.1:${port}/${network}/anchors/evidence`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anchors }),
+      signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
+    });
+  const unregistered = await database.query('SELECT id FROM ownable_records WHERE subject_id = $1', [subjectId]);
+  assert.equal(unregistered.rowCount, 0);
+  const evidenceResponse = await requestEvidence('base-sepolia', [requested, requested]);
+  assert.equal(evidenceResponse.status, 200);
+  assert.deepEqual(await evidenceResponse.json(), {
+    chainId: 84532,
+    anchorContractAddress: E2E_ANCHOR_CONTRACT.toLowerCase(),
+    records: [{
+      key: requested.key.toLowerCase(),
+      signer: requested.signer.toLowerCase(),
+      value: firstAnchor.value.hex.toLowerCase(),
+      transactionHash: E2E_ANCHOR_TRANSACTION.toLowerCase(),
+      blockNumber: 7,
+      transactionIndex: 0,
+      logIndex: 0,
+    }],
+  });
+  const supersedingTransaction = `0x${'3f'.repeat(32)}`;
+  const supersedingValue = `0x${'4f'.repeat(32)}`;
+  await database.query(
+    `INSERT INTO indexed_anchor_events (
+       slot_name, chain_id, anchor_contract_address, block_number, block_hash,
+       transaction_hash, transaction_index, log_index, event_name, owner_address, payload_json
+     ) VALUES ('testnet', $1, $2, 8, $3, $4, 1, 0, 'Anchored', $5, $6::jsonb)`,
+    [chainId, E2E_ANCHOR_CONTRACT.toLowerCase(), supersedingTransaction, supersedingTransaction,
+      requested.signer.toLowerCase(), JSON.stringify({ key: requested.key, value: supersedingValue })],
+  );
+  try {
+    const supersededEvidence = await requestEvidence('base-sepolia', [requested]);
+    assert.equal(supersededEvidence.status, 200);
+    const [latest] = (await supersededEvidence.json()).records;
+    assert.equal(latest.value, supersedingValue);
+    assert.equal(latest.transactionHash, supersedingTransaction);
+    assert.equal(latest.blockNumber, 8);
+  } finally {
+    await database.query('DELETE FROM indexed_anchor_events WHERE transaction_hash = $1', [supersedingTransaction]);
+  }
+  const mainnetEvidence = await requestEvidence('base', [requested]);
+  assert.equal(mainnetEvidence.status, 200);
+  assert.deepEqual((await mainnetEvidence.json()).records, []);
+  const foreignEvidence = await requestEvidence('base-sepolia', [{ ...requested, signer: ethers.ZeroAddress }]);
+  assert.equal(foreignEvidence.status, 200);
+  assert.deepEqual((await foreignEvidence.json()).records, []);
+  assert.equal((await requestEvidence('ethereum', [requested])).status, 400);
+  assert.equal((await requestEvidence('base-sepolia', [{ ...requested, key: '0x12' }])).status, 400);
+  assert.equal((await requestEvidence('base-sepolia', Array(101).fill(requested))).status, 400);
+
   const openApiResponse = await fetch(`http://127.0.0.1:${port}/api-docs-json`, {
     signal: AbortSignal.timeout(STARTUP_TIMEOUT_MS),
   });
@@ -841,6 +898,7 @@ test('GET /info reports application metadata from the compiled Hub', { timeout: 
     '/{network}/streams/inbox/{address}',
     '/{network}/streams/public-events',
     '/{network}/hub/wallet',
+    '/{network}/anchors/evidence',
   ]) {
     assert.ok(openApi.paths[path], `Expected canonical OpenAPI path ${path}`);
   }
